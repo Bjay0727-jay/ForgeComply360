@@ -1,0 +1,95 @@
+name: Deploy ForgeComply 360
+
+on:
+  push:
+    branches: [main, staging]
+  workflow_dispatch:
+
+jobs:
+  deploy-api:
+    name: Deploy Workers API
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Deploy to Staging
+        if: github.ref == 'refs/heads/staging'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          command: deploy --env staging
+
+      - name: Deploy to Production
+        if: github.ref == 'refs/heads/main'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          command: deploy --env production
+
+  deploy-frontend:
+    name: Deploy Frontend (Pages)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install frontend dependencies
+        run: cd frontend && npm ci
+
+      - name: Build frontend
+        run: cd frontend && npm run build
+        env:
+          VITE_API_URL: ${{ github.ref == 'refs/heads/main' && 'https://api.forgecomply360.com' || 'https://staging-api.forgecomply360.com' }}
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          command: pages deploy frontend/dist --project-name=forgecomply360 --branch=${{ github.ref_name }}
+
+  migrate-db:
+    name: Run Database Migrations
+    runs-on: ubuntu-latest
+    needs: deploy-api
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Migrate Staging DB
+        if: github.ref == 'refs/heads/staging'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          command: d1 execute forge-db --env staging --file=database/schema.sql
+
+      - name: Seed Staging DB
+        if: github.ref == 'refs/heads/staging'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          command: d1 execute forge-db --env staging --file=database/seed.sql
+
+      - name: Migrate Production DB
+        if: github.ref == 'refs/heads/main'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          command: d1 execute forge-db --env production --file=database/schema.sql
+
+      - name: Seed Production DB
+        if: github.ref == 'refs/heads/main'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          command: d1 execute forge-db --env production --file=database/seed.sql

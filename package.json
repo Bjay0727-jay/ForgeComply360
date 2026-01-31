@@ -1,0 +1,23 @@
+{
+  "name": "forgecomply360",
+  "version": "5.0.0",
+  "private": true,
+  "description": "ForgeComply 360 - Enterprise GRC Platform by Forge Cyber Defense (SDVOSB)",
+  "scripts": {
+    "dev": "wrangler dev",
+    "dev:frontend": "cd frontend && npm run dev",
+    "build": "cd frontend && npm run build",
+    "deploy:staging": "wrangler deploy --env staging",
+    "deploy:production": "wrangler deploy --env production",
+    "db:migrate:local": "wrangler d1 execute forge-db --local --file=database/schema.sql",
+    "db:migrate:staging": "wrangler d1 execute forge-db --env staging --file=database/schema.sql",
+    "db:migrate:production": "wrangler d1 execute forge-db --env production --file=database/schema.sql",
+    "db:seed:local": "wrangler d1 execute forge-db --local --file=database/seed.sql",
+    "frontend:deploy:staging": "cd frontend && npm run build && npx wrangler pages deploy dist --project-name=forgecomply360 --branch=staging",
+    "frontend:deploy:production": "cd frontend && npm run build && npx wrangler pages deploy dist --project-name=forgecomply360 --branch=main"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241205.0",
+    "wrangler": "^3.99.0"
+  }
+}
