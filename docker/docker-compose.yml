@@ -1,0 +1,83 @@
+# ============================================================================
+# ForgeComply 360 - Docker Compose (On-Prem Deployment)
+# Forge Cyber Defense - SDVOSB
+#
+# Usage:
+#   cp .env.example .env  (edit with your settings)
+#   docker-compose up -d
+#   Open http://localhost:3000
+# ============================================================================
+
+version: '3.8'
+
+services:
+  # ── API Server ──────────────────────────────────────────────────
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.api
+    container_name: forgecomply-api
+    restart: unless-stopped
+    ports:
+      - "${API_PORT:-8787}:8787"
+    volumes:
+      - forge-data:/data
+    environment:
+      - PORT=8787
+      - DATA_DIR=/data
+      - JWT_SECRET=${JWT_SECRET:-change-this-in-production}
+      - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost:3000}
+      - ENVIRONMENT=on-prem
+      - OLLAMA_URL=http://ollama:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b}
+    depends_on:
+      ollama:
+        condition: service_started
+    networks:
+      - forge-network
+
+  # ── Frontend (nginx) ────────────────────────────────────────────
+  frontend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.frontend
+    container_name: forgecomply-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    depends_on:
+      - api
+    networks:
+      - forge-network
+
+  # ── Ollama (Local AI) ──────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: forgecomply-ollama
+    restart: unless-stopped
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+    # Uncomment for GPU support:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    networks:
+      - forge-network
+
+volumes:
+  forge-data:
+    driver: local
+  ollama-models:
+    driver: local
+
+networks:
+  forge-network:
+    driver: bridge

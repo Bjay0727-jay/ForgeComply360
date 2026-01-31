@@ -16,7 +16,9 @@ export function ControlsPage() {
   const [total, setTotal] = useState(0);
   const [saving, setSaving] = useState('');
   const [generatingNarrative, setGeneratingNarrative] = useState('');
-  const [narrativePreview, setNarrativePreview] = useState<Record<string, string>>({});
+  const [expandedControl, setExpandedControl] = useState<string | null>(null);
+  const [editFields, setEditFields] = useState<Record<string, { implementation_description: string; responsible_role: string; ai_narrative: string }>>({});
+  const [savingImpl, setSavingImpl] = useState('');
 
   useEffect(() => {
     Promise.all([
@@ -66,8 +68,86 @@ export function ControlsPage() {
         method: 'POST',
         body: JSON.stringify({ system_id: selectedSystem, framework_id: selectedFw, control_id: controlId }),
       });
-      setNarrativePreview(prev => ({ ...prev, [controlId]: result.narrative }));
-      // Update implementation to reflect narrative exists
+      // Update narrative in both implementations and edit fields
+      setImplementations(prev => ({ ...prev, [controlId]: { ...prev[controlId], ai_narrative: result.narrative } }));
+      setEditFields(prev => ({
+        ...prev,
+        [controlId]: { ...prev[controlId], ai_narrative: result.narrative, implementation_description: prev[controlId]?.implementation_description || '', responsible_role: prev[controlId]?.responsible_role || '' },
+      }));
+    } catch { } finally { setGeneratingNarrative(''); }
+  };
+
+  const toggleExpand = (controlId: string) => {
+    if (expandedControl === controlId) {
+      setExpandedControl(null);
+    } else {
+      setExpandedControl(controlId);
+      // Initialize edit fields from existing implementation data
+      const impl = implementations[controlId];
+      setEditFields(prev => ({
+        ...prev,
+        [controlId]: {
+          implementation_description: impl?.implementation_description || '',
+          responsible_role: impl?.responsible_role || '',
+          ai_narrative: impl?.ai_narrative || '',
+        },
+      }));
+    }
+  };
+
+  const saveImplementation = async (controlId: string) => {
+    if (!selectedSystem || !selectedFw) return;
+    setSavingImpl(controlId);
+    try {
+      const fields = editFields[controlId];
+      const impl = implementations[controlId];
+      const result = await api('/api/v1/implementations', {
+        method: 'POST',
+        body: JSON.stringify({
+          system_id: selectedSystem,
+          framework_id: selectedFw,
+          control_id: controlId,
+          status: impl?.status || 'not_implemented',
+          implementation_description: fields?.implementation_description || null,
+          responsible_role: fields?.responsible_role || null,
+          ai_narrative: fields?.ai_narrative || null,
+        }),
+      });
+      setImplementations(prev => ({
+        ...prev,
+        [controlId]: {
+          ...prev[controlId],
+          ...result.implementation,
+          implementation_description: fields?.implementation_description,
+          responsible_role: fields?.responsible_role,
+          ai_narrative: fields?.ai_narrative,
+        },
+      }));
+    } catch { } finally { setSavingImpl(''); }
+  };
+
+  const refineWithAI = async (controlId: string, fieldName: 'implementation_description' | 'ai_narrative') => {
+    if (!selectedSystem || !selectedFw) return;
+    const currentText = editFields[controlId]?.[fieldName] || '';
+    if (!currentText.trim()) {
+      // If empty, just generate a full narrative
+      return generateNarrative(controlId);
+    }
+    setGeneratingNarrative(controlId);
+    try {
+      const result = await api('/api/v1/ai/narrative', {
+        method: 'POST',
+        body: JSON.stringify({
+          system_id: selectedSystem,
+          framework_id: selectedFw,
+          control_id: controlId,
+          additional_context: `Please refine and improve the following existing text to make it more professional, specific, and assessor-ready:\n\n${currentText}`,
+        }),
+      });
+      setEditFields(prev => ({
+        ...prev,
+        [controlId]: { ...prev[controlId], [fieldName]: result.narrative },
+      }));
       setImplementations(prev => ({ ...prev, [controlId]: { ...prev[controlId], ai_narrative: result.narrative } }));
     } catch { } finally { setGeneratingNarrative(''); }
   };
@@ -87,7 +167,7 @@ export function ControlsPage() {
     <div>
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-gray-900">{nav('controls')}</h1>
-        <p className="text-gray-500 text-sm mt-1">Browse and implement {t('control').toLowerCase()}s</p>
+        <p className="text-gray-500 text-sm mt-1">Browse, implement, and document {t('control').toLowerCase()}s. Click a control to expand and edit details.</p>
       </div>
 
       {/* Filters */}
@@ -110,49 +190,169 @@ export function ControlsPage() {
         {controls.map((ctrl) => {
           const impl = implementations[ctrl.control_id];
           const currentStatus = impl?.status || 'not_implemented';
+          const isExpanded = expandedControl === ctrl.control_id;
+          const fields = editFields[ctrl.control_id];
+          const hasUnsavedChanges = fields && (
+            (fields.implementation_description || '') !== (impl?.implementation_description || '') ||
+            (fields.responsible_role || '') !== (impl?.responsible_role || '') ||
+            (fields.ai_narrative || '') !== (impl?.ai_narrative || '')
+          );
           return (
-            <div key={ctrl.id} className="bg-white rounded-lg border border-gray-200 p-4">
-              <div className="flex items-start justify-between gap-4">
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="font-mono text-sm font-semibold text-blue-700">{ctrl.control_id}</span>
-                    <span className="text-sm font-medium text-gray-900">{ctrl.title}</span>
-                    <span className="text-xs text-gray-400">{ctrl.family}</span>
+            <div key={ctrl.id} className={`bg-white rounded-lg border ${isExpanded ? 'border-blue-300 ring-1 ring-blue-100' : 'border-gray-200'} transition-all`}>
+              {/* Control Header */}
+              <div className="p-4 cursor-pointer" onClick={() => toggleExpand(ctrl.control_id)}>
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 mb-1">
+                      <svg className={`w-4 h-4 text-gray-400 transition-transform flex-shrink-0 ${isExpanded ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+                      <span className="font-mono text-sm font-semibold text-blue-700">{ctrl.control_id}</span>
+                      <span className="text-sm font-medium text-gray-900">{ctrl.title}</span>
+                      <span className="text-xs text-gray-400">{ctrl.family}</span>
+                      {impl?.implementation_description && (
+                        <span className="text-xs px-1.5 py-0.5 bg-green-50 text-green-600 rounded font-medium">Documented</span>
+                      )}
+                      {impl?.ai_narrative && (
+                        <span className="text-xs px-1.5 py-0.5 bg-purple-50 text-purple-600 rounded font-medium">AI Narrative</span>
+                      )}
+                    </div>
+                    {!isExpanded && ctrl.description && <p className="text-xs text-gray-500 line-clamp-2 ml-6">{ctrl.description}</p>}
                   </div>
-                  {ctrl.description && <p className="text-xs text-gray-500 line-clamp-2">{ctrl.description}</p>}
-                </div>
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  <button
-                    onClick={() => generateNarrative(ctrl.control_id)}
-                    disabled={generatingNarrative === ctrl.control_id || !selectedSystem}
-                    className="text-xs px-2 py-1.5 rounded-lg border border-purple-200 bg-purple-50 text-purple-700 font-medium hover:bg-purple-100 disabled:opacity-50 flex items-center gap-1"
-                    title="Generate AI implementation narrative"
-                  >
-                    {generatingNarrative === ctrl.control_id ? (
-                      <><div className="w-3 h-3 border-2 border-purple-400 border-t-transparent rounded-full animate-spin" /> AI...</>
-                    ) : (
-                      <><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg> AI</>
-                    )}
-                  </button>
-                  <select
-                    value={currentStatus}
-                    onChange={(e) => updateStatus(ctrl.control_id, e.target.value)}
-                    disabled={saving === ctrl.control_id || !selectedSystem}
-                    className={`text-xs px-2 py-1.5 rounded-lg border font-medium ${statusOptions.find((s) => s.value === currentStatus)?.color || ''}`}
-                  >
-                    {statusOptions.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
-                  </select>
+                  <div className="flex items-center gap-2 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+                    <button
+                      onClick={() => generateNarrative(ctrl.control_id)}
+                      disabled={generatingNarrative === ctrl.control_id || !selectedSystem}
+                      className="text-xs px-2 py-1.5 rounded-lg border border-purple-200 bg-purple-50 text-purple-700 font-medium hover:bg-purple-100 disabled:opacity-50 flex items-center gap-1"
+                      title="Generate AI implementation narrative"
+                    >
+                      {generatingNarrative === ctrl.control_id ? (
+                        <><div className="w-3 h-3 border-2 border-purple-400 border-t-transparent rounded-full animate-spin" /> AI...</>
+                      ) : (
+                        <><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg> AI</>
+                      )}
+                    </button>
+                    <select
+                      value={currentStatus}
+                      onChange={(e) => updateStatus(ctrl.control_id, e.target.value)}
+                      disabled={saving === ctrl.control_id || !selectedSystem}
+                      className={`text-xs px-2 py-1.5 rounded-lg border font-medium ${statusOptions.find((s) => s.value === currentStatus)?.color || ''}`}
+                    >
+                      {statusOptions.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
+                    </select>
+                  </div>
                 </div>
               </div>
-              {/* AI Narrative Preview */}
-              {narrativePreview[ctrl.control_id] && (
-                <div className="mt-3 p-3 bg-purple-50 border border-purple-100 rounded-lg">
-                  <div className="flex items-center gap-1 mb-1">
-                    <svg className="w-3.5 h-3.5 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-                    <span className="text-xs font-medium text-purple-700">AI-Generated Narrative</span>
-                    <button onClick={() => setNarrativePreview(prev => { const next = { ...prev }; delete next[ctrl.control_id]; return next; })} className="ml-auto text-xs text-purple-500 hover:text-purple-700">Hide</button>
+
+              {/* Expanded Edit Panel */}
+              {isExpanded && (
+                <div className="border-t border-gray-200 p-4 bg-gray-50/50">
+                  {/* Control Description */}
+                  {ctrl.description && (
+                    <div className="mb-4 p-3 bg-blue-50 rounded-lg border border-blue-100">
+                      <p className="text-xs font-medium text-blue-700 mb-1">Control Description</p>
+                      <p className="text-sm text-gray-700">{ctrl.description}</p>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    {/* Left: Implementation Details */}
+                    <div className="space-y-3">
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-700 mb-1">Responsible Role / Team</label>
+                        <input
+                          type="text"
+                          value={fields?.responsible_role || ''}
+                          onChange={(e) => setEditFields(prev => ({ ...prev, [ctrl.control_id]: { ...prev[ctrl.control_id], responsible_role: e.target.value } }))}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                          placeholder="e.g., IT Security Team, CISO, System Administrator"
+                        />
+                      </div>
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="block text-xs font-semibold text-gray-700">Implementation Description</label>
+                          <button
+                            onClick={() => refineWithAI(ctrl.control_id, 'implementation_description')}
+                            disabled={generatingNarrative === ctrl.control_id}
+                            className="text-[10px] px-2 py-0.5 rounded bg-purple-50 text-purple-600 border border-purple-200 hover:bg-purple-100 font-medium flex items-center gap-1"
+                          >
+                            <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                            Refine with ForgeML
+                          </button>
+                        </div>
+                        <textarea
+                          value={fields?.implementation_description || ''}
+                          onChange={(e) => setEditFields(prev => ({ ...prev, [ctrl.control_id]: { ...prev[ctrl.control_id], implementation_description: e.target.value } }))}
+                          rows={6}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                          placeholder="Describe how this control is implemented in your organization. Include specifics about technologies, processes, and procedures used..."
+                        />
+                      </div>
+                    </div>
+
+                    {/* Right: AI Narrative */}
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs font-semibold text-gray-700">
+                          <span className="flex items-center gap-1">
+                            <svg className="w-3 h-3 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                            AI-Generated Narrative (SSP-Ready)
+                          </span>
+                        </label>
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={() => refineWithAI(ctrl.control_id, 'ai_narrative')}
+                            disabled={generatingNarrative === ctrl.control_id}
+                            className="text-[10px] px-2 py-0.5 rounded bg-purple-50 text-purple-600 border border-purple-200 hover:bg-purple-100 font-medium flex items-center gap-1"
+                          >
+                            <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                            Refine with ForgeML
+                          </button>
+                          <button
+                            onClick={() => generateNarrative(ctrl.control_id)}
+                            disabled={generatingNarrative === ctrl.control_id}
+                            className="text-[10px] px-2 py-0.5 rounded bg-blue-50 text-blue-600 border border-blue-200 hover:bg-blue-100 font-medium flex items-center gap-1"
+                          >
+                            <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                            {fields?.ai_narrative ? 'Regenerate' : 'Generate'}
+                          </button>
+                        </div>
+                      </div>
+                      <textarea
+                        value={fields?.ai_narrative || ''}
+                        onChange={(e) => setEditFields(prev => ({ ...prev, [ctrl.control_id]: { ...prev[ctrl.control_id], ai_narrative: e.target.value } }))}
+                        rows={10}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-purple-500 bg-purple-50/30"
+                        placeholder="Click 'Generate' to create an AI narrative, or write your own. You can edit the AI output to ensure it reads professionally."
+                      />
+                      {generatingNarrative === ctrl.control_id && (
+                        <div className="flex items-center gap-2 mt-1 text-xs text-purple-600">
+                          <div className="w-3 h-3 border-2 border-purple-400 border-t-transparent rounded-full animate-spin" />
+                          ForgeML is generating narrative...
+                        </div>
+                      )}
+                    </div>
                   </div>
-                  <p className="text-xs text-gray-700 whitespace-pre-wrap leading-relaxed">{narrativePreview[ctrl.control_id]}</p>
+
+                  {/* Save Bar */}
+                  <div className="flex items-center justify-between mt-4 pt-3 border-t border-gray-200">
+                    <div className="text-xs text-gray-500">
+                      {impl?.updated_at && <span>Last updated: {new Date(impl.updated_at).toLocaleString()}</span>}
+                      {impl?.ai_narrative_generated_at && <span className="ml-3">AI generated: {new Date(impl.ai_narrative_generated_at).toLocaleString()}</span>}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {hasUnsavedChanges && <span className="text-xs text-amber-600 font-medium">Unsaved changes</span>}
+                      <button
+                        onClick={() => saveImplementation(ctrl.control_id)}
+                        disabled={savingImpl === ctrl.control_id || !selectedSystem}
+                        className={`px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-colors ${hasUnsavedChanges ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'} disabled:opacity-50`}
+                      >
+                        {savingImpl === ctrl.control_id ? (
+                          <><div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" /> Saving...</>
+                        ) : (
+                          <><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> Save Implementation</>
+                        )}
+                      </button>
+                    </div>
+                  </div>
                 </div>
               )}
             </div>

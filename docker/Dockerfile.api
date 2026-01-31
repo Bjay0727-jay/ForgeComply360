@@ -1,0 +1,41 @@
+# ============================================================================
+# ForgeComply 360 - API Server (On-Prem)
+# Forge Cyber Defense - SDVOSB
+# ============================================================================
+
+FROM node:20-alpine AS base
+
+# Install build dependencies for better-sqlite3
+RUN apk add --no-cache python3 make g++ sqlite
+
+WORKDIR /app
+
+# Copy package files
+COPY docker/package.json docker/package-lock.json* ./docker/
+COPY workers/ ./workers/
+COPY database/ ./database/
+COPY docker/server.js ./docker/
+
+# Install dependencies
+WORKDIR /app/docker
+RUN npm install --production
+
+# Create data directories
+RUN mkdir -p /data /data/kv /data/evidence
+
+WORKDIR /app
+
+# Copy entrypoint
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
+  CMD wget -qO- http://localhost:8787/health || exit 1
+
+EXPOSE 8787
+
+VOLUME ["/data"]
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["node", "docker/server.js"]

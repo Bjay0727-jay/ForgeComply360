@@ -161,6 +161,7 @@ async function handleRequest(request, env, url) {
   if (path === '/api/v1/ai/narrative' && method === 'POST') return handleAINarrative(request, env, org, user);
   if (path === '/api/v1/ai/documents' && method === 'GET') return handleListAIDocuments(env, url, org);
   if (path.match(/^\/api\/v1\/ai\/documents\/[\w-]+$/) && method === 'GET') return handleGetAIDocument(env, org, path.split('/').pop());
+  if (path.match(/^\/api\/v1\/ai\/documents\/[\w-]+$/) && method === 'PUT') return handleUpdateAIDocument(request, env, org, user, path.split('/').pop());
   if (path.match(/^\/api\/v1\/ai\/documents\/[\w-]+$/) && method === 'DELETE') return handleDeleteAIDocument(env, org, user, path.split('/').pop());
   if (path === '/api/v1/ai/templates' && method === 'GET') return handleListAITemplates(env, org);
   if (path === '/api/v1/ai/templates' && method === 'POST') return handleCreateAITemplate(request, env, org, user);
@@ -747,7 +748,7 @@ async function handleListImplementations(env, url, org) {
 
 async function handleUpsertImplementation(request, env, org, user) {
   const body = await request.json();
-  const { system_id, framework_id, control_id, status, implementation_description, responsible_role } = body;
+  const { system_id, framework_id, control_id, status, implementation_description, responsible_role, ai_narrative } = body;
 
   if (!system_id || !framework_id || !control_id) {
     return jsonResponse({ error: 'system_id, framework_id, and control_id are required' }, 400);
@@ -755,20 +756,26 @@ async function handleUpsertImplementation(request, env, org, user) {
 
   const id = generateId();
   await env.DB.prepare(
-    `INSERT INTO control_implementations (id, org_id, system_id, framework_id, control_id, status, implementation_description, responsible_role)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO control_implementations (id, org_id, system_id, framework_id, control_id, status, implementation_description, responsible_role, ai_narrative)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(system_id, framework_id, control_id) DO UPDATE SET
        status = COALESCE(?, status),
        implementation_description = COALESCE(?, implementation_description),
        responsible_role = COALESCE(?, responsible_role),
+       ai_narrative = COALESCE(?, ai_narrative),
        updated_at = datetime('now')`
   ).bind(
-    id, org.id, system_id, framework_id, control_id, status || 'not_implemented', implementation_description || null, responsible_role || null,
-    status || null, implementation_description || null, responsible_role || null
+    id, org.id, system_id, framework_id, control_id, status || 'not_implemented', implementation_description || null, responsible_role || null, ai_narrative || null,
+    status || null, implementation_description || null, responsible_role || null, ai_narrative || null
   ).run();
 
+  // Return the full implementation record
+  const impl = await env.DB.prepare(
+    'SELECT * FROM control_implementations WHERE system_id = ? AND framework_id = ? AND control_id = ?'
+  ).bind(system_id, framework_id, control_id).first();
+
   await auditLog(env, org.id, user.id, 'upsert', 'control_implementation', control_id, { system_id, framework_id, status });
-  return jsonResponse({ message: 'Implementation saved' }, 201);
+  return jsonResponse({ message: 'Implementation saved', implementation: impl }, 201);
 }
 
 async function handleBulkInitImplementations(request, env, org, user) {
@@ -1475,6 +1482,31 @@ async function handleGetAIDocument(env, org, id) {
   const doc = await env.DB.prepare('SELECT ad.*, u.name as created_by_name FROM ai_documents ad LEFT JOIN users u ON u.id = ad.created_by WHERE ad.id = ? AND ad.org_id = ?').bind(id, org.id).first();
   if (!doc) return jsonResponse({ error: 'Document not found' }, 404);
   return jsonResponse({ document: doc });
+}
+
+async function handleUpdateAIDocument(request, env, org, user, id) {
+  const doc = await env.DB.prepare('SELECT id FROM ai_documents WHERE id = ? AND org_id = ?').bind(id, org.id).first();
+  if (!doc) return jsonResponse({ error: 'Document not found' }, 404);
+
+  const body = await request.json();
+  const { generated_content, title, status } = body;
+
+  const updates = [];
+  const binds = [];
+
+  if (generated_content !== undefined) { updates.push('generated_content = ?'); binds.push(generated_content); }
+  if (title !== undefined) { updates.push('title = ?'); binds.push(title); }
+  if (status !== undefined) { updates.push('status = ?'); binds.push(status); }
+  updates.push("updated_at = datetime('now')");
+
+  if (updates.length === 1) return jsonResponse({ error: 'No fields to update' }, 400);
+
+  binds.push(id);
+  await env.DB.prepare(`UPDATE ai_documents SET ${updates.join(', ')} WHERE id = ?`).bind(...binds).run();
+
+  await auditLog(env, org.id, user.id, 'update', 'ai_document', id, { title, status });
+  const updated = await env.DB.prepare('SELECT ad.*, u.name as created_by_name FROM ai_documents ad LEFT JOIN users u ON u.id = ad.created_by WHERE ad.id = ?').bind(id).first();
+  return jsonResponse({ document: updated });
 }
 
 async function handleDeleteAIDocument(env, org, user, id) {

@@ -1,0 +1,13 @@
+{
+  "name": "forgecomply360-onprem",
+  "version": "5.0.0",
+  "private": true,
+  "type": "module",
+  "description": "ForgeComply 360 On-Prem API Server",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.7.0"
+  }
+}

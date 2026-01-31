@@ -241,8 +241,8 @@ The D1 database contains 20 tables:
 | `refresh_tokens` | JWT refresh token rotation |
 | `experience_configs` | Federal/Enterprise/Healthcare UX configs |
 | `compliance_frameworks` | 28 frameworks (NIST, FedRAMP, HIPAA, SOC 2, etc.) |
-| `security_controls` | 61+ controls across frameworks |
-| `control_crosswalks` | 23 cross-framework control mappings |
+| `security_controls` | 700+ controls across 8 frameworks |
+| `control_crosswalks` | 350+ cross-framework control mappings |
 | `organization_frameworks` | Per-org enabled frameworks (license-gated) |
 | `systems` | Information systems under assessment |
 | `control_implementations` | Per-system control implementation status |
@@ -309,3 +309,141 @@ The D1 database contains 20 tables:
 - D1 uses SQLite syntax, not PostgreSQL
 - `CREATE TABLE IF NOT EXISTS` and `INSERT OR REPLACE` prevent duplicate errors
 - Migrations are idempotent and safe to re-run
+
+---
+
+## On-Prem / Docker Deployment
+
+For air-gapped federal environments (SCIF, IL4/IL5 enclaves), ForgeComply 360 can run entirely on-premises using Docker.
+
+### Prerequisites
+
+- Docker Engine 24+ and Docker Compose v2
+- 8GB RAM minimum (16GB recommended for AI)
+- 20GB disk space (plus storage for evidence files)
+- (Optional) NVIDIA GPU for faster AI inference
+
+### Quick Start
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/Bjay0727-jay/ForgeComply360.git
+cd ForgeComply360
+
+# 2. Configure environment
+cp docker/.env.example docker/.env
+# Edit docker/.env - IMPORTANT: Change JWT_SECRET!
+
+# 3. Build and start all services
+cd docker
+docker-compose up -d --build
+
+# 4. Pull the AI model (first time only, ~4.7GB)
+docker exec forgecomply-ollama ollama pull llama3.1:8b
+
+# 5. Access the application
+# Open http://localhost:3000
+```
+
+### On-Prem Architecture
+
+```
+                    ┌─────────────┐
+  Browser ──────────│   nginx     │──── Static files (React SPA)
+  :3000             │  (frontend) │
+                    └──────┬──────┘
+                           │ /api/*
+                    ┌──────▼──────┐
+                    │  Node.js    │──── SQLite (D1 shim)
+                    │   (API)     │──── Filesystem (R2 shim)
+                    │  :8787      │──── File KV (KV shim)
+                    └──────┬──────┘
+                           │
+                    ┌──────▼──────┐
+                    │   Ollama    │──── llama3.1:8b model
+                    │  :11434     │     (ForgeML Writer AI)
+                    └─────────────┘
+```
+
+### Docker Services
+
+| Service | Container | Port | Purpose |
+|---------|-----------|------|---------|
+| API | forgecomply-api | 8787 | REST API with D1/R2/KV/AI shims |
+| Frontend | forgecomply-frontend | 3000 | React SPA served by nginx |
+| Ollama | forgecomply-ollama | 11434 | Local AI model inference |
+
+### Data Persistence & Backup
+
+All data is stored in Docker volumes:
+
+| Volume | Contents |
+|--------|----------|
+| `forge-data` | SQLite database, KV store, evidence files |
+| `ollama-models` | Downloaded AI models |
+
+```bash
+# Backup data
+docker-compose stop
+docker run --rm -v forge-data:/data -v $(pwd):/backup alpine \
+  tar czf /backup/forge-backup-$(date +%Y%m%d).tar.gz /data
+docker-compose start
+```
+
+### Air-Gapped Deployment
+
+For networks without internet access:
+
+```bash
+# ON INTERNET-CONNECTED MACHINE:
+cd docker
+docker-compose build
+docker save forgecomply-api forgecomply-frontend ollama/ollama:latest | gzip > forgecomply-images.tar.gz
+docker exec forgecomply-ollama ollama pull llama3.1:8b
+
+# Transfer forgecomply-images.tar.gz + docker-compose.yml + .env to air-gapped machine
+
+# ON AIR-GAPPED MACHINE:
+docker load < forgecomply-images.tar.gz
+docker-compose up -d
+```
+
+### GPU Support (Optional)
+
+Uncomment the GPU section in `docker-compose.yml` and install NVIDIA Container Toolkit:
+```yaml
+ollama:
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: 1
+            capabilities: [gpu]
+```
+
+### On-Prem Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `JWT_SECRET` | (required) | Secret key for JWT tokens. Use 64+ random characters |
+| `FRONTEND_PORT` | 3000 | Port for the web interface |
+| `API_PORT` | 8787 | Port for the API server |
+| `OLLAMA_MODEL` | llama3.1:8b | AI model for ForgeML Writer |
+| `CORS_ORIGIN` | http://localhost:3000 | Allowed CORS origin |
+
+### On-Prem Troubleshooting
+
+```bash
+# Check API logs
+docker logs forgecomply-api
+
+# Check if Ollama has the model
+docker exec forgecomply-ollama ollama list
+
+# Access SQLite directly
+docker exec -it forgecomply-api sh -c "sqlite3 /data/forge.db '.tables'"
+
+# Reset everything (WARNING: deletes all data)
+docker-compose down -v && docker-compose up -d --build
+```

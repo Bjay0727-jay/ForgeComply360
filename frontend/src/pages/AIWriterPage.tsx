@@ -63,6 +63,10 @@ export function AIWriterPage() {
   const [savingTemplate, setSavingTemplate] = useState(false);
   const [copied, setCopied] = useState(false);
   const [docFilter, setDocFilter] = useState('');
+  const [isEditing, setIsEditing] = useState(false);
+  const [editedContent, setEditedContent] = useState('');
+  const [savingDoc, setSavingDoc] = useState(false);
+  const [savedNotice, setSavedNotice] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -121,9 +125,58 @@ export function AIWriterPage() {
   };
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(generatedContent);
+    navigator.clipboard.writeText(isEditing ? editedContent : generatedContent);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleEdit = () => {
+    setEditedContent(generatedContent);
+    setIsEditing(true);
+  };
+
+  const handleSaveEdit = async () => {
+    if (!generatedDocId) return;
+    setSavingDoc(true);
+    try {
+      await api(`/api/v1/ai/documents/${generatedDocId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ generated_content: editedContent }),
+      });
+      setGeneratedContent(editedContent);
+      setIsEditing(false);
+      setSavedNotice(true);
+      setTimeout(() => setSavedNotice(false), 3000);
+      loadDocuments();
+    } catch {} finally { setSavingDoc(false); }
+  };
+
+  const handleCancelEdit = () => {
+    setIsEditing(false);
+    setEditedContent('');
+  };
+
+  const handleRefineWithAI = async () => {
+    if (!selectedTemplate && !customPrompt) return;
+    setGenerating(true);
+    try {
+      const currentText = isEditing ? editedContent : generatedContent;
+      const payload: any = {
+        custom_prompt: `You are a senior compliance consultant. Please refine and improve the following compliance document to make it more professional, specific, and suitable for federal assessors. Maintain the same structure and key points but enhance the language, add specificity, and ensure it reads as a polished final document.\n\nOriginal text to refine:\n\n${currentText}`,
+      };
+      if (selectedSystem) payload.system_id = selectedSystem;
+      const result = await api('/api/v1/ai/generate', { method: 'POST', body: JSON.stringify(payload) });
+      const refinedContent = result.document.generated_content;
+      if (isEditing) {
+        setEditedContent(refinedContent);
+      } else {
+        setGeneratedContent(refinedContent);
+        setGeneratedDocId(result.document.id);
+      }
+      loadDocuments();
+    } catch (err: any) {
+      // keep existing content
+    } finally { setGenerating(false); }
   };
 
   const handleDeleteDoc = async (id: string) => {
@@ -139,6 +192,8 @@ export function AIWriterPage() {
       const result = await api(`/api/v1/ai/documents/${id}`);
       setGeneratedContent(result.document.generated_content);
       setGeneratedDocId(result.document.id);
+      setIsEditing(false);
+      setEditedContent('');
       setActiveTab('generate');
     } catch {}
   };
@@ -344,45 +399,107 @@ export function AIWriterPage() {
           {/* Right: Output */}
           <div className="bg-white rounded-xl border border-gray-200 p-6">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="font-semibold text-gray-900">Generated Output</h2>
+              <div className="flex items-center gap-2">
+                <h2 className="font-semibold text-gray-900">Generated Output</h2>
+                {isEditing && <span className="text-xs px-2 py-0.5 bg-amber-100 text-amber-700 rounded font-medium">Editing</span>}
+                {savedNotice && <span className="text-xs px-2 py-0.5 bg-green-100 text-green-700 rounded font-medium">Saved</span>}
+              </div>
               {generatedContent && (
-                <div className="flex gap-2">
+                <div className="flex gap-1.5">
                   <button
                     onClick={handleCopy}
-                    className="px-3 py-1.5 text-xs font-medium text-gray-600 bg-gray-100 rounded-md hover:bg-gray-200 flex items-center gap-1"
+                    className="px-2.5 py-1.5 text-xs font-medium text-gray-600 bg-gray-100 rounded-md hover:bg-gray-200 flex items-center gap-1"
                   >
                     <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
                     </svg>
                     {copied ? 'Copied!' : 'Copy'}
                   </button>
-                  <button
-                    onClick={handleGenerate}
-                    disabled={generating}
-                    className="px-3 py-1.5 text-xs font-medium text-blue-600 bg-blue-50 rounded-md hover:bg-blue-100 flex items-center gap-1"
-                  >
-                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                    </svg>
-                    Regenerate
-                  </button>
+                  {!isEditing ? (
+                    <>
+                      <button
+                        onClick={handleEdit}
+                        className="px-2.5 py-1.5 text-xs font-medium text-amber-700 bg-amber-50 rounded-md hover:bg-amber-100 flex items-center gap-1"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+                        Edit
+                      </button>
+                      <button
+                        onClick={handleRefineWithAI}
+                        disabled={generating}
+                        className="px-2.5 py-1.5 text-xs font-medium text-purple-700 bg-purple-50 rounded-md hover:bg-purple-100 flex items-center gap-1"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                        Refine with ForgeML
+                      </button>
+                      <button
+                        onClick={handleGenerate}
+                        disabled={generating}
+                        className="px-2.5 py-1.5 text-xs font-medium text-blue-600 bg-blue-50 rounded-md hover:bg-blue-100 flex items-center gap-1"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                        Regenerate
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        onClick={handleRefineWithAI}
+                        disabled={generating}
+                        className="px-2.5 py-1.5 text-xs font-medium text-purple-700 bg-purple-50 rounded-md hover:bg-purple-100 flex items-center gap-1"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                        Refine with ForgeML
+                      </button>
+                      <button
+                        onClick={handleSaveEdit}
+                        disabled={savingDoc}
+                        className="px-2.5 py-1.5 text-xs font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 flex items-center gap-1 disabled:opacity-50"
+                      >
+                        {savingDoc ? (
+                          <><div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" /> Saving...</>
+                        ) : (
+                          <><svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> Save</>
+                        )}
+                      </button>
+                      <button
+                        onClick={handleCancelEdit}
+                        className="px-2.5 py-1.5 text-xs font-medium text-gray-600 bg-gray-100 rounded-md hover:bg-gray-200"
+                      >
+                        Cancel
+                      </button>
+                    </>
+                  )}
                 </div>
               )}
             </div>
 
             {generatedContent ? (
-              <div className="prose prose-sm max-w-none">
-                <div className="bg-gray-50 rounded-lg p-4 border border-gray-100 whitespace-pre-wrap text-sm text-gray-800 leading-relaxed max-h-[600px] overflow-y-auto">
-                  {generatedContent}
+              isEditing ? (
+                <div>
+                  <textarea
+                    value={editedContent}
+                    onChange={(e) => setEditedContent(e.target.value)}
+                    className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm text-gray-800 leading-relaxed focus:ring-2 focus:ring-blue-500 focus:border-blue-500 min-h-[500px] max-h-[700px] font-mono"
+                    style={{ height: '500px' }}
+                  />
+                  <p className="text-xs text-gray-400 mt-2">Edit the content above to refine the document. Click "Refine with ForgeML" to use AI to improve the text, or "Save" to persist your changes.</p>
                 </div>
-              </div>
+              ) : (
+                <div className="prose prose-sm max-w-none">
+                  <div className="bg-gray-50 rounded-lg p-4 border border-gray-100 whitespace-pre-wrap text-sm text-gray-800 leading-relaxed max-h-[600px] overflow-y-auto">
+                    {generatedContent}
+                  </div>
+                  <p className="text-xs text-gray-400 mt-2">Click "Edit" to modify this document, or "Refine with ForgeML" to use AI to improve the language and professionalism.</p>
+                </div>
+              )
             ) : (
               <div className="flex flex-col items-center justify-center py-16 text-gray-400">
                 <svg className="w-12 h-12 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                 </svg>
                 <p className="text-sm">Select a template and click Generate</p>
-                <p className="text-xs mt-1">AI-generated content will appear here</p>
+                <p className="text-xs mt-1">AI-generated content will appear here for editing</p>
               </div>
             )}
           </div>

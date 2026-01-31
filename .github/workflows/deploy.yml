@@ -76,3 +76,8 @@ jobs:
         run: wrangler d1 execute forge-comply360-db --remote --file=database/seed.sql
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+      - name: Seed Expanded Controls
+        run: wrangler d1 execute forge-comply360-db --remote --file=database/seed-controls-expanded.sql
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
