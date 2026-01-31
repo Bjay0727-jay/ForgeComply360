@@ -2,7 +2,7 @@ name: Deploy ForgeComply 360
 
 on:
   push:
-    branches: [main, staging]
+    branches: [main]
   workflow_dispatch:
 
 jobs:
@@ -12,26 +12,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Deploy to Staging
-        if: github.ref == 'refs/heads/staging'
+      - name: Deploy Worker
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          command: deploy --env staging
-
-      - name: Deploy to Production
-        if: github.ref == 'refs/heads/main'
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          wranglerVersion: '3.114.17'
           command: deploy --env production
 
   deploy-frontend:
@@ -57,7 +42,8 @@ jobs:
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          command: pages deploy frontend/dist --project-name=forgecomply360 --branch=${{ github.ref_name }}
+          wranglerVersion: '3.114.17'
+          command: pages deploy frontend/dist --project-name=forgecomply360 --branch=main
 
   migrate-db:
     name: Run Database Migrations
@@ -66,30 +52,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Migrate Staging DB
-        if: github.ref == 'refs/heads/staging'
+      - name: Migrate DB
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          wranglerVersion: '3.114.17'
           command: d1 execute forge-comply360-db --remote --file=database/schema.sql
 
-      - name: Seed Staging DB
-        if: github.ref == 'refs/heads/staging'
+      - name: Seed DB
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          command: d1 execute forge-comply360-db --remote --file=database/seed.sql
-
-      - name: Migrate Production DB
-        if: github.ref == 'refs/heads/main'
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          command: d1 execute forge-comply360-db --remote --file=database/schema.sql
-
-      - name: Seed Production DB
-        if: github.ref == 'refs/heads/main'
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          wranglerVersion: '3.114.17'
           command: d1 execute forge-comply360-db --remote --file=database/seed.sql
