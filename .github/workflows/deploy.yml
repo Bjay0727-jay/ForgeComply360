@@ -12,12 +12,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Deploy Worker
-        uses: cloudflare/wrangler-action@v3
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          wranglerVersion: '3.114.17'
-          command: deploy --env production
+          node-version: '20'
+
+      - name: Install Wrangler
+        run: npm install -g wrangler@3
+
+      - name: Deploy Worker
+        run: wrangler deploy --env production
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
   deploy-frontend:
     name: Deploy Frontend (Pages)
@@ -38,12 +44,13 @@ jobs:
         env:
           VITE_API_URL: https://forge-comply360-api.stanley-riley.workers.dev
 
+      - name: Install Wrangler
+        run: npm install -g wrangler@3
+
       - name: Deploy to Cloudflare Pages
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          wranglerVersion: '3.114.17'
-          command: pages deploy frontend/dist --project-name=forgecomply360 --branch=main
+        run: wrangler pages deploy frontend/dist --project-name=forgecomply360 --branch=main
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
   migrate-db:
     name: Run Database Migrations
@@ -52,16 +59,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Migrate DB
-        uses: cloudflare/wrangler-action@v3
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          wranglerVersion: '3.114.17'
-          command: d1 execute forge-comply360-db --remote --file=database/schema.sql
+          node-version: '20'
+
+      - name: Install Wrangler
+        run: npm install -g wrangler@3
+
+      - name: Migrate DB
+        run: wrangler d1 execute forge-comply360-db --remote --file=database/schema.sql
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
       - name: Seed DB
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          wranglerVersion: '3.114.17'
-          command: d1 execute forge-comply360-db --remote --file=database/seed.sql
+        run: wrangler d1 execute forge-comply360-db --remote --file=database/seed.sql
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
