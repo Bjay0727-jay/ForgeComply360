@@ -482,3 +482,45 @@ CREATE TABLE IF NOT EXISTS ai_documents (
 CREATE INDEX IF NOT EXISTS idx_ai_docs_org ON ai_documents(org_id);
 CREATE INDEX IF NOT EXISTS idx_ai_docs_system ON ai_documents(system_id);
 CREATE INDEX IF NOT EXISTS idx_ai_docs_template ON ai_documents(template_type);
+
+-- ============================================================================
+-- MONITORING CHECK RESULTS (ControlPulse)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS monitoring_check_results (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  check_id TEXT NOT NULL REFERENCES monitoring_checks(id) ON DELETE CASCADE,
+  org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  result TEXT NOT NULL CHECK (result IN ('pass', 'fail', 'warning', 'error')),
+  notes TEXT,
+  run_by TEXT NOT NULL REFERENCES users(id),
+  run_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_check_results_check ON monitoring_check_results(check_id);
+CREATE INDEX IF NOT EXISTS idx_check_results_org ON monitoring_check_results(org_id);
+
+-- ============================================================================
+-- COMPLIANCE SNAPSHOTS (Dashboard Analytics)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS compliance_snapshots (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  system_id TEXT NOT NULL REFERENCES systems(id) ON DELETE CASCADE,
+  framework_id TEXT NOT NULL REFERENCES compliance_frameworks(id),
+  snapshot_date TEXT NOT NULL,
+  total_controls INTEGER DEFAULT 0,
+  implemented INTEGER DEFAULT 0,
+  partially_implemented INTEGER DEFAULT 0,
+  planned INTEGER DEFAULT 0,
+  not_applicable INTEGER DEFAULT 0,
+  not_implemented INTEGER DEFAULT 0,
+  compliance_percentage REAL DEFAULT 0,
+  metadata TEXT DEFAULT '{}',
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(org_id, system_id, framework_id, snapshot_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_snapshots_org ON compliance_snapshots(org_id);
+CREATE INDEX IF NOT EXISTS idx_snapshots_date ON compliance_snapshots(snapshot_date);

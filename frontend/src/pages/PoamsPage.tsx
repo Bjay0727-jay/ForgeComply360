@@ -1,9 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { useExperience } from '../hooks/useExperience';
+import { useAuth } from '../hooks/useAuth';
 import { api } from '../utils/api';
 
 export function PoamsPage() {
   const { t, nav, isFederal } = useExperience();
+  const { canEdit } = useAuth();
   const [poams, setPoams] = useState<any[]>([]);
   const [systems, setSystems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -39,7 +41,7 @@ export function PoamsPage() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <div><h1 className="text-2xl font-bold text-gray-900">{title}</h1><p className="text-gray-500 text-sm mt-1">Track {isFederal ? 'weaknesses and milestones' : 'findings and remediation'}</p></div>
-        <button onClick={() => setShowCreate(true)} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">+ New {t('milestone')}</button>
+        {canEdit && <button onClick={() => setShowCreate(true)} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">+ New {t('milestone')}</button>}
       </div>
 
       {showCreate && (
@@ -86,9 +88,13 @@ export function PoamsPage() {
                     {p.responsible_party && <span>Owner: {p.responsible_party}</span>}
                   </div>
                 </div>
-                <select value={p.status} onChange={(e) => updateStatus(p.id, e.target.value)} className={`text-xs px-2 py-1.5 rounded-lg border font-medium ${statusColor(p.status)}`}>
-                  <option value="open">Open</option><option value="in_progress">In Progress</option><option value="completed">Completed</option><option value="accepted">Accepted</option><option value="deferred">Deferred</option>
-                </select>
+                {canEdit ? (
+                  <select value={p.status} onChange={(e) => updateStatus(p.id, e.target.value)} className={`text-xs px-2 py-1.5 rounded-lg border font-medium ${statusColor(p.status)}`}>
+                    <option value="open">Open</option><option value="in_progress">In Progress</option><option value="completed">Completed</option><option value="accepted">Accepted</option><option value="deferred">Deferred</option>
+                  </select>
+                ) : (
+                  <span className={`text-xs px-2 py-1.5 rounded-lg border font-medium ${statusColor(p.status)}`}>{p.status}</span>
+                )}
               </div>
             </div>
           ))}

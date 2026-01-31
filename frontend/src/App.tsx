@@ -17,6 +17,8 @@ import { VendorsPage } from './pages/VendorsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { CrosswalksPage } from './pages/CrosswalksPage';
 import { AIWriterPage } from './pages/AIWriterPage';
+import { MonitoringPage } from './pages/MonitoringPage';
+import { UsersPage } from './pages/UsersPage';
 
 function AppRoutes() {
   const { user, org, loading } = useAuth();
@@ -65,6 +67,8 @@ function AppRoutes() {
           <Route path="/vendors" element={<VendorsPage />} />
           <Route path="/crosswalks" element={<CrosswalksPage />} />
           <Route path="/ai-writer" element={<AIWriterPage />} />
+          <Route path="/monitoring" element={<MonitoringPage />} />
+          <Route path="/users" element={<UsersPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

@@ -1,9 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { useExperience } from '../hooks/useExperience';
+import { useAuth } from '../hooks/useAuth';
 import { api } from '../utils/api';
 
 export function RisksPage() {
   const { t, nav } = useExperience();
+  const { canManage } = useAuth();
   const [risks, setRisks] = useState<any[]>([]);
   const [systems, setSystems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -27,7 +29,7 @@ export function RisksPage() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <div><h1 className="text-2xl font-bold text-gray-900">{nav('risks')} (RiskForge ERM)</h1><p className="text-gray-500 text-sm mt-1">Identify, assess, and manage organizational {t('risk').toLowerCase()}s</p></div>
-        <button onClick={() => setShowCreate(true)} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">+ New {t('risk')}</button>
+        {canManage && <button onClick={() => setShowCreate(true)} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">+ New {t('risk')}</button>}
       </div>
 
       {showCreate && (

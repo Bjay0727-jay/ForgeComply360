@@ -1,9 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { useExperience } from '../hooks/useExperience';
+import { useAuth } from '../hooks/useAuth';
 import { api } from '../utils/api';
 
 export function SystemsPage() {
   const { t, nav } = useExperience();
+  const { canManage } = useAuth();
   const [systems, setSystems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
@@ -36,9 +38,11 @@ export function SystemsPage() {
           <h1 className="text-2xl font-bold text-gray-900">{nav('systems')}</h1>
           <p className="text-gray-500 text-sm mt-1">Manage your {t('system').toLowerCase()}s</p>
         </div>
-        <button onClick={() => setShowCreate(true)} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">
-          + New {t('system')}
-        </button>
+        {canManage && (
+          <button onClick={() => setShowCreate(true)} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">
+            + New {t('system')}
+          </button>
+        )}
       </div>
 
       {showCreate && (

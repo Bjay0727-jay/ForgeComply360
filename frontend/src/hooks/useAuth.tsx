@@ -26,6 +26,9 @@ interface AuthContextType {
   register: (data: RegisterData) => Promise<void>;
   logout: () => void;
   refreshUser: () => Promise<void>;
+  canEdit: boolean;
+  canManage: boolean;
+  isAdmin: boolean;
 }
 
 interface RegisterData {
@@ -92,8 +95,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setOrg(null);
   };
 
+  const canEdit = ['analyst', 'manager', 'admin', 'owner'].includes(user?.role || '');
+  const canManage = ['manager', 'admin', 'owner'].includes(user?.role || '');
+  const isAdmin = ['admin', 'owner'].includes(user?.role || '');
+
   return (
-    <AuthContext.Provider value={{ user, org, loading, login, register, logout, refreshUser }}>
+    <AuthContext.Provider value={{ user, org, loading, login, register, logout, refreshUser, canEdit, canManage, isAdmin }}>
       {children}
     </AuthContext.Provider>
   );

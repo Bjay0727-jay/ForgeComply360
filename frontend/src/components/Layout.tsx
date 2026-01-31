@@ -3,6 +3,8 @@ import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { useExperience } from '../hooks/useExperience';
 
+const ROLE_HIERARCHY: Record<string, number> = { viewer: 0, analyst: 1, manager: 2, admin: 3, owner: 4 };
+
 const NAV_ITEMS = [
   { key: 'dashboard', path: '/', icon: 'M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6' },
   { key: 'systems', path: '/systems', icon: 'M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01' },
@@ -15,7 +17,16 @@ const NAV_ITEMS = [
   { key: 'vendors', path: '/vendors', icon: 'M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4' },
   { key: 'crosswalks', path: '/crosswalks', icon: 'M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4', label: 'Crosswalks' },
   { key: 'aiWriter', path: '/ai-writer', icon: 'M13 10V3L4 14h7v7l9-11h-7z', label: 'ForgeML Writer' },
-] as const;
+  { key: 'users', path: '/users', icon: 'M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z', label: 'Users', minRole: 'admin' },
+];
+
+const roleBadgeColors: Record<string, string> = {
+  owner: 'bg-amber-400/20 text-amber-300',
+  admin: 'bg-red-400/20 text-red-300',
+  manager: 'bg-blue-400/20 text-blue-300',
+  analyst: 'bg-green-400/20 text-green-300',
+  viewer: 'bg-gray-400/20 text-gray-300',
+};
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const { user, org, logout } = useAuth();
@@ -27,6 +38,12 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const brandBg = isFederal ? 'bg-blue-900' : isHealthcare ? 'bg-purple-900' : 'bg-gray-900';
   const brandHover = isFederal ? 'hover:bg-blue-800' : isHealthcare ? 'hover:bg-purple-800' : 'hover:bg-gray-800';
   const brandActive = isFederal ? 'bg-blue-800' : isHealthcare ? 'bg-purple-800' : 'bg-gray-800';
+
+  const userRoleLevel = ROLE_HIERARCHY[user?.role || 'viewer'] ?? 0;
+  const visibleNavItems = NAV_ITEMS.filter(item => {
+    if (!('minRole' in item) || !item.minRole) return true;
+    return userRoleLevel >= (ROLE_HIERARCHY[item.minRole] ?? 99);
+  });
 
   return (
     <div className="min-h-screen flex">
@@ -51,9 +68,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
           {/* Nav */}
           <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
-            {NAV_ITEMS.map((item) => {
+            {visibleNavItems.map((item) => {
               const isActive = item.path === '/' ? location.pathname === '/' : location.pathname.startsWith(item.path);
-              const label = 'label' in item ? item.label : nav(item.key as any);
+              const label = 'label' in item && item.label ? item.label : nav(item.key as any);
               return (
                 <Link
                   key={item.key}
@@ -82,7 +99,12 @@ export function Layout({ children }: { children: React.ReactNode }) {
               {nav('settings')}
             </Link>
             <div className="px-3 py-2 mt-1">
-              <p className="text-sm font-medium text-white/90 truncate">{user?.name}</p>
+              <div className="flex items-center gap-2">
+                <p className="text-sm font-medium text-white/90 truncate">{user?.name}</p>
+                <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${roleBadgeColors[user?.role || 'viewer'] || roleBadgeColors.viewer}`}>
+                  {user?.role}
+                </span>
+              </div>
               <p className="text-xs text-white/50 truncate">{org?.name}</p>
             </div>
             <button

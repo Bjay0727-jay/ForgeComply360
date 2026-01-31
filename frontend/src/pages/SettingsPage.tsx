@@ -4,7 +4,7 @@ import { useExperience } from '../hooks/useExperience';
 import { api } from '../utils/api';
 
 export function SettingsPage() {
-  const { org, refreshUser } = useAuth();
+  const { org, refreshUser, isAdmin, canManage } = useAuth();
   const { config, isFederal, isHealthcare, isEnterprise } = useExperience();
   const [frameworks, setFrameworks] = useState<any[]>([]);
   const [enabledFrameworks, setEnabledFrameworks] = useState<any[]>([]);
@@ -58,22 +58,24 @@ export function SettingsPage() {
       </div>
 
       {/* Experience Type */}
-      <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
-        <h2 className="font-semibold text-gray-900 mb-4">Experience Type</h2>
-        <p className="text-sm text-gray-500 mb-4">This controls your terminology, workflows, dashboards, and document templates.</p>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          {[
-            { type: 'federal', name: 'Federal', desc: 'ATO, RMF, POA&M terminology. For FedRAMP, CMMC, FISMA.', color: 'blue' },
-            { type: 'enterprise', name: 'Enterprise', desc: 'Audit, compliance terminology. For SOC 2, ISO, PCI DSS.', color: 'indigo' },
-            { type: 'healthcare', name: 'Healthcare', desc: 'PHI, safeguard terminology. For HIPAA, HITRUST.', color: 'purple' },
-          ].map((exp) => (
-            <button key={exp.type} onClick={() => updateExperience(exp.type)} className={`p-4 rounded-lg border text-left transition-all ${experienceType === exp.type ? `border-${exp.color}-600 bg-${exp.color}-50 ring-2 ring-${exp.color}-600` : 'border-gray-200 hover:border-gray-300'}`}>
-              <p className="font-medium text-gray-900">{exp.name}</p>
-              <p className="text-xs text-gray-500 mt-1">{exp.desc}</p>
-            </button>
-          ))}
+      {isAdmin && (
+        <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
+          <h2 className="font-semibold text-gray-900 mb-4">Experience Type</h2>
+          <p className="text-sm text-gray-500 mb-4">This controls your terminology, workflows, dashboards, and document templates.</p>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            {[
+              { type: 'federal', name: 'Federal', desc: 'ATO, RMF, POA&M terminology. For FedRAMP, CMMC, FISMA.', color: 'blue' },
+              { type: 'enterprise', name: 'Enterprise', desc: 'Audit, compliance terminology. For SOC 2, ISO, PCI DSS.', color: 'indigo' },
+              { type: 'healthcare', name: 'Healthcare', desc: 'PHI, safeguard terminology. For HIPAA, HITRUST.', color: 'purple' },
+            ].map((exp) => (
+              <button key={exp.type} onClick={() => updateExperience(exp.type)} className={`p-4 rounded-lg border text-left transition-all ${experienceType === exp.type ? `border-${exp.color}-600 bg-${exp.color}-50 ring-2 ring-${exp.color}-600` : 'border-gray-200 hover:border-gray-300'}`}>
+                <p className="font-medium text-gray-900">{exp.name}</p>
+                <p className="text-xs text-gray-500 mt-1">{exp.desc}</p>
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Subscription */}
       {subscription && (
@@ -108,10 +110,16 @@ export function SettingsPage() {
                       <p className="font-medium text-gray-900 text-sm">{fw.name} <span className="text-xs text-gray-400">v{fw.version}</span></p>
                       <p className="text-xs text-gray-500">{fw.description} {fw.control_count > 0 && `(${fw.control_count} controls)`}</p>
                     </div>
-                    <button onClick={() => enabled ? disableFramework(fw.id) : enableFramework(fw.id)}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-medium ${enabled ? 'bg-green-100 text-green-700 hover:bg-red-100 hover:text-red-700' : 'bg-gray-100 text-gray-600 hover:bg-blue-100 hover:text-blue-600'}`}>
-                      {enabled ? 'Enabled' : 'Enable'}
-                    </button>
+                    {canManage ? (
+                      <button onClick={() => enabled ? disableFramework(fw.id) : enableFramework(fw.id)}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-medium ${enabled ? 'bg-green-100 text-green-700 hover:bg-red-100 hover:text-red-700' : 'bg-gray-100 text-gray-600 hover:bg-blue-100 hover:text-blue-600'}`}>
+                        {enabled ? 'Enabled' : 'Enable'}
+                      </button>
+                    ) : (
+                      <span className={`px-3 py-1.5 rounded-lg text-xs font-medium ${enabled ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>
+                        {enabled ? 'Enabled' : 'Disabled'}
+                      </span>
+                    )}
                   </div>
                 );
               })}

@@ -1,9 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { useExperience } from '../hooks/useExperience';
+import { useAuth } from '../hooks/useAuth';
 import { api } from '../utils/api';
+import { exportSSPPackageDoc } from '../utils/exportHelpers';
 
 export function SSPPage() {
   const { t, nav, isFederal } = useExperience();
+  const { canEdit } = useAuth();
   const [documents, setDocuments] = useState<any[]>([]);
   const [frameworks, setFrameworks] = useState<any[]>([]);
   const [systems, setSystems] = useState<any[]>([]);
@@ -80,7 +83,23 @@ export function SSPPage() {
         <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
           <div className="flex items-center justify-between mb-4">
             <h2 className="font-semibold text-gray-900">OSCAL Output</h2>
-            <button onClick={downloadOscal} className="px-3 py-1.5 bg-green-600 text-white rounded-lg text-xs font-medium hover:bg-green-700">Download JSON</button>
+            <div className="flex gap-2">
+              <button
+                onClick={async () => {
+                  try {
+                    const impls = await api(`/api/v1/implementations?system_id=${selectedSystem}&framework_id=${selectedFw}`);
+                    const sys = systems.find(s => s.id === selectedSystem);
+                    const fw = frameworks.find(f => f.id === selectedFw);
+                    exportSSPPackageDoc(sys?.name || 'System', fw?.name || 'Framework', impls.implementations, 'Organization');
+                  } catch {}
+                }}
+                className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-medium hover:bg-blue-700 flex items-center gap-1"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                Export DOCX Package
+              </button>
+              <button onClick={downloadOscal} className="px-3 py-1.5 bg-green-600 text-white rounded-lg text-xs font-medium hover:bg-green-700">Download JSON</button>
+            </div>
           </div>
           <pre className="bg-gray-900 text-green-400 rounded-lg p-4 text-xs overflow-auto max-h-64 font-mono">
             {JSON.stringify(generatedOscal, null, 2)}

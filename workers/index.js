@@ -110,7 +110,9 @@ async function handleRequest(request, env, url) {
   if (path === '/api/v1/implementations' && method === 'GET') return handleListImplementations(env, url, org);
   if (path === '/api/v1/implementations' && method === 'POST') return handleUpsertImplementation(request, env, org, user);
   if (path === '/api/v1/implementations/bulk' && method === 'POST') return handleBulkInitImplementations(request, env, org, user);
+  if (path === '/api/v1/implementations/bulk-update' && method === 'POST') return handleBulkUpdateImplementations(request, env, org, user);
   if (path === '/api/v1/implementations/stats' && method === 'GET') return handleImplementationStats(env, url, org);
+  if (path.match(/^\/api\/v1\/implementations\/[\w-]+\/evidence$/) && method === 'GET') return handleGetImplementationEvidence(env, org, path.split('/')[4]);
 
   // POA&Ms
   if (path === '/api/v1/poams' && method === 'GET') return handleListPoams(env, url, org);
@@ -142,7 +144,15 @@ async function handleRequest(request, env, url) {
 
   // Monitoring (ControlPulse CCM)
   if (path === '/api/v1/monitoring/checks' && method === 'GET') return handleListMonitoringChecks(env, org);
+  if (path === '/api/v1/monitoring/checks' && method === 'POST') return handleCreateMonitoringCheck(request, env, org, user);
+  if (path.match(/^\/api\/v1\/monitoring\/checks\/[\w-]+$/) && method === 'PUT') return handleUpdateMonitoringCheck(request, env, org, user, path.split('/').pop());
+  if (path.match(/^\/api\/v1\/monitoring\/checks\/[\w-]+\/run$/) && method === 'POST') return handleRunMonitoringCheck(request, env, org, user, path.split('/')[5]);
+  if (path.match(/^\/api\/v1\/monitoring\/checks\/[\w-]+\/results$/) && method === 'GET') return handleGetCheckResults(env, org, path.split('/')[5]);
   if (path === '/api/v1/monitoring/dashboard' && method === 'GET') return handleMonitoringDashboard(env, org);
+
+  // User Management
+  if (path === '/api/v1/users' && method === 'GET') return handleListUsers(env, org, user);
+  if (path.match(/^\/api\/v1\/users\/[\w-]+\/role$/) && method === 'PUT') return handleUpdateUserRole(request, env, org, user, path.split('/')[4]);
 
   // User / Onboarding
   if (path === '/api/v1/user/onboarding' && method === 'POST') return handleCompleteOnboarding(request, env, user);
@@ -152,6 +162,9 @@ async function handleRequest(request, env, url) {
 
   // Dashboard stats
   if (path === '/api/v1/dashboard/stats' && method === 'GET') return handleDashboardStats(env, org);
+  if (path === '/api/v1/dashboard/framework-stats' && method === 'GET') return handleFrameworkStats(env, org);
+  if (path === '/api/v1/compliance/snapshot' && method === 'POST') return handleCreateComplianceSnapshot(request, env, org, user);
+  if (path === '/api/v1/compliance/trends' && method === 'GET') return handleGetComplianceTrends(env, url, org);
 
   // Audit log
   if (path === '/api/v1/audit-log' && method === 'GET') return handleGetAuditLog(env, url, org);
@@ -159,6 +172,7 @@ async function handleRequest(request, env, url) {
   // ForgeML AI Writer
   if (path === '/api/v1/ai/generate' && method === 'POST') return handleAIGenerate(request, env, org, user);
   if (path === '/api/v1/ai/narrative' && method === 'POST') return handleAINarrative(request, env, org, user);
+  if (path === '/api/v1/ai/narrative/bulk' && method === 'POST') return handleBulkAINarrative(request, env, org, user);
   if (path === '/api/v1/ai/documents' && method === 'GET') return handleListAIDocuments(env, url, org);
   if (path.match(/^\/api\/v1\/ai\/documents\/[\w-]+$/) && method === 'GET') return handleGetAIDocument(env, org, path.split('/').pop());
   if (path.match(/^\/api\/v1\/ai\/documents\/[\w-]+$/) && method === 'PUT') return handleUpdateAIDocument(request, env, org, user, path.split('/').pop());
@@ -288,6 +302,17 @@ function generateSalt() {
   return Array.from(crypto.getRandomValues(new Uint8Array(32)))
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
+}
+
+// ============================================================================
+// ROLE-BASED ACCESS CONTROL (RBAC)
+// ============================================================================
+
+const ROLE_HIERARCHY = { viewer: 0, analyst: 1, manager: 2, admin: 3, owner: 4 };
+
+function requireRole(user, minimumRole) {
+  if (ROLE_HIERARCHY[user.role] === undefined || ROLE_HIERARCHY[minimumRole] === undefined) return false;
+  return ROLE_HIERARCHY[user.role] >= ROLE_HIERARCHY[minimumRole];
 }
 
 // ============================================================================
@@ -472,7 +497,7 @@ async function handleGetExperience(env, org) {
 }
 
 async function handleUpdateExperience(request, env, org, user) {
-  if (!['admin', 'owner'].includes(user.role)) return jsonResponse({ error: 'Forbidden' }, 403);
+  if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
   const { experience_type } = await request.json();
   if (!['federal', 'enterprise', 'healthcare', 'custom'].includes(experience_type)) {
     return jsonResponse({ error: 'Invalid experience type' }, 400);
@@ -488,7 +513,7 @@ async function handleUpdateExperience(request, env, org, user) {
 // ============================================================================
 
 async function handleUpdateOrg(request, env, org, user) {
-  if (!['admin', 'owner'].includes(user.role)) return jsonResponse({ error: 'Forbidden' }, 403);
+  if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
   const body = await request.json();
   const { name, industry, size } = body;
 
@@ -539,7 +564,7 @@ async function handleListEnabledFrameworks(env, org) {
 }
 
 async function handleEnableFramework(request, env, org, user) {
-  if (!['admin', 'owner', 'manager'].includes(user.role)) return jsonResponse({ error: 'Forbidden' }, 403);
+  if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Forbidden' }, 403);
   const { framework_id, is_primary } = await request.json();
 
   // Check framework limit
@@ -567,7 +592,7 @@ async function handleEnableFramework(request, env, org, user) {
 }
 
 async function handleDisableFramework(request, env, org, user) {
-  if (!['admin', 'owner'].includes(user.role)) return jsonResponse({ error: 'Forbidden' }, 403);
+  if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
   const { framework_id } = await request.json();
   await env.DB.prepare('UPDATE organization_frameworks SET enabled = 0 WHERE org_id = ? AND framework_id = ?')
     .bind(org.id, framework_id).run();
@@ -660,6 +685,7 @@ async function handleListSystems(env, org) {
 }
 
 async function handleCreateSystem(request, env, org, user) {
+  if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Forbidden' }, 403);
   const body = await request.json();
   const { name, acronym, description, impact_level, deployment_model, service_model } = body;
   if (!name) return jsonResponse({ error: 'System name is required' }, 400);
@@ -688,6 +714,7 @@ async function handleGetSystem(env, org, systemId) {
 }
 
 async function handleUpdateSystem(request, env, org, user, systemId) {
+  if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Forbidden' }, 403);
   const body = await request.json();
   const system = await env.DB.prepare('SELECT * FROM systems WHERE id = ? AND org_id = ?').bind(systemId, org.id).first();
   if (!system) return jsonResponse({ error: 'System not found' }, 404);
@@ -716,7 +743,7 @@ async function handleUpdateSystem(request, env, org, user, systemId) {
 }
 
 async function handleDeleteSystem(env, org, user, systemId) {
-  if (!['admin', 'owner'].includes(user.role)) return jsonResponse({ error: 'Forbidden' }, 403);
+  if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
   const system = await env.DB.prepare('SELECT * FROM systems WHERE id = ? AND org_id = ?').bind(systemId, org.id).first();
   if (!system) return jsonResponse({ error: 'System not found' }, 404);
 
@@ -747,6 +774,7 @@ async function handleListImplementations(env, url, org) {
 }
 
 async function handleUpsertImplementation(request, env, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
   const body = await request.json();
   const { system_id, framework_id, control_id, status, implementation_description, responsible_role, ai_narrative } = body;
 
@@ -779,6 +807,7 @@ async function handleUpsertImplementation(request, env, org, user) {
 }
 
 async function handleBulkInitImplementations(request, env, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
   const { system_id, framework_id } = await request.json();
   if (!system_id || !framework_id) return jsonResponse({ error: 'system_id and framework_id required' }, 400);
 
@@ -843,6 +872,7 @@ async function handleListPoams(env, url, org) {
 }
 
 async function handleCreatePoam(request, env, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
   const body = await request.json();
   const { system_id, weakness_name, weakness_description, control_id, framework_id, risk_level, scheduled_completion, responsible_party } = body;
   if (!system_id || !weakness_name) return jsonResponse({ error: 'system_id and weakness_name required' }, 400);
@@ -861,6 +891,7 @@ async function handleCreatePoam(request, env, org, user) {
 }
 
 async function handleUpdatePoam(request, env, org, user, poamId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
   const body = await request.json();
   const poam = await env.DB.prepare('SELECT * FROM poams WHERE id = ? AND org_id = ?').bind(poamId, org.id).first();
   if (!poam) return jsonResponse({ error: 'POA&M not found' }, 404);
@@ -900,6 +931,7 @@ async function handleListEvidence(env, org) {
 }
 
 async function handleUploadEvidence(request, env, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
   const formData = await request.formData();
   const file = formData.get('file');
   const title = formData.get('title') || file.name;
@@ -946,6 +978,7 @@ async function handleDownloadEvidence(env, org, evidenceId) {
 }
 
 async function handleLinkEvidence(request, env, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
   const { evidence_id, implementation_id } = await request.json();
   if (!evidence_id || !implementation_id) return jsonResponse({ error: 'evidence_id and implementation_id required' }, 400);
 
@@ -962,6 +995,7 @@ async function handleLinkEvidence(request, env, org, user) {
 // ============================================================================
 
 async function handleGenerateSSP(request, env, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
   const { system_id, framework_id } = await request.json();
   if (!system_id || !framework_id) return jsonResponse({ error: 'system_id and framework_id required' }, 400);
 
@@ -1073,6 +1107,7 @@ async function handleListRisks(env, org) {
 }
 
 async function handleCreateRisk(request, env, org, user) {
+  if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Forbidden' }, 403);
   const body = await request.json();
   const { system_id, title, description, category, likelihood, impact, treatment, treatment_plan, owner } = body;
   if (!title) return jsonResponse({ error: 'Title is required' }, 400);
@@ -1092,6 +1127,7 @@ async function handleCreateRisk(request, env, org, user) {
 }
 
 async function handleUpdateRisk(request, env, org, user, riskId) {
+  if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Forbidden' }, 403);
   const body = await request.json();
   const risk = await env.DB.prepare('SELECT * FROM risks WHERE id = ? AND org_id = ?').bind(riskId, org.id).first();
   if (!risk) return jsonResponse({ error: 'Risk not found' }, 404);
@@ -1128,6 +1164,7 @@ async function handleListVendors(env, org) {
 }
 
 async function handleCreateVendor(request, env, org, user) {
+  if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Forbidden' }, 403);
   const body = await request.json();
   const { name, description, category, criticality, contact_name, contact_email, contract_start, contract_end, data_classification, has_baa } = body;
   if (!name) return jsonResponse({ error: 'Vendor name required' }, 400);
@@ -1144,6 +1181,7 @@ async function handleCreateVendor(request, env, org, user) {
 }
 
 async function handleUpdateVendor(request, env, org, user, vendorId) {
+  if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Forbidden' }, 403);
   const body = await request.json();
   const vendor = await env.DB.prepare('SELECT * FROM vendors WHERE id = ? AND org_id = ?').bind(vendorId, org.id).first();
   if (!vendor) return jsonResponse({ error: 'Vendor not found' }, 404);
@@ -1329,6 +1367,7 @@ function substituteVariables(template, variables) {
 }
 
 async function handleAIGenerate(request, env, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
   const body = await request.json();
   const { template_id, system_id, variables = {}, custom_prompt } = body;
 
@@ -1392,6 +1431,7 @@ async function handleAIGenerate(request, env, org, user) {
 }
 
 async function handleAINarrative(request, env, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
   const body = await request.json();
   const { system_id, framework_id, control_id, additional_context } = body;
 
@@ -1485,6 +1525,7 @@ async function handleGetAIDocument(env, org, id) {
 }
 
 async function handleUpdateAIDocument(request, env, org, user, id) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
   const doc = await env.DB.prepare('SELECT id FROM ai_documents WHERE id = ? AND org_id = ?').bind(id, org.id).first();
   if (!doc) return jsonResponse({ error: 'Document not found' }, 404);
 
@@ -1510,6 +1551,7 @@ async function handleUpdateAIDocument(request, env, org, user, id) {
 }
 
 async function handleDeleteAIDocument(env, org, user, id) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
   const doc = await env.DB.prepare('SELECT id FROM ai_documents WHERE id = ? AND org_id = ?').bind(id, org.id).first();
   if (!doc) return jsonResponse({ error: 'Document not found' }, 404);
 
@@ -1526,6 +1568,7 @@ async function handleListAITemplates(env, org) {
 }
 
 async function handleCreateAITemplate(request, env, org, user) {
+  if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Forbidden' }, 403);
   const body = await request.json();
   const { name, description, category, system_prompt, user_prompt_template, variables } = body;
 
@@ -1543,4 +1586,238 @@ async function handleCreateAITemplate(request, env, org, user) {
 
   const template = await env.DB.prepare('SELECT * FROM ai_templates WHERE id = ?').bind(id).first();
   return jsonResponse({ template }, 201);
+}
+
+// ============================================================================
+// USER MANAGEMENT (Feature 1: RBAC)
+// ============================================================================
+
+async function handleListUsers(env, org, user) {
+  if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const { results } = await env.DB.prepare(
+    'SELECT id, email, name, role, onboarding_completed, last_login_at, created_at FROM users WHERE org_id = ? ORDER BY created_at'
+  ).bind(org.id).all();
+  return jsonResponse({ users: results });
+}
+
+async function handleUpdateUserRole(request, env, org, user, targetUserId) {
+  if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const { role } = await request.json();
+  if (!['viewer', 'analyst', 'manager', 'admin'].includes(role)) return jsonResponse({ error: 'Invalid role' }, 400);
+  const target = await env.DB.prepare('SELECT * FROM users WHERE id = ? AND org_id = ?').bind(targetUserId, org.id).first();
+  if (!target) return jsonResponse({ error: 'User not found' }, 404);
+  if (target.role === 'owner') return jsonResponse({ error: 'Cannot change owner role' }, 403);
+  if (role === 'admin' && user.role !== 'owner') return jsonResponse({ error: 'Only owner can assign admin role' }, 403);
+  await env.DB.prepare("UPDATE users SET role = ?, updated_at = datetime('now') WHERE id = ?").bind(role, targetUserId).run();
+  await auditLog(env, org.id, user.id, 'update_role', 'user', targetUserId, { old_role: target.role, new_role: role });
+  return jsonResponse({ message: 'Role updated', user_id: targetUserId, role });
+}
+
+// ============================================================================
+// MONITORING HANDLERS (Feature 2: ControlPulse)
+// ============================================================================
+
+async function handleCreateMonitoringCheck(request, env, org, user) {
+  if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const body = await request.json();
+  const { system_id, control_id, framework_id, check_type, check_name, check_description, frequency } = body;
+  if (!check_name || !check_type) return jsonResponse({ error: 'check_name and check_type required' }, 400);
+  const id = generateId();
+  await env.DB.prepare(
+    `INSERT INTO monitoring_checks (id, org_id, system_id, control_id, framework_id, check_type, check_name, check_description, frequency, is_active, last_result)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'not_run')`
+  ).bind(id, org.id, system_id || null, control_id || null, framework_id || null, check_type, check_name, check_description || '', frequency || 'monthly').run();
+  await auditLog(env, org.id, user.id, 'create', 'monitoring_check', id, { check_name });
+  const check = await env.DB.prepare('SELECT * FROM monitoring_checks WHERE id = ?').bind(id).first();
+  return jsonResponse({ check }, 201);
+}
+
+async function handleUpdateMonitoringCheck(request, env, org, user, checkId) {
+  if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const check = await env.DB.prepare('SELECT * FROM monitoring_checks WHERE id = ? AND org_id = ?').bind(checkId, org.id).first();
+  if (!check) return jsonResponse({ error: 'Check not found' }, 404);
+  const body = await request.json();
+  const { check_name, check_description, frequency, is_active, check_type } = body;
+  const updates = []; const binds = [];
+  if (check_name !== undefined) { updates.push('check_name = ?'); binds.push(check_name); }
+  if (check_description !== undefined) { updates.push('check_description = ?'); binds.push(check_description); }
+  if (frequency !== undefined) { updates.push('frequency = ?'); binds.push(frequency); }
+  if (is_active !== undefined) { updates.push('is_active = ?'); binds.push(is_active ? 1 : 0); }
+  if (check_type !== undefined) { updates.push('check_type = ?'); binds.push(check_type); }
+  if (updates.length === 0) return jsonResponse({ error: 'No fields to update' }, 400);
+  updates.push("updated_at = datetime('now')");
+  binds.push(checkId);
+  await env.DB.prepare(`UPDATE monitoring_checks SET ${updates.join(', ')} WHERE id = ?`).bind(...binds).run();
+  await auditLog(env, org.id, user.id, 'update', 'monitoring_check', checkId, body);
+  const updated = await env.DB.prepare('SELECT * FROM monitoring_checks WHERE id = ?').bind(checkId).first();
+  return jsonResponse({ check: updated });
+}
+
+async function handleRunMonitoringCheck(request, env, org, user, checkId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const check = await env.DB.prepare('SELECT * FROM monitoring_checks WHERE id = ? AND org_id = ?').bind(checkId, org.id).first();
+  if (!check) return jsonResponse({ error: 'Check not found' }, 404);
+  const { result, notes } = await request.json();
+  if (!['pass', 'fail', 'warning', 'error'].includes(result)) return jsonResponse({ error: 'Invalid result' }, 400);
+  const resultId = generateId();
+  await env.DB.prepare(
+    "INSERT INTO monitoring_check_results (id, check_id, org_id, result, notes, run_by) VALUES (?, ?, ?, ?, ?, ?)"
+  ).bind(resultId, checkId, org.id, result, notes || '', user.id).run();
+  await env.DB.prepare(
+    "UPDATE monitoring_checks SET last_result = ?, last_result_details = ?, last_run_at = datetime('now'), updated_at = datetime('now') WHERE id = ?"
+  ).bind(result, notes || '', checkId).run();
+  await auditLog(env, org.id, user.id, 'run', 'monitoring_check', checkId, { result, notes });
+  return jsonResponse({ message: 'Check result recorded', result_id: resultId, result }, 201);
+}
+
+async function handleGetCheckResults(env, org, checkId) {
+  const { results } = await env.DB.prepare(
+    `SELECT mcr.*, u.name as run_by_name FROM monitoring_check_results mcr
+     LEFT JOIN users u ON u.id = mcr.run_by
+     WHERE mcr.check_id = ? AND mcr.org_id = ? ORDER BY mcr.run_at DESC LIMIT 50`
+  ).bind(checkId, org.id).all();
+  return jsonResponse({ results });
+}
+
+// ============================================================================
+// EVIDENCE + CONTROLS (Feature 3)
+// ============================================================================
+
+async function handleGetImplementationEvidence(env, org, implementationId) {
+  const impl = await env.DB.prepare(
+    'SELECT * FROM control_implementations WHERE id = ? AND org_id = ?'
+  ).bind(implementationId, org.id).first();
+  if (!impl) return jsonResponse({ error: 'Implementation not found' }, 404);
+  const { results } = await env.DB.prepare(
+    `SELECT e.*, ecl.created_at as linked_at, u.name as linked_by_name
+     FROM evidence_control_links ecl
+     JOIN evidence e ON e.id = ecl.evidence_id
+     LEFT JOIN users u ON u.id = ecl.linked_by
+     WHERE ecl.implementation_id = ? ORDER BY ecl.created_at DESC`
+  ).bind(implementationId).all();
+  return jsonResponse({ evidence: results });
+}
+
+// ============================================================================
+// BULK OPERATIONS (Feature 5)
+// ============================================================================
+
+async function handleBulkUpdateImplementations(request, env, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const { system_id, framework_id, control_ids, status, responsible_role } = await request.json();
+  if (!system_id || !framework_id || !control_ids?.length) return jsonResponse({ error: 'system_id, framework_id, and control_ids required' }, 400);
+  if (control_ids.length > 200) return jsonResponse({ error: 'Maximum 200 controls per batch' }, 400);
+  let updated = 0;
+  for (const controlId of control_ids) {
+    const updates = []; const values = [];
+    if (status) { updates.push('status = ?'); values.push(status); }
+    if (responsible_role) { updates.push('responsible_role = ?'); values.push(responsible_role); }
+    if (updates.length === 0) continue;
+    updates.push("updated_at = datetime('now')");
+    values.push(system_id, framework_id, controlId, org.id);
+    await env.DB.prepare(
+      `UPDATE control_implementations SET ${updates.join(', ')} WHERE system_id = ? AND framework_id = ? AND control_id = ? AND org_id = ?`
+    ).bind(...values).run();
+    updated++;
+  }
+  await auditLog(env, org.id, user.id, 'bulk_update', 'control_implementation', framework_id, { system_id, count: updated, status, responsible_role });
+  return jsonResponse({ message: `Updated ${updated} implementations`, updated });
+}
+
+async function handleBulkAINarrative(request, env, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const { system_id, framework_id, control_ids } = await request.json();
+  if (!system_id || !framework_id || !control_ids?.length) return jsonResponse({ error: 'Required fields missing' }, 400);
+  if (control_ids.length > 20) return jsonResponse({ error: 'Maximum 20 controls per bulk AI generation' }, 400);
+  const system = await env.DB.prepare('SELECT * FROM systems WHERE id = ? AND org_id = ?').bind(system_id, org.id).first();
+  if (!system) return jsonResponse({ error: 'System not found' }, 404);
+  const results = [];
+  for (const controlId of control_ids) {
+    try {
+      const control = await env.DB.prepare(
+        'SELECT sc.*, cf.name as framework_name FROM security_controls sc JOIN compliance_frameworks cf ON cf.id = sc.framework_id WHERE sc.framework_id = ? AND sc.control_id = ?'
+      ).bind(framework_id, controlId).first();
+      if (!control) { results.push({ control_id: controlId, status: 'error', error: 'Control not found' }); continue; }
+      const impl = await env.DB.prepare(
+        'SELECT * FROM control_implementations WHERE system_id = ? AND framework_id = ? AND control_id = ?'
+      ).bind(system_id, framework_id, controlId).first();
+      const systemPrompt = 'You are a senior cybersecurity compliance consultant. Write clear, specific, implementation-focused narratives for System Security Plans. Use professional third-person language. Address WHO, WHAT, WHEN, WHERE, and HOW.';
+      const userPrompt = `Write an implementation narrative (200-400 words) for:\nSystem: ${system.name} (${system.acronym || 'N/A'})\nImpact: ${system.impact_level}\nFramework: ${control.framework_name}\nControl: ${control.control_id} - ${control.title}\nDescription: ${control.description || 'N/A'}\nStatus: ${impl ? impl.status : 'not_implemented'}\nOrg: ${org.name}`;
+      const narrative = await runAI(env, systemPrompt, userPrompt);
+      if (impl) {
+        await env.DB.prepare("UPDATE control_implementations SET ai_narrative = ?, ai_narrative_generated_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").bind(narrative, impl.id).run();
+      } else {
+        await env.DB.prepare(
+          "INSERT INTO control_implementations (id, org_id, system_id, framework_id, control_id, status, ai_narrative, ai_narrative_generated_at) VALUES (?, ?, ?, ?, ?, 'not_implemented', ?, datetime('now'))"
+        ).bind(generateId(), org.id, system_id, framework_id, controlId, narrative).run();
+      }
+      results.push({ control_id: controlId, status: 'success' });
+    } catch (err) {
+      results.push({ control_id: controlId, status: 'error', error: err.message });
+    }
+  }
+  await auditLog(env, org.id, user.id, 'bulk_ai_narrative', 'control_implementation', framework_id, { system_id, count: control_ids.length, successes: results.filter(r => r.status === 'success').length });
+  return jsonResponse({ results, total: control_ids.length });
+}
+
+// ============================================================================
+// DASHBOARD ANALYTICS (Feature 6)
+// ============================================================================
+
+async function handleFrameworkStats(env, org) {
+  const { results } = await env.DB.prepare(
+    `SELECT ci.framework_id, cf.name as framework_name, ci.status, COUNT(*) as count
+     FROM control_implementations ci
+     JOIN compliance_frameworks cf ON cf.id = ci.framework_id
+     WHERE ci.org_id = ? GROUP BY ci.framework_id, ci.status ORDER BY cf.name, ci.status`
+  ).bind(org.id).all();
+  const { results: gaps } = await env.DB.prepare(
+    `SELECT ci.framework_id, sc.family, COUNT(*) as gap_count
+     FROM control_implementations ci
+     JOIN security_controls sc ON sc.framework_id = ci.framework_id AND sc.control_id = ci.control_id
+     WHERE ci.org_id = ? AND ci.status = 'not_implemented'
+     GROUP BY ci.framework_id, sc.family ORDER BY gap_count DESC`
+  ).bind(org.id).all();
+  return jsonResponse({ framework_stats: results, gap_analysis: gaps });
+}
+
+async function handleCreateComplianceSnapshot(request, env, org, user) {
+  if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const today = new Date().toISOString().split('T')[0];
+  const { results: impls } = await env.DB.prepare(
+    `SELECT system_id, framework_id, status, COUNT(*) as count FROM control_implementations WHERE org_id = ? GROUP BY system_id, framework_id, status`
+  ).bind(org.id).all();
+  const combos = {};
+  for (const row of impls) {
+    const key = `${row.system_id}|${row.framework_id}`;
+    if (!combos[key]) combos[key] = { system_id: row.system_id, framework_id: row.framework_id, total: 0, implemented: 0, partially_implemented: 0, planned: 0, not_applicable: 0, not_implemented: 0 };
+    combos[key][row.status] = (combos[key][row.status] || 0) + row.count;
+    combos[key].total += row.count;
+  }
+  let inserted = 0;
+  for (const c of Object.values(combos)) {
+    const pct = c.total > 0 ? Math.round(((c.implemented + c.not_applicable) / c.total) * 100) : 0;
+    await env.DB.prepare(
+      `INSERT OR REPLACE INTO compliance_snapshots (id, org_id, system_id, framework_id, snapshot_date, total_controls, implemented, partially_implemented, planned, not_applicable, not_implemented, compliance_percentage)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(generateId(), org.id, c.system_id, c.framework_id, today, c.total, c.implemented, c.partially_implemented, c.planned, c.not_applicable, c.not_implemented, pct).run();
+    inserted++;
+  }
+  await auditLog(env, org.id, user.id, 'create_snapshot', 'compliance_snapshot', today, { count: inserted });
+  return jsonResponse({ message: `Created ${inserted} snapshots for ${today}` }, 201);
+}
+
+async function handleGetComplianceTrends(env, url, org) {
+  const systemId = url.searchParams.get('system_id');
+  const frameworkId = url.searchParams.get('framework_id');
+  const days = parseInt(url.searchParams.get('days') || '30');
+  let query = `SELECT cs.*, cf.name as framework_name, s.name as system_name FROM compliance_snapshots cs
+    LEFT JOIN compliance_frameworks cf ON cf.id = cs.framework_id LEFT JOIN systems s ON s.id = cs.system_id
+    WHERE cs.org_id = ? AND cs.snapshot_date >= date('now', ?)`;
+  const params = [org.id, `-${days} days`];
+  if (systemId) { query += ' AND cs.system_id = ?'; params.push(systemId); }
+  if (frameworkId) { query += ' AND cs.framework_id = ?'; params.push(frameworkId); }
+  query += ' ORDER BY cs.snapshot_date ASC';
+  const { results } = await env.DB.prepare(query).bind(...params).all();
+  return jsonResponse({ trends: results });
 }

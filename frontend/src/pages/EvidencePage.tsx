@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { useExperience } from '../hooks/useExperience';
-import { api } from '../utils/api';
-import { getAccessToken } from '../utils/api';
+import { useAuth } from '../hooks/useAuth';
+import { api, getAccessToken } from '../utils/api';
 
 export function EvidencePage() {
   const { t, nav } = useExperience();
+  const { canEdit } = useAuth();
   const [evidence, setEvidence] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
@@ -51,7 +52,7 @@ export function EvidencePage() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <div><h1 className="text-2xl font-bold text-gray-900">{nav('evidence')}</h1><p className="text-gray-500 text-sm mt-1">Upload and manage {t('evidence').toLowerCase()} documents</p></div>
-        <button onClick={() => setShowUpload(true)} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">+ Upload {t('evidence')}</button>
+        {canEdit && <button onClick={() => setShowUpload(true)} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">+ Upload {t('evidence')}</button>}
       </div>
 
       {showUpload && (
@@ -83,6 +84,7 @@ export function EvidencePage() {
               <th className="text-left px-4 py-3 font-medium text-gray-500">Uploaded By</th>
               <th className="text-left px-4 py-3 font-medium text-gray-500">Date</th>
               <th className="text-left px-4 py-3 font-medium text-gray-500">Status</th>
+              <th className="text-left px-4 py-3 font-medium text-gray-500">Actions</th>
             </tr></thead>
             <tbody className="divide-y divide-gray-100">
               {evidence.map((ev) => (
@@ -93,6 +95,30 @@ export function EvidencePage() {
                   <td className="px-4 py-3 text-gray-500">{ev.uploaded_by_name || 'Unknown'}</td>
                   <td className="px-4 py-3 text-gray-500">{new Date(ev.created_at).toLocaleDateString()}</td>
                   <td className="px-4 py-3"><span className={`text-xs px-2 py-0.5 rounded font-medium ${ev.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>{ev.status}</span></td>
+                  <td className="px-4 py-3">
+                    <button
+                      onClick={async () => {
+                        try {
+                          const apiBase = import.meta.env.VITE_API_URL || '';
+                          const res = await fetch(`${apiBase}/api/v1/evidence/${ev.id}/download`, {
+                            headers: { Authorization: `Bearer ${getAccessToken()}` },
+                          });
+                          if (!res.ok) throw new Error('Download failed');
+                          const blob = await res.blob();
+                          const url = URL.createObjectURL(blob);
+                          const a = document.createElement('a');
+                          a.href = url;
+                          a.download = ev.file_name || 'evidence';
+                          a.click();
+                          URL.revokeObjectURL(url);
+                        } catch {}
+                      }}
+                      className="text-blue-600 hover:text-blue-800 text-xs font-medium flex items-center gap-1"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                      Download
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
