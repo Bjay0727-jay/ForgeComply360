@@ -111,6 +111,8 @@ async function handleRequest(request, env, url) {
   if (path === '/api/v1/implementations' && method === 'POST') return handleUpsertImplementation(request, env, org, user);
   if (path === '/api/v1/implementations/bulk' && method === 'POST') return handleBulkInitImplementations(request, env, org, user);
   if (path === '/api/v1/implementations/bulk-update' && method === 'POST') return handleBulkUpdateImplementations(request, env, org, user);
+  if (path === '/api/v1/implementations/inherit' && method === 'POST') return handleInheritImplementations(request, env, org, user);
+  if (path === '/api/v1/implementations/sync-inherited' && method === 'POST') return handleSyncInherited(request, env, org, user);
   if (path === '/api/v1/implementations/stats' && method === 'GET') return handleImplementationStats(env, url, org);
   if (path.match(/^\/api\/v1\/implementations\/[\w-]+\/evidence$/) && method === 'GET') return handleGetImplementationEvidence(env, org, path.split('/')[4]);
 
@@ -118,6 +120,13 @@ async function handleRequest(request, env, url) {
   if (path === '/api/v1/poams' && method === 'GET') return handleListPoams(env, url, org);
   if (path === '/api/v1/poams' && method === 'POST') return handleCreatePoam(request, env, org, user);
   if (path.match(/^\/api\/v1\/poams\/[\w-]+$/) && method === 'PUT') return handleUpdatePoam(request, env, org, user, path.split('/').pop());
+  if (path.match(/^\/api\/v1\/poams\/[\w-]+$/) && method === 'DELETE') return handleDeletePoam(env, org, user, path.split('/').pop());
+  if (path.match(/^\/api\/v1\/poams\/[\w-]+\/milestones$/) && method === 'GET') return handleListMilestones(env, org, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/poams\/[\w-]+\/milestones$/) && method === 'POST') return handleCreateMilestone(request, env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/poams\/[\w-]+\/milestones\/[\w-]+$/) && method === 'PUT') return handleUpdateMilestone(request, env, org, user, path.split('/')[4], path.split('/')[6]);
+  if (path.match(/^\/api\/v1\/poams\/[\w-]+\/comments$/) && method === 'GET') return handleListComments(env, org, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/poams\/[\w-]+\/comments$/) && method === 'POST') return handleCreateComment(request, env, org, user, path.split('/')[4]);
+  if (path === '/api/v1/org-members' && method === 'GET') return handleListOrgMembers(env, org);
 
   // Evidence
   if (path === '/api/v1/evidence' && method === 'GET') return handleListEvidence(env, org);
@@ -167,7 +176,15 @@ async function handleRequest(request, env, url) {
   if (path === '/api/v1/compliance/trends' && method === 'GET') return handleGetComplianceTrends(env, url, org);
 
   // Audit log
-  if (path === '/api/v1/audit-log' && method === 'GET') return handleGetAuditLog(env, url, org);
+  if (path === '/api/v1/audit-log' && method === 'GET') return handleGetAuditLog(env, url, org, user);
+
+  // Notifications
+  if (path === '/api/v1/notifications' && method === 'GET') return handleGetNotifications(env, url, user);
+  if (path === '/api/v1/notifications/unread-count' && method === 'GET') return handleUnreadCount(env, user);
+  if (path === '/api/v1/notifications/mark-read' && method === 'POST') return handleMarkRead(request, env, user);
+  if (path === '/api/v1/notifications/mark-all-read' && method === 'POST') return handleMarkAllRead(env, user);
+  if (path === '/api/v1/notification-preferences' && method === 'GET') return handleGetNotificationPrefs(env, user);
+  if (path === '/api/v1/notification-preferences' && method === 'PUT') return handleUpdateNotificationPrefs(request, env, user);
 
   // ForgeML AI Writer
   if (path === '/api/v1/ai/generate' && method === 'POST') return handleAIGenerate(request, env, org, user);
@@ -336,6 +353,36 @@ async function auditLog(env, orgId, userId, action, resourceType, resourceId, de
     ).run();
   } catch (e) {
     console.error('Audit log error:', e);
+  }
+}
+
+// ============================================================================
+// NOTIFICATION HELPERS
+// ============================================================================
+
+async function createNotification(env, orgId, recipientUserId, type, title, message, resourceType, resourceId, details = {}) {
+  try {
+    const pref = await env.DB.prepare('SELECT * FROM notification_preferences WHERE user_id = ?').bind(recipientUserId).first();
+    if (pref && pref[type] === 0) return;
+    await env.DB.prepare(
+      'INSERT INTO notifications (id, org_id, recipient_user_id, type, title, message, resource_type, resource_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).bind(generateId(), orgId, recipientUserId, type, title, message, resourceType || null, resourceId || null, JSON.stringify(details)).run();
+  } catch (e) {
+    console.error('Notification error:', e);
+  }
+}
+
+async function notifyOrgRole(env, orgId, actorId, minRole, type, title, message, resourceType, resourceId, details = {}) {
+  try {
+    const minLevel = ROLE_HIERARCHY[minRole] ?? 99;
+    const { results: users } = await env.DB.prepare('SELECT id, role FROM users WHERE org_id = ? AND id != ?').bind(orgId, actorId).all();
+    for (const u of users) {
+      if ((ROLE_HIERARCHY[u.role] ?? 0) >= minLevel) {
+        await createNotification(env, orgId, u.id, type, title, message, resourceType, resourceId, details);
+      }
+    }
+  } catch (e) {
+    console.error('NotifyOrgRole error:', e);
   }
 }
 
@@ -760,13 +807,20 @@ async function handleListImplementations(env, url, org) {
   const systemId = url.searchParams.get('system_id');
   const frameworkId = url.searchParams.get('framework_id');
   const status = url.searchParams.get('status');
+  const inherited = url.searchParams.get('inherited');
 
-  let query = 'SELECT ci.*, sc.title as control_title, sc.family, sc.description as control_description FROM control_implementations ci LEFT JOIN security_controls sc ON sc.framework_id = ci.framework_id AND sc.control_id = ci.control_id WHERE ci.org_id = ?';
+  let query = `SELECT ci.*, sc.title as control_title, sc.family, sc.description as control_description, s2.name as inherited_from_name
+    FROM control_implementations ci
+    LEFT JOIN security_controls sc ON sc.framework_id = ci.framework_id AND sc.control_id = ci.control_id
+    LEFT JOIN systems s2 ON s2.id = ci.inherited_from
+    WHERE ci.org_id = ?`;
   const params = [org.id];
 
   if (systemId) { query += ' AND ci.system_id = ?'; params.push(systemId); }
   if (frameworkId) { query += ' AND ci.framework_id = ?'; params.push(frameworkId); }
   if (status) { query += ' AND ci.status = ?'; params.push(status); }
+  if (inherited === '1') { query += ' AND ci.inherited = 1'; }
+  if (inherited === '0') { query += ' AND (ci.inherited = 0 OR ci.inherited IS NULL)'; }
 
   query += ' ORDER BY sc.sort_order, ci.control_id';
   const { results } = await env.DB.prepare(query).bind(...params).all();
@@ -791,6 +845,7 @@ async function handleUpsertImplementation(request, env, org, user) {
        implementation_description = COALESCE(?, implementation_description),
        responsible_role = COALESCE(?, responsible_role),
        ai_narrative = COALESCE(?, ai_narrative),
+       inherited = 0,
        updated_at = datetime('now')`
   ).bind(
     id, org.id, system_id, framework_id, control_id, status || 'not_implemented', implementation_description || null, responsible_role || null, ai_narrative || null,
@@ -803,6 +858,7 @@ async function handleUpsertImplementation(request, env, org, user) {
   ).bind(system_id, framework_id, control_id).first();
 
   await auditLog(env, org.id, user.id, 'upsert', 'control_implementation', control_id, { system_id, framework_id, status });
+  if (status === 'not_implemented') await notifyOrgRole(env, org.id, user.id, 'manager', 'control_change', 'Control Set to Not Implemented', 'A control was marked as not implemented', 'control_implementation', control_id, { framework_id, system_id });
   return jsonResponse({ message: 'Implementation saved', implementation: impl }, 201);
 }
 
@@ -860,32 +916,61 @@ async function handleImplementationStats(env, url, org) {
 async function handleListPoams(env, url, org) {
   const systemId = url.searchParams.get('system_id');
   const status = url.searchParams.get('status');
+  const riskLevel = url.searchParams.get('risk_level');
+  const overdue = url.searchParams.get('overdue');
 
-  let query = 'SELECT * FROM poams WHERE org_id = ?';
+  let query = `SELECT p.*, u.name as assigned_to_name, u2.name as created_by_name, s.name as system_name
+    FROM poams p LEFT JOIN users u ON p.assigned_to = u.id LEFT JOIN users u2 ON p.created_by = u2.id LEFT JOIN systems s ON s.id = p.system_id
+    WHERE p.org_id = ?`;
   const params = [org.id];
-  if (systemId) { query += ' AND system_id = ?'; params.push(systemId); }
-  if (status) { query += ' AND status = ?'; params.push(status); }
-  query += ' ORDER BY CASE risk_level WHEN "critical" THEN 0 WHEN "high" THEN 1 WHEN "moderate" THEN 2 ELSE 3 END, created_at DESC';
+  if (systemId) { query += ' AND p.system_id = ?'; params.push(systemId); }
+  if (status) { query += ' AND p.status = ?'; params.push(status); }
+  if (riskLevel) { query += ' AND p.risk_level = ?'; params.push(riskLevel); }
+  if (overdue === '1') { query += " AND p.scheduled_completion < date('now') AND p.status NOT IN ('completed','accepted','deferred')"; }
+  query += ' ORDER BY CASE p.risk_level WHEN "critical" THEN 0 WHEN "high" THEN 1 WHEN "moderate" THEN 2 ELSE 3 END, p.created_at DESC';
 
   const { results } = await env.DB.prepare(query).bind(...params).all();
+
+  const now = new Date().toISOString().split('T')[0];
+  for (const p of results) {
+    p.days_open = Math.floor((Date.now() - new Date(p.created_at).getTime()) / 86400000);
+    p.is_overdue = !!(p.scheduled_completion && p.scheduled_completion < now && !['completed','accepted','deferred'].includes(p.status));
+  }
+
+  // Milestone counts per poam
+  const poamIds = results.map(r => r.id);
+  if (poamIds.length > 0) {
+    const ph = poamIds.map(() => '?').join(',');
+    const { results: ms } = await env.DB.prepare(
+      `SELECT poam_id, COUNT(*) as total, SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed FROM poam_milestones WHERE poam_id IN (${ph}) GROUP BY poam_id`
+    ).bind(...poamIds).all();
+    const msMap = {};
+    for (const m of ms) msMap[m.poam_id] = m;
+    for (const p of results) { const m = msMap[p.id]; p.milestone_total = m?.total || 0; p.milestone_completed = m?.completed || 0; }
+  }
+
   return jsonResponse({ poams: results });
 }
 
 async function handleCreatePoam(request, env, org, user) {
   if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
   const body = await request.json();
-  const { system_id, weakness_name, weakness_description, control_id, framework_id, risk_level, scheduled_completion, responsible_party } = body;
+  const { system_id, weakness_name, weakness_description, control_id, framework_id, risk_level, scheduled_completion, responsible_party, assigned_to } = body;
   if (!system_id || !weakness_name) return jsonResponse({ error: 'system_id and weakness_name required' }, 400);
 
   const id = generateId();
   const poamId = `POAM-${Date.now().toString(36).toUpperCase()}`;
 
   await env.DB.prepare(
-    `INSERT INTO poams (id, org_id, system_id, poam_id, weakness_name, weakness_description, control_id, framework_id, risk_level, scheduled_completion, responsible_party, created_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(id, org.id, system_id, poamId, weakness_name, weakness_description || null, control_id || null, framework_id || null, risk_level || 'moderate', scheduled_completion || null, responsible_party || null, user.id).run();
+    `INSERT INTO poams (id, org_id, system_id, poam_id, weakness_name, weakness_description, control_id, framework_id, risk_level, status, scheduled_completion, responsible_party, assigned_to, created_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?)`
+  ).bind(id, org.id, system_id, poamId, weakness_name, weakness_description || null, control_id || null, framework_id || null, risk_level || 'moderate', scheduled_completion || null, responsible_party || null, assigned_to || null, user.id).run();
 
   await auditLog(env, org.id, user.id, 'create', 'poam', id, { poam_id: poamId, weakness_name });
+  await notifyOrgRole(env, org.id, user.id, 'manager', 'poam_update', 'New POA&M Created', 'POA&M "' + weakness_name + '" was created', 'poam', id, {});
+  if (assigned_to && assigned_to !== user.id) {
+    await createNotification(env, org.id, assigned_to, 'poam_update', 'POA&M Assigned to You', 'You were assigned to POA&M "' + weakness_name + '"', 'poam', id, {});
+  }
   const poam = await env.DB.prepare('SELECT * FROM poams WHERE id = ?').bind(id).first();
   return jsonResponse({ poam }, 201);
 }
@@ -896,7 +981,7 @@ async function handleUpdatePoam(request, env, org, user, poamId) {
   const poam = await env.DB.prepare('SELECT * FROM poams WHERE id = ? AND org_id = ?').bind(poamId, org.id).first();
   if (!poam) return jsonResponse({ error: 'POA&M not found' }, 404);
 
-  const fields = ['weakness_name', 'weakness_description', 'risk_level', 'status', 'scheduled_completion', 'actual_completion', 'milestones', 'responsible_party', 'resources_required', 'cost_estimate', 'comments'];
+  const fields = ['weakness_name', 'weakness_description', 'risk_level', 'status', 'scheduled_completion', 'actual_completion', 'milestones', 'responsible_party', 'resources_required', 'cost_estimate', 'comments', 'assigned_to', 'vendor_dependency'];
   const updates = [];
   const values = [];
 
@@ -914,9 +999,98 @@ async function handleUpdatePoam(request, env, org, user, poamId) {
 
   await env.DB.prepare(`UPDATE poams SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run();
   await auditLog(env, org.id, user.id, 'update', 'poam', poamId, body);
+  if (body.status) {
+    await notifyOrgRole(env, org.id, user.id, 'manager', 'poam_update', 'POA&M Status Changed', 'POA&M "' + poam.weakness_name + '" status changed to ' + body.status, 'poam', poamId, { status: body.status });
+    if (poam.assigned_to && poam.assigned_to !== user.id) {
+      await createNotification(env, org.id, poam.assigned_to, 'poam_update', 'POA&M Status Changed', 'POA&M "' + poam.weakness_name + '" status changed to ' + body.status, 'poam', poamId, {});
+    }
+  }
+  if (body.assigned_to && body.assigned_to !== poam.assigned_to && body.assigned_to !== user.id) {
+    await createNotification(env, org.id, body.assigned_to, 'poam_update', 'POA&M Assigned to You', 'You were assigned to POA&M "' + poam.weakness_name + '"', 'poam', poamId, {});
+  }
 
   const updated = await env.DB.prepare('SELECT * FROM poams WHERE id = ?').bind(poamId).first();
   return jsonResponse({ poam: updated });
+}
+
+async function handleDeletePoam(env, org, user, poamId) {
+  if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const poam = await env.DB.prepare('SELECT * FROM poams WHERE id = ? AND org_id = ?').bind(poamId, org.id).first();
+  if (!poam) return jsonResponse({ error: 'POA&M not found' }, 404);
+  await env.DB.prepare('DELETE FROM poams WHERE id = ?').bind(poamId).run();
+  await auditLog(env, org.id, user.id, 'delete', 'poam', poamId, { poam_id: poam.poam_id, weakness_name: poam.weakness_name });
+  return jsonResponse({ message: 'POA&M deleted' });
+}
+
+// POA&M Milestones
+async function handleListMilestones(env, org, poamId) {
+  const poam = await env.DB.prepare('SELECT id FROM poams WHERE id = ? AND org_id = ?').bind(poamId, org.id).first();
+  if (!poam) return jsonResponse({ error: 'POA&M not found' }, 404);
+  const { results } = await env.DB.prepare('SELECT * FROM poam_milestones WHERE poam_id = ? ORDER BY target_date ASC, created_at ASC').bind(poamId).all();
+  return jsonResponse({ milestones: results });
+}
+
+async function handleCreateMilestone(request, env, org, user, poamId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const poam = await env.DB.prepare('SELECT * FROM poams WHERE id = ? AND org_id = ?').bind(poamId, org.id).first();
+  if (!poam) return jsonResponse({ error: 'POA&M not found' }, 404);
+  const body = await request.json();
+  if (!body.title) return jsonResponse({ error: 'title required' }, 400);
+  const id = generateId();
+  await env.DB.prepare('INSERT INTO poam_milestones (id, poam_id, title, target_date) VALUES (?, ?, ?, ?)').bind(id, poamId, body.title, body.target_date || null).run();
+  await auditLog(env, org.id, user.id, 'create', 'poam_milestone', id, { poam_id: poamId, title: body.title });
+  const milestone = await env.DB.prepare('SELECT * FROM poam_milestones WHERE id = ?').bind(id).first();
+  return jsonResponse({ milestone }, 201);
+}
+
+async function handleUpdateMilestone(request, env, org, user, poamId, milestoneId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const poam = await env.DB.prepare('SELECT id FROM poams WHERE id = ? AND org_id = ?').bind(poamId, org.id).first();
+  if (!poam) return jsonResponse({ error: 'POA&M not found' }, 404);
+  const body = await request.json();
+  const fields = ['title', 'target_date', 'status', 'completion_date'];
+  const updates = [];
+  const values = [];
+  for (const f of fields) {
+    if (body[f] !== undefined) { updates.push(`${f} = ?`); values.push(body[f]); }
+  }
+  if (body.status === 'completed' && !body.completion_date) { updates.push('completion_date = ?'); values.push(new Date().toISOString()); }
+  if (updates.length === 0) return jsonResponse({ error: 'No fields to update' }, 400);
+  updates.push('updated_at = ?'); values.push(new Date().toISOString()); values.push(milestoneId); values.push(poamId);
+  await env.DB.prepare(`UPDATE poam_milestones SET ${updates.join(', ')} WHERE id = ? AND poam_id = ?`).bind(...values).run();
+  const updated = await env.DB.prepare('SELECT * FROM poam_milestones WHERE id = ?').bind(milestoneId).first();
+  return jsonResponse({ milestone: updated });
+}
+
+// POA&M Comments
+async function handleListComments(env, org, poamId) {
+  const poam = await env.DB.prepare('SELECT id FROM poams WHERE id = ? AND org_id = ?').bind(poamId, org.id).first();
+  if (!poam) return jsonResponse({ error: 'POA&M not found' }, 404);
+  const { results } = await env.DB.prepare('SELECT c.*, u.name as author_name FROM poam_comments c LEFT JOIN users u ON u.id = c.user_id WHERE c.poam_id = ? ORDER BY c.created_at ASC').bind(poamId).all();
+  return jsonResponse({ comments: results });
+}
+
+async function handleCreateComment(request, env, org, user, poamId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const poam = await env.DB.prepare('SELECT * FROM poams WHERE id = ? AND org_id = ?').bind(poamId, org.id).first();
+  if (!poam) return jsonResponse({ error: 'POA&M not found' }, 404);
+  const body = await request.json();
+  if (!body.content || !body.content.trim()) return jsonResponse({ error: 'content required' }, 400);
+  const id = generateId();
+  await env.DB.prepare('INSERT INTO poam_comments (id, poam_id, user_id, content) VALUES (?, ?, ?, ?)').bind(id, poamId, user.id, body.content.trim()).run();
+  await auditLog(env, org.id, user.id, 'create', 'poam_comment', id, { poam_id: poamId });
+  if (poam.assigned_to && poam.assigned_to !== user.id) {
+    await createNotification(env, org.id, poam.assigned_to, 'poam_update', 'New Comment on POA&M', user.name + ' commented on POA&M "' + poam.weakness_name + '"', 'poam', poamId, {});
+  }
+  await notifyOrgRole(env, org.id, user.id, 'manager', 'poam_update', 'New Comment on POA&M', user.name + ' commented on POA&M "' + poam.weakness_name + '"', 'poam', poamId, {});
+  const comment = await env.DB.prepare('SELECT c.*, u.name as author_name FROM poam_comments c LEFT JOIN users u ON u.id = c.user_id WHERE c.id = ?').bind(id).first();
+  return jsonResponse({ comment }, 201);
+}
+
+// Org Members (lightweight for assignment dropdowns)
+async function handleListOrgMembers(env, org) {
+  const { results } = await env.DB.prepare('SELECT id, name, email FROM users WHERE org_id = ? ORDER BY name').bind(org.id).all();
+  return jsonResponse({ members: results });
 }
 
 // ============================================================================
@@ -956,6 +1130,7 @@ async function handleUploadEvidence(request, env, org, user) {
   ).bind(id, org.id, title, description, file.name, arrayBuffer.byteLength, file.type, r2Key, sha256, user.id).run();
 
   await auditLog(env, org.id, user.id, 'upload', 'evidence', id, { file_name: file.name, size: arrayBuffer.byteLength });
+  await notifyOrgRole(env, org.id, user.id, 'manager', 'evidence_upload', 'New Evidence Uploaded', 'Evidence file "' + file.name + '" was uploaded', 'evidence', id, {});
 
   const evidence = await env.DB.prepare('SELECT * FROM evidence WHERE id = ?').bind(id).first();
   return jsonResponse({ evidence }, 201);
@@ -1122,6 +1297,7 @@ async function handleCreateRisk(request, env, org, user) {
   ).bind(id, org.id, system_id || null, riskId, title, description || null, category || 'technical', likelihood || 3, impact || 3, riskLevel, treatment || 'mitigate', treatment_plan || null, owner || null).run();
 
   await auditLog(env, org.id, user.id, 'create', 'risk', id, { title, risk_level: riskLevel });
+  if (['high', 'critical'].includes(riskLevel)) await notifyOrgRole(env, org.id, user.id, 'manager', 'risk_alert', 'High Risk Created', 'Risk "' + title + '" rated ' + riskLevel, 'risk', id, { risk_level: riskLevel });
   const risk = await env.DB.prepare('SELECT * FROM risks WHERE id = ?').bind(id).first();
   return jsonResponse({ risk }, 201);
 }
@@ -1147,6 +1323,7 @@ async function handleUpdateRisk(request, env, org, user, riskId) {
 
   await env.DB.prepare(`UPDATE risks SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run();
   await auditLog(env, org.id, user.id, 'update', 'risk', riskId, body);
+  if (body.risk_level && ['high', 'critical'].includes(body.risk_level)) await notifyOrgRole(env, org.id, user.id, 'manager', 'risk_alert', 'Risk Escalated', 'Risk escalated to ' + body.risk_level, 'risk', riskId, { risk_level: body.risk_level });
 
   const updated = await env.DB.prepare('SELECT * FROM risks WHERE id = ?').bind(riskId).first();
   return jsonResponse({ risk: updated });
@@ -1321,20 +1498,127 @@ async function handleDashboardStats(env, org) {
 // AUDIT LOG
 // ============================================================================
 
-async function handleGetAuditLog(env, url, org) {
+async function handleGetAuditLog(env, url, org, user) {
+  if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
+
   const page = parseInt(url.searchParams.get('page') || '1');
   const limit = Math.min(parseInt(url.searchParams.get('limit') || '50'), 100);
   const offset = (page - 1) * limit;
+  const action = url.searchParams.get('action');
+  const resourceType = url.searchParams.get('resource_type');
+  const userId = url.searchParams.get('user_id');
+  const search = url.searchParams.get('search');
+  const dateFrom = url.searchParams.get('date_from');
+  const dateTo = url.searchParams.get('date_to');
+
+  let where = 'WHERE al.org_id = ?';
+  const params = [org.id];
+  const countParams = [org.id];
+
+  if (action) { where += ' AND al.action = ?'; params.push(action); countParams.push(action); }
+  if (resourceType) { where += ' AND al.resource_type = ?'; params.push(resourceType); countParams.push(resourceType); }
+  if (userId) { where += ' AND al.user_id = ?'; params.push(userId); countParams.push(userId); }
+  if (dateFrom) { where += ' AND al.created_at >= ?'; params.push(dateFrom); countParams.push(dateFrom); }
+  if (dateTo) { where += ' AND al.created_at <= ?'; params.push(dateTo + 'T23:59:59'); countParams.push(dateTo + 'T23:59:59'); }
+  if (search) {
+    where += ' AND (u.name LIKE ? OR u.email LIKE ? OR al.action LIKE ? OR al.resource_type LIKE ? OR al.details LIKE ?)';
+    const s = `%${search}%`;
+    params.push(s, s, s, s, s);
+    countParams.push(s, s, s, s, s);
+  }
+
+  params.push(limit, offset);
 
   const { results } = await env.DB.prepare(
     `SELECT al.*, u.name as user_name, u.email as user_email
      FROM audit_logs al LEFT JOIN users u ON u.id = al.user_id
-     WHERE al.org_id = ?
+     ${where}
      ORDER BY al.created_at DESC LIMIT ? OFFSET ?`
-  ).bind(org.id, limit, offset).all();
+  ).bind(...params).all();
 
-  const { total } = await env.DB.prepare('SELECT COUNT(*) as total FROM audit_logs WHERE org_id = ?').bind(org.id).first();
+  const { total } = await env.DB.prepare(
+    `SELECT COUNT(*) as total FROM audit_logs al LEFT JOIN users u ON u.id = al.user_id ${where}`
+  ).bind(...countParams).first();
+
   return jsonResponse({ logs: results, total, page, limit });
+}
+
+// ============================================================================
+// NOTIFICATIONS
+// ============================================================================
+
+async function handleGetNotifications(env, url, user) {
+  const page = parseInt(url.searchParams.get('page') || '1');
+  const limit = Math.min(parseInt(url.searchParams.get('limit') || '50'), 100);
+  const offset = (page - 1) * limit;
+  const type = url.searchParams.get('type');
+  const unreadOnly = url.searchParams.get('unread') === 'true';
+
+  let where = 'WHERE recipient_user_id = ?';
+  const params = [user.id];
+  const countParams = [user.id];
+
+  if (type) { where += ' AND type = ?'; params.push(type); countParams.push(type); }
+  if (unreadOnly) { where += ' AND is_read = 0'; }
+
+  params.push(limit, offset);
+
+  const { results } = await env.DB.prepare(
+    `SELECT * FROM notifications ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`
+  ).bind(...params).all();
+
+  const { total } = await env.DB.prepare(
+    `SELECT COUNT(*) as total FROM notifications ${where}`
+  ).bind(...countParams).first();
+
+  return jsonResponse({ notifications: results, total, page, limit });
+}
+
+async function handleUnreadCount(env, user) {
+  const row = await env.DB.prepare(
+    'SELECT COUNT(*) as count FROM notifications WHERE recipient_user_id = ? AND is_read = 0'
+  ).bind(user.id).first();
+  return jsonResponse({ count: row?.count || 0 });
+}
+
+async function handleMarkRead(request, env, user) {
+  const { notification_ids } = await request.json();
+  if (!notification_ids?.length) return jsonResponse({ error: 'notification_ids required' }, 400);
+  const ids = notification_ids.slice(0, 50);
+  const placeholders = ids.map(() => '?').join(',');
+  await env.DB.prepare(
+    `UPDATE notifications SET is_read = 1, read_at = datetime('now') WHERE id IN (${placeholders}) AND recipient_user_id = ?`
+  ).bind(...ids, user.id).run();
+  return jsonResponse({ message: 'Marked as read', count: ids.length });
+}
+
+async function handleMarkAllRead(env, user) {
+  await env.DB.prepare(
+    "UPDATE notifications SET is_read = 1, read_at = datetime('now') WHERE recipient_user_id = ? AND is_read = 0"
+  ).bind(user.id).run();
+  return jsonResponse({ message: 'All notifications marked as read' });
+}
+
+async function handleGetNotificationPrefs(env, user) {
+  let prefs = await env.DB.prepare('SELECT * FROM notification_preferences WHERE user_id = ?').bind(user.id).first();
+  if (!prefs) {
+    prefs = { poam_update: 1, risk_alert: 1, monitoring_fail: 1, control_change: 1, role_change: 1, compliance_alert: 1, evidence_upload: 1 };
+  }
+  return jsonResponse({ preferences: prefs });
+}
+
+async function handleUpdateNotificationPrefs(request, env, user) {
+  const body = await request.json();
+  const types = ['poam_update', 'risk_alert', 'monitoring_fail', 'control_change', 'role_change', 'compliance_alert', 'evidence_upload'];
+  const values = types.map(t => body[t] !== undefined ? (body[t] ? 1 : 0) : 1);
+
+  await env.DB.prepare(
+    `INSERT INTO notification_preferences (id, user_id, ${types.join(', ')}, updated_at)
+     VALUES (?, ?, ${types.map(() => '?').join(', ')}, datetime('now'))
+     ON CONFLICT(user_id) DO UPDATE SET ${types.map(t => `${t} = excluded.${t}`).join(', ')}, updated_at = datetime('now')`
+  ).bind(generateId(), user.id, ...values).run();
+
+  return handleGetNotificationPrefs(env, user);
 }
 
 // ============================================================================
@@ -1610,6 +1894,7 @@ async function handleUpdateUserRole(request, env, org, user, targetUserId) {
   if (role === 'admin' && user.role !== 'owner') return jsonResponse({ error: 'Only owner can assign admin role' }, 403);
   await env.DB.prepare("UPDATE users SET role = ?, updated_at = datetime('now') WHERE id = ?").bind(role, targetUserId).run();
   await auditLog(env, org.id, user.id, 'update_role', 'user', targetUserId, { old_role: target.role, new_role: role });
+  await createNotification(env, org.id, targetUserId, 'role_change', 'Your Role Was Changed', 'Your role was changed from ' + target.role + ' to ' + role, 'user', targetUserId, { old_role: target.role, new_role: role });
   return jsonResponse({ message: 'Role updated', user_id: targetUserId, role });
 }
 
@@ -1667,6 +1952,7 @@ async function handleRunMonitoringCheck(request, env, org, user, checkId) {
     "UPDATE monitoring_checks SET last_result = ?, last_result_details = ?, last_run_at = datetime('now'), updated_at = datetime('now') WHERE id = ?"
   ).bind(result, notes || '', checkId).run();
   await auditLog(env, org.id, user.id, 'run', 'monitoring_check', checkId, { result, notes });
+  if (['fail', 'error'].includes(result)) await notifyOrgRole(env, org.id, user.id, 'analyst', 'monitoring_fail', 'Monitoring Check Failed', 'Check "' + check.check_name + '" result: ' + result, 'monitoring_check', checkId, { result });
   return jsonResponse({ message: 'Check result recorded', result_id: resultId, result }, 201);
 }
 
@@ -1761,6 +2047,87 @@ async function handleBulkAINarrative(request, env, org, user) {
 }
 
 // ============================================================================
+// CONTROL INHERITANCE
+// ============================================================================
+
+async function handleInheritImplementations(request, env, org, user) {
+  if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const { source_system_id, target_system_id, framework_id, control_ids } = await request.json();
+  if (!source_system_id || !target_system_id || !framework_id) return jsonResponse({ error: 'source_system_id, target_system_id, and framework_id are required' }, 400);
+  if (source_system_id === target_system_id) return jsonResponse({ error: 'Source and target systems must be different' }, 400);
+
+  const source = await env.DB.prepare('SELECT * FROM systems WHERE id = ? AND org_id = ?').bind(source_system_id, org.id).first();
+  const target = await env.DB.prepare('SELECT * FROM systems WHERE id = ? AND org_id = ?').bind(target_system_id, org.id).first();
+  if (!source || !target) return jsonResponse({ error: 'System not found' }, 404);
+
+  let query = `SELECT * FROM control_implementations WHERE system_id = ? AND framework_id = ? AND org_id = ? AND status IN ('implemented', 'partially_implemented', 'alternative')`;
+  const params = [source_system_id, framework_id, org.id];
+  if (control_ids?.length) {
+    query += ` AND control_id IN (${control_ids.map(() => '?').join(',')})`;
+    params.push(...control_ids);
+  }
+  const { results: sourceImpls } = await env.DB.prepare(query).bind(...params).all();
+
+  // Get existing target implementations to skip non-inherited ones
+  const { results: targetImpls } = await env.DB.prepare(
+    'SELECT control_id, inherited FROM control_implementations WHERE system_id = ? AND framework_id = ? AND org_id = ?'
+  ).bind(target_system_id, framework_id, org.id).all();
+  const targetMap = {};
+  for (const t of targetImpls) targetMap[t.control_id] = t;
+
+  let inherited_count = 0, skipped_count = 0;
+  for (const src of sourceImpls) {
+    const existing = targetMap[src.control_id];
+    // Skip if target has a non-inherited implementation (don't overwrite manual work)
+    if (existing && !existing.inherited) { skipped_count++; continue; }
+
+    await env.DB.prepare(
+      `INSERT INTO control_implementations (id, org_id, system_id, framework_id, control_id, status, implementation_description, responsible_role, ai_narrative, inherited, inherited_from)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+       ON CONFLICT(system_id, framework_id, control_id) DO UPDATE SET
+         status = ?, implementation_description = ?, responsible_role = ?, ai_narrative = ?,
+         inherited = 1, inherited_from = ?, updated_at = datetime('now')`
+    ).bind(
+      generateId(), org.id, target_system_id, framework_id, src.control_id,
+      src.status, src.implementation_description, src.responsible_role, src.ai_narrative, source_system_id,
+      src.status, src.implementation_description, src.responsible_role, src.ai_narrative, source_system_id
+    ).run();
+    inherited_count++;
+  }
+
+  await auditLog(env, org.id, user.id, 'inherit', 'control_implementation', framework_id, { source: source_system_id, target: target_system_id, count: inherited_count });
+  return jsonResponse({ inherited_count, skipped_count, source_name: source.name, target_name: target.name }, 201);
+}
+
+async function handleSyncInherited(request, env, org, user) {
+  if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const { system_id, framework_id } = await request.json();
+  if (!system_id || !framework_id) return jsonResponse({ error: 'system_id and framework_id are required' }, 400);
+
+  const { results: inherited } = await env.DB.prepare(
+    'SELECT * FROM control_implementations WHERE system_id = ? AND framework_id = ? AND org_id = ? AND inherited = 1'
+  ).bind(system_id, framework_id, org.id).all();
+
+  let synced = 0;
+  for (const impl of inherited) {
+    if (!impl.inherited_from) continue;
+    const source = await env.DB.prepare(
+      'SELECT * FROM control_implementations WHERE system_id = ? AND framework_id = ? AND control_id = ? AND org_id = ?'
+    ).bind(impl.inherited_from, framework_id, impl.control_id, org.id).first();
+    if (!source) continue;
+
+    await env.DB.prepare(
+      `UPDATE control_implementations SET status = ?, implementation_description = ?, responsible_role = ?, ai_narrative = ?, updated_at = datetime('now')
+       WHERE id = ?`
+    ).bind(source.status, source.implementation_description, source.responsible_role, source.ai_narrative, impl.id).run();
+    synced++;
+  }
+
+  await auditLog(env, org.id, user.id, 'sync_inherited', 'control_implementation', framework_id, { system_id, count: synced });
+  return jsonResponse({ synced_count: synced });
+}
+
+// ============================================================================
 // DASHBOARD ANALYTICS (Feature 6)
 // ============================================================================
 
@@ -1804,6 +2171,10 @@ async function handleCreateComplianceSnapshot(request, env, org, user) {
     inserted++;
   }
   await auditLog(env, org.id, user.id, 'create_snapshot', 'compliance_snapshot', today, { count: inserted });
+  for (const c of Object.values(combos)) {
+    const pct = c.total > 0 ? Math.round(((c.implemented + c.not_applicable) / c.total) * 100) : 0;
+    if (pct < 70) await notifyOrgRole(env, org.id, user.id, 'admin', 'compliance_alert', 'Compliance Below Threshold', 'Compliance at ' + pct + '% (below 70% threshold)', 'compliance_snapshot', c.framework_id, { percentage: pct });
+  }
   return jsonResponse({ message: `Created ${inserted} snapshots for ${today}` }, 201);
 }
 

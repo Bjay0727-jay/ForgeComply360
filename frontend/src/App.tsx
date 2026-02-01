@@ -19,6 +19,8 @@ import { CrosswalksPage } from './pages/CrosswalksPage';
 import { AIWriterPage } from './pages/AIWriterPage';
 import { MonitoringPage } from './pages/MonitoringPage';
 import { UsersPage } from './pages/UsersPage';
+import { AuditLogPage } from './pages/AuditLogPage';
+import { NotificationsPage } from './pages/NotificationsPage';
 
 function AppRoutes() {
   const { user, org, loading } = useAuth();
@@ -69,6 +71,8 @@ function AppRoutes() {
           <Route path="/ai-writer" element={<AIWriterPage />} />
           <Route path="/monitoring" element={<MonitoringPage />} />
           <Route path="/users" element={<UsersPage />} />
+          <Route path="/audit-log" element={<AuditLogPage />} />
+          <Route path="/notifications" element={<NotificationsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

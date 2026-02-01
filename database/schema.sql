@@ -224,6 +224,7 @@ CREATE INDEX IF NOT EXISTS idx_impl_system ON control_implementations(system_id)
 CREATE INDEX IF NOT EXISTS idx_impl_framework ON control_implementations(framework_id);
 CREATE INDEX IF NOT EXISTS idx_impl_status ON control_implementations(status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_impl_unique ON control_implementations(system_id, framework_id, control_id);
+CREATE INDEX IF NOT EXISTS idx_impl_inherited ON control_implementations(inherited, inherited_from);
 
 -- ============================================================================
 -- EVIDENCE VAULT
@@ -274,7 +275,7 @@ CREATE TABLE IF NOT EXISTS poams (
   control_id TEXT,
   framework_id TEXT,
   risk_level TEXT DEFAULT 'moderate' CHECK (risk_level IN ('low', 'moderate', 'high', 'critical')),
-  status TEXT DEFAULT 'open' CHECK (status IN ('open', 'in_progress', 'completed', 'accepted', 'deferred')),
+  status TEXT DEFAULT 'draft' CHECK (status IN ('draft', 'open', 'in_progress', 'verification', 'completed', 'accepted', 'deferred')),
   scheduled_completion TEXT,
   actual_completion TEXT,
   milestones TEXT DEFAULT '[]',
@@ -283,6 +284,7 @@ CREATE TABLE IF NOT EXISTS poams (
   vendor_dependency INTEGER DEFAULT 0,
   cost_estimate REAL,
   comments TEXT,
+  assigned_to TEXT REFERENCES users(id),
   created_by TEXT REFERENCES users(id),
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now'))
@@ -291,6 +293,32 @@ CREATE TABLE IF NOT EXISTS poams (
 CREATE INDEX IF NOT EXISTS idx_poams_org ON poams(org_id);
 CREATE INDEX IF NOT EXISTS idx_poams_system ON poams(system_id);
 CREATE INDEX IF NOT EXISTS idx_poams_status ON poams(status);
+CREATE INDEX IF NOT EXISTS idx_poams_assigned ON poams(assigned_to);
+
+-- POA&M Milestones (proper tracking table replacing JSON milestones field)
+CREATE TABLE IF NOT EXISTS poam_milestones (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  poam_id TEXT NOT NULL REFERENCES poams(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  target_date TEXT,
+  status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'in_progress', 'completed')),
+  completion_date TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_poam_milestones_poam ON poam_milestones(poam_id);
+
+-- POA&M Comments (timestamped, user-attributed)
+CREATE TABLE IF NOT EXISTS poam_comments (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  poam_id TEXT NOT NULL REFERENCES poams(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  content TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_poam_comments_poam ON poam_comments(poam_id);
 
 -- ============================================================================
 -- SSP DOCUMENTS
@@ -418,6 +446,41 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 CREATE INDEX IF NOT EXISTS idx_audit_org ON audit_logs(org_id);
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs(action);
+
+-- ============================================================================
+-- NOTIFICATIONS & ALERTS
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL,
+  recipient_user_id TEXT NOT NULL,
+  type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  message TEXT NOT NULL,
+  resource_type TEXT,
+  resource_id TEXT,
+  details TEXT DEFAULT '{}',
+  is_read INTEGER DEFAULT 0,
+  read_at TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_notif_recipient ON notifications(recipient_user_id, is_read, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notif_org ON notifications(org_id);
+
+CREATE TABLE IF NOT EXISTS notification_preferences (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL UNIQUE,
+  poam_update INTEGER DEFAULT 1,
+  risk_alert INTEGER DEFAULT 1,
+  monitoring_fail INTEGER DEFAULT 1,
+  control_change INTEGER DEFAULT 1,
+  role_change INTEGER DEFAULT 1,
+  compliance_alert INTEGER DEFAULT 1,
+  evidence_upload INTEGER DEFAULT 1,
+  updated_at TEXT DEFAULT (datetime('now'))
+);
 
 -- ============================================================================
 -- ADD-ON MODULES

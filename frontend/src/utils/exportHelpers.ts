@@ -299,3 +299,81 @@ export function exportControlsCSV(
   const safeName = frameworkName.replace(/[^a-zA-Z0-9_\- ]/g, '').replace(/\s+/g, '_');
   downloadBlob(blob, `${safeName}_Controls_Export.csv`);
 }
+
+// ---------------------------------------------------------------------------
+// 4. Export audit logs as CSV
+// ---------------------------------------------------------------------------
+
+export function exportAuditLogCSV(logs: any[]): void {
+  const headers = [
+    'Timestamp',
+    'User',
+    'Email',
+    'Action',
+    'Resource Type',
+    'Resource ID',
+    'Details',
+    'IP Address',
+  ];
+
+  const rows: string[] = [headers.map(csvCell).join(',')];
+
+  for (const log of logs) {
+    let details = '';
+    try {
+      const obj = typeof log.details === 'string' ? JSON.parse(log.details) : log.details;
+      details = JSON.stringify(obj);
+    } catch {
+      details = log.details || '';
+    }
+    const row = [
+      csvCell(log.created_at || ''),
+      csvCell(log.user_name || 'System'),
+      csvCell(log.user_email || ''),
+      csvCell(log.action || ''),
+      csvCell(log.resource_type || ''),
+      csvCell(log.resource_id || ''),
+      csvCell(details),
+      csvCell(log.ip_address || ''),
+    ];
+    rows.push(row.join(','));
+  }
+
+  const csv = rows.join('\r\n');
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+  const date = new Date().toISOString().split('T')[0];
+  downloadBlob(blob, `Activity_Log_Export_${date}.csv`);
+}
+
+/**
+ * Export POA&Ms to CSV.
+ */
+export function exportPoamsCSV(poams: any[]): void {
+  const headers = ['POA&M ID', 'Weakness Name', 'Description', 'System', 'Risk Level', 'Status', 'Days Open', 'Due Date', 'Overdue', 'Assigned To', 'Responsible Party', 'Cost Estimate', 'Milestones', 'Created'];
+  const rows: string[] = [headers.map(csvCell).join(',')];
+
+  for (const p of poams) {
+    const row = [
+      csvCell(p.poam_id),
+      csvCell(p.weakness_name),
+      csvCell(p.weakness_description),
+      csvCell(p.system_name || ''),
+      csvCell(p.risk_level),
+      csvCell(p.status),
+      csvCell(p.days_open),
+      csvCell(p.scheduled_completion),
+      csvCell(p.is_overdue ? 'Yes' : 'No'),
+      csvCell(p.assigned_to_name || ''),
+      csvCell(p.responsible_party || ''),
+      csvCell(p.cost_estimate || ''),
+      csvCell(p.milestone_total > 0 ? `${p.milestone_completed}/${p.milestone_total}` : ''),
+      csvCell(p.created_at),
+    ];
+    rows.push(row.join(','));
+  }
+
+  const csv = rows.join('\r\n');
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+  const date = new Date().toISOString().split('T')[0];
+  downloadBlob(blob, `POAMs_Export_${date}.csv`);
+}

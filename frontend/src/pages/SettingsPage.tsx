@@ -11,6 +11,10 @@ export function SettingsPage() {
   const [subscription, setSubscription] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [experienceType, setExperienceType] = useState(org?.experience_type || 'enterprise');
+  const [notifPrefs, setNotifPrefs] = useState<Record<string, number>>({
+    poam_update: 1, risk_alert: 1, monitoring_fail: 1, control_change: 1,
+    role_change: 1, compliance_alert: 1, evidence_upload: 1,
+  });
 
   const load = () => {
     Promise.all([
@@ -24,6 +28,25 @@ export function SettingsPage() {
     }).finally(() => setLoading(false));
   };
   useEffect(load, []);
+
+  useEffect(() => {
+    api('/api/v1/notification-preferences')
+      .then((d) => { if (d.preferences) setNotifPrefs(d.preferences); })
+      .catch(() => {});
+  }, []);
+
+  const toggleNotifPref = async (key: string) => {
+    const newVal = notifPrefs[key] ? 0 : 1;
+    setNotifPrefs((prev) => ({ ...prev, [key]: newVal }));
+    try {
+      await api('/api/v1/notification-preferences', {
+        method: 'PUT',
+        body: JSON.stringify({ [key]: newVal }),
+      });
+    } catch {
+      setNotifPrefs((prev) => ({ ...prev, [key]: newVal ? 0 : 1 }));
+    }
+  };
 
   const enableFramework = async (fwId: string) => {
     try {
@@ -92,6 +115,36 @@ export function SettingsPage() {
           )}
         </div>
       )}
+
+      {/* Notification Preferences */}
+      <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
+        <h2 className="font-semibold text-gray-900 mb-2">Notification Preferences</h2>
+        <p className="text-sm text-gray-500 mb-4">Choose which notifications you receive.</p>
+        <div className="space-y-3">
+          {[
+            { key: 'poam_update', label: 'POA&M Updates', desc: 'When POA&Ms are created or their status changes' },
+            { key: 'risk_alert', label: 'Risk Alerts', desc: 'When high or critical risks are created or escalated' },
+            { key: 'monitoring_fail', label: 'Monitoring Failures', desc: 'When monitoring checks fail or error' },
+            { key: 'control_change', label: 'Control Changes', desc: 'When controls are set to not implemented' },
+            { key: 'role_change', label: 'Role Changes', desc: 'When your user role is changed' },
+            { key: 'compliance_alert', label: 'Compliance Alerts', desc: 'When compliance drops below 70% threshold' },
+            { key: 'evidence_upload', label: 'Evidence Uploads', desc: 'When new evidence files are uploaded' },
+          ].map((item) => (
+            <div key={item.key} className="flex items-center justify-between py-2">
+              <div>
+                <p className="text-sm font-medium text-gray-900">{item.label}</p>
+                <p className="text-xs text-gray-500">{item.desc}</p>
+              </div>
+              <button
+                onClick={() => toggleNotifPref(item.key)}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${notifPrefs[item.key] ? 'bg-blue-600' : 'bg-gray-300'}`}
+              >
+                <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${notifPrefs[item.key] ? 'translate-x-6' : 'translate-x-1'}`} />
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
 
       {/* Frameworks */}
       <div className="bg-white rounded-xl border border-gray-200 p-6">

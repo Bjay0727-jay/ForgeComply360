@@ -37,6 +37,14 @@ export function ControlsPage() {
   const [allEvidence, setAllEvidence] = useState<any[]>([]);
   const [showEvidencePicker, setShowEvidencePicker] = useState(false);
 
+  // Inheritance state
+  const [inheritFilter, setInheritFilter] = useState<'' | 'inherited' | 'native'>('');
+  const [showInheritModal, setShowInheritModal] = useState(false);
+  const [inheritSource, setInheritSource] = useState('');
+  const [inheriting, setInheriting] = useState(false);
+  const [inheritResult, setInheritResult] = useState<{ inherited_count: number; skipped_count: number; source_name: string } | null>(null);
+  const [syncing, setSyncing] = useState(false);
+
   useEffect(() => {
     Promise.all([
       api('/api/v1/frameworks/enabled'),
@@ -55,15 +63,19 @@ export function ControlsPage() {
       .then((d) => { setControls(d.controls); setTotal(d.total); });
   }, [selectedFw, page, search]);
 
-  useEffect(() => {
+  const loadImplementations = () => {
     if (!selectedFw || !selectedSystem) return;
-    api(`/api/v1/implementations?system_id=${selectedSystem}&framework_id=${selectedFw}`)
+    const params = new URLSearchParams({ system_id: selectedSystem, framework_id: selectedFw });
+    if (inheritFilter) params.set('inherited', inheritFilter === 'inherited' ? '1' : '0');
+    api(`/api/v1/implementations?${params.toString()}`)
       .then((d) => {
         const map: Record<string, any> = {};
         d.implementations.forEach((impl: any) => { map[impl.control_id] = impl; });
         setImplementations(map);
       });
-  }, [selectedFw, selectedSystem]);
+  };
+
+  useEffect(() => { loadImplementations(); }, [selectedFw, selectedSystem, inheritFilter]);
 
   const updateStatus = async (controlId: string, status: string) => {
     if (!selectedSystem || !selectedFw || !canEdit) return;
@@ -280,6 +292,37 @@ export function ControlsPage() {
     } catch { }
   };
 
+  const handleInherit = async () => {
+    if (!inheritSource || !selectedSystem || !selectedFw) return;
+    setInheriting(true);
+    setInheritResult(null);
+    try {
+      const result = await api('/api/v1/implementations/inherit', {
+        method: 'POST',
+        body: JSON.stringify({ source_system_id: inheritSource, target_system_id: selectedSystem, framework_id: selectedFw }),
+      });
+      setInheritResult({ inherited_count: result.inherited_count, skipped_count: result.skipped_count, source_name: result.source_name });
+      loadImplementations();
+    } catch (e: any) { alert(e.message || 'Failed to inherit controls'); }
+    finally { setInheriting(false); }
+  };
+
+  const handleSyncInherited = async () => {
+    if (!selectedSystem || !selectedFw) return;
+    setSyncing(true);
+    try {
+      const result = await api('/api/v1/implementations/sync-inherited', {
+        method: 'POST',
+        body: JSON.stringify({ system_id: selectedSystem, framework_id: selectedFw }),
+      });
+      alert(`Synced ${result.synced_count} inherited control(s) from source.`);
+      loadImplementations();
+    } catch (e: any) { alert(e.message || 'Failed to sync'); }
+    finally { setSyncing(false); }
+  };
+
+  const inheritedCount = Object.values(implementations).filter((i: any) => i.inherited === 1).length;
+
   const statusOptions = [
     { value: 'implemented', label: 'Implemented', color: 'bg-green-100 text-green-700' },
     { value: 'partially_implemented', label: 'Partial', color: 'bg-yellow-100 text-yellow-700' },
@@ -316,7 +359,12 @@ export function ControlsPage() {
             {systems.length === 0 && <option>No systems created</option>}
           </select>
           <input type="text" placeholder={`Search ${t('control').toLowerCase()}s...`} value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} className="px-4 py-2.5 border border-gray-300 rounded-lg text-sm" />
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap">
+            <select value={inheritFilter} onChange={(e) => setInheritFilter(e.target.value as any)} className="px-3 py-2.5 border border-gray-300 rounded-lg text-xs">
+              <option value="">All Controls</option>
+              <option value="inherited">Inherited Only</option>
+              <option value="native">Native Only</option>
+            </select>
             <button
               onClick={() => exportControlsCSV(controls, implementations, frameworks.find(f => f.id === selectedFw)?.name || 'Controls')}
               className="px-3 py-2.5 border border-gray-300 rounded-lg text-xs font-medium text-gray-700 hover:bg-gray-50 flex items-center gap-1"
@@ -331,6 +379,25 @@ export function ControlsPage() {
               >
                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" /></svg>
                 Bulk
+              </button>
+            )}
+            {canEdit && systems.length > 1 && (
+              <button
+                onClick={() => { setShowInheritModal(true); setInheritSource(''); setInheritResult(null); }}
+                className="px-3 py-2.5 border border-teal-300 bg-teal-50 rounded-lg text-xs font-medium text-teal-700 hover:bg-teal-100 flex items-center gap-1"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" /></svg>
+                Inherit
+              </button>
+            )}
+            {canEdit && inheritedCount > 0 && (
+              <button
+                onClick={handleSyncInherited}
+                disabled={syncing}
+                className="px-3 py-2.5 border border-teal-300 bg-teal-50 rounded-lg text-xs font-medium text-teal-700 hover:bg-teal-100 flex items-center gap-1 disabled:opacity-50"
+              >
+                <svg className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                {syncing ? 'Syncing...' : `Sync Inherited (${inheritedCount})`}
               </button>
             )}
           </div>
@@ -407,6 +474,16 @@ export function ControlsPage() {
                       {impl?.ai_narrative && (
                         <span className="text-xs px-1.5 py-0.5 bg-purple-50 text-purple-600 rounded font-medium">AI Narrative</span>
                       )}
+                      {impl?.inherited === 1 && (
+                        <span className="text-xs px-1.5 py-0.5 bg-teal-50 text-teal-700 rounded font-medium border border-teal-200">
+                          Inherited{impl.inherited_from_name ? ` from ${impl.inherited_from_name}` : ''}
+                        </span>
+                      )}
+                      {impl?.inherited === 0 && impl?.inherited_from && (
+                        <span className="text-xs px-1.5 py-0.5 bg-amber-50 text-amber-700 rounded font-medium border border-amber-200">
+                          Customized{impl.inherited_from_name ? ` (from ${impl.inherited_from_name})` : ''}
+                        </span>
+                      )}
                     </div>
                     {!isExpanded && ctrl.description && <p className="text-xs text-gray-500 line-clamp-2 ml-6">{ctrl.description}</p>}
                   </div>
@@ -451,6 +528,40 @@ export function ControlsPage() {
                     <div className="mb-4 p-3 bg-blue-50 rounded-lg border border-blue-100">
                       <p className="text-xs font-medium text-blue-700 mb-1">Control Description</p>
                       <p className="text-sm text-gray-700">{ctrl.description}</p>
+                    </div>
+                  )}
+
+                  {/* Inheritance Info Banner */}
+                  {impl?.inherited === 1 && (
+                    <div className="mb-4 p-3 bg-teal-50 rounded-lg border border-teal-200 flex items-center justify-between">
+                      <div>
+                        <p className="text-xs font-medium text-teal-700">
+                          Inherited from {impl.inherited_from_name || 'another system'}
+                        </p>
+                        <p className="text-xs text-teal-600 mt-0.5">Editing this control will mark it as customized and break the inheritance link.</p>
+                      </div>
+                      <button
+                        onClick={async () => {
+                          try {
+                            await api('/api/v1/implementations/sync-inherited', {
+                              method: 'POST',
+                              body: JSON.stringify({ system_id: selectedSystem, framework_id: selectedFw }),
+                            });
+                            loadImplementations();
+                          } catch {}
+                        }}
+                        className="px-2.5 py-1.5 bg-teal-100 text-teal-700 rounded-lg text-xs font-medium hover:bg-teal-200 border border-teal-300 flex-shrink-0"
+                      >
+                        Sync from Source
+                      </button>
+                    </div>
+                  )}
+                  {impl?.inherited === 0 && impl?.inherited_from && (
+                    <div className="mb-4 p-3 bg-amber-50 rounded-lg border border-amber-200">
+                      <p className="text-xs font-medium text-amber-700">
+                        Customized (originally inherited from {impl.inherited_from_name || 'another system'})
+                      </p>
+                      <p className="text-xs text-amber-600 mt-0.5">This control was inherited but has been manually edited. Re-inherit to restore the source values.</p>
                     </div>
                   )}
 
@@ -670,6 +781,64 @@ export function ControlsPage() {
           <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1} className="px-3 py-1.5 border rounded text-sm disabled:opacity-50">Prev</button>
           <span className="px-3 py-1.5 text-sm text-gray-600">Page {page} of {Math.ceil(total / 50)}</span>
           <button onClick={() => setPage((p) => p + 1)} disabled={page >= Math.ceil(total / 50)} className="px-3 py-1.5 border rounded text-sm disabled:opacity-50">Next</button>
+        </div>
+      )}
+
+      {/* Inherit Controls Modal */}
+      {showInheritModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-xl border border-gray-200 shadow-xl w-full max-w-md p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-1">Inherit Controls</h3>
+            <p className="text-sm text-gray-500 mb-4">
+              Copy implemented controls from another system into <strong>{systems.find(s => s.id === selectedSystem)?.name}</strong>.
+              Controls already implemented natively will be skipped.
+            </p>
+
+            <label className="block text-xs font-medium text-gray-700 mb-1">Source System</label>
+            <select
+              value={inheritSource}
+              onChange={(e) => setInheritSource(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm mb-4"
+            >
+              <option value="">Select a source system...</option>
+              {systems.filter(s => s.id !== selectedSystem).map(s => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+
+            {inheritResult && (
+              <div className="mb-4 p-3 bg-green-50 rounded-lg border border-green-200">
+                <p className="text-sm text-green-800 font-medium">
+                  Inherited {inheritResult.inherited_count} control(s) from {inheritResult.source_name}
+                </p>
+                {inheritResult.skipped_count > 0 && (
+                  <p className="text-xs text-green-600 mt-0.5">{inheritResult.skipped_count} control(s) skipped (already implemented)</p>
+                )}
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setShowInheritModal(false)}
+                className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50"
+              >
+                {inheritResult ? 'Close' : 'Cancel'}
+              </button>
+              {!inheritResult && (
+                <button
+                  onClick={handleInherit}
+                  disabled={!inheritSource || inheriting}
+                  className="px-4 py-2 bg-teal-600 text-white rounded-lg text-sm font-medium hover:bg-teal-700 disabled:opacity-50 flex items-center gap-2"
+                >
+                  {inheriting ? (
+                    <><div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" /> Inheriting...</>
+                  ) : (
+                    <><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" /></svg> Inherit Controls</>
+                  )}
+                </button>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>
