@@ -15,6 +15,7 @@ export function SettingsPage() {
     poam_update: 1, risk_alert: 1, monitoring_fail: 1, control_change: 1,
     role_change: 1, compliance_alert: 1, evidence_upload: 1,
     approval_request: 1, approval_decision: 1,
+    evidence_reminder: 1, evidence_expiry: 1,
   });
 
   const load = () => {
@@ -132,6 +133,8 @@ export function SettingsPage() {
             { key: 'evidence_upload', label: 'Evidence Uploads', desc: 'When new evidence files are uploaded' },
             { key: 'approval_request', label: 'Approval Requests', desc: 'When someone requests your approval for a sensitive action' },
             { key: 'approval_decision', label: 'Approval Decisions', desc: 'When your approval request is approved or rejected' },
+            { key: 'evidence_reminder', label: 'Evidence Reminders', desc: 'When evidence schedules are due or overdue' },
+            { key: 'evidence_expiry', label: 'Evidence Expiry Alerts', desc: 'When evidence files expire or are expiring soon' },
           ].map((item) => (
             <div key={item.key} className="flex items-center justify-between py-2">
               <div>

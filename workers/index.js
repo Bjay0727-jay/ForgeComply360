@@ -30,6 +30,10 @@ export default {
       return jsonResponse({ error: 'Internal server error' }, 500, corsOrigin);
     }
   },
+
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(handleScheduledEvidenceChecks(env));
+  },
 };
 
 function corsHeaders(origin) {
@@ -136,6 +140,15 @@ async function handleRequest(request, env, url) {
     return handleDownloadEvidence(env, org, id);
   }
   if (path === '/api/v1/evidence/link' && method === 'POST') return handleLinkEvidence(request, env, org, user);
+
+  // Evidence Schedules
+  if (path === '/api/v1/evidence/schedules/stats' && method === 'GET') return handleEvidenceScheduleStats(env, org);
+  if (path === '/api/v1/evidence/schedules' && method === 'GET') return handleListEvidenceSchedules(env, org, url);
+  if (path === '/api/v1/evidence/schedules' && method === 'POST') return handleCreateEvidenceSchedule(request, env, org, user);
+  if (path.match(/^\/api\/v1\/evidence\/schedules\/[\w-]+\/complete$/) && method === 'POST') return handleCompleteEvidenceSchedule(request, env, org, user, path.split('/')[5]);
+  if (path.match(/^\/api\/v1\/evidence\/schedules\/[\w-]+$/) && method === 'GET') return handleGetEvidenceSchedule(env, org, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/evidence\/schedules\/[\w-]+$/) && method === 'PUT') return handleUpdateEvidenceSchedule(request, env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/evidence\/schedules\/[\w-]+$/) && method === 'DELETE') return handleDeleteEvidenceSchedule(env, org, user, path.split('/')[4]);
 
   // SSP / OSCAL
   if (path === '/api/v1/ssp/generate' && method === 'POST') return handleGenerateSSP(request, env, org, user);
@@ -405,7 +418,11 @@ async function createNotification(env, orgId, recipientUserId, type, title, mess
 async function notifyOrgRole(env, orgId, actorId, minRole, type, title, message, resourceType, resourceId, details = {}) {
   try {
     const minLevel = ROLE_HIERARCHY[minRole] ?? 99;
-    const { results: users } = await env.DB.prepare('SELECT id, role FROM users WHERE org_id = ? AND id != ?').bind(orgId, actorId).all();
+    const query = actorId
+      ? 'SELECT id, role FROM users WHERE org_id = ? AND id != ?'
+      : 'SELECT id, role FROM users WHERE org_id = ?';
+    const bindings = actorId ? [orgId, actorId] : [orgId];
+    const { results: users } = await env.DB.prepare(query).bind(...bindings).all();
     for (const u of users) {
       if ((ROLE_HIERARCHY[u.role] ?? 0) >= minLevel) {
         await createNotification(env, orgId, u.id, type, title, message, resourceType, resourceId, details);
@@ -1140,6 +1157,8 @@ async function handleUploadEvidence(request, env, org, user) {
   const file = formData.get('file');
   const title = formData.get('title') || file.name;
   const description = formData.get('description') || '';
+  const collectionDate = formData.get('collection_date') || null;
+  const expiryDate = formData.get('expiry_date') || null;
 
   if (!file) return jsonResponse({ error: 'No file provided' }, 400);
 
@@ -1155,9 +1174,9 @@ async function handleUploadEvidence(request, env, org, user) {
   });
 
   await env.DB.prepare(
-    `INSERT INTO evidence (id, org_id, title, description, file_name, file_size, file_type, r2_key, sha256_hash, uploaded_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(id, org.id, title, description, file.name, arrayBuffer.byteLength, file.type, r2Key, sha256, user.id).run();
+    `INSERT INTO evidence (id, org_id, title, description, file_name, file_size, file_type, r2_key, sha256_hash, uploaded_by, collection_date, expiry_date)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(id, org.id, title, description, file.name, arrayBuffer.byteLength, file.type, r2Key, sha256, user.id, collectionDate, expiryDate).run();
 
   await auditLog(env, org.id, user.id, 'upload', 'evidence', id, { file_name: file.name, size: arrayBuffer.byteLength });
   await notifyOrgRole(env, org.id, user.id, 'manager', 'evidence_upload', 'New Evidence Uploaded', 'Evidence file "' + file.name + '" was uploaded', 'evidence', id, {});
@@ -2026,7 +2045,7 @@ async function handleGetNotificationPrefs(env, user) {
 
 async function handleUpdateNotificationPrefs(request, env, user) {
   const body = await request.json();
-  const types = ['poam_update', 'risk_alert', 'monitoring_fail', 'control_change', 'role_change', 'compliance_alert', 'evidence_upload', 'approval_request', 'approval_decision'];
+  const types = ['poam_update', 'risk_alert', 'monitoring_fail', 'control_change', 'role_change', 'compliance_alert', 'evidence_upload', 'approval_request', 'approval_decision', 'evidence_reminder', 'evidence_expiry'];
   const values = types.map(t => body[t] !== undefined ? (body[t] ? 1 : 0) : 1);
 
   await env.DB.prepare(
@@ -3091,4 +3110,235 @@ async function handleRejectRequest(request, env, org, user, approvalId) {
 
   const updated = await env.DB.prepare('SELECT * FROM approval_requests WHERE id = ?').bind(approvalId).first();
   return jsonResponse({ approval: { ...updated, snapshot: JSON.parse(updated.snapshot || '{}') } });
+}
+
+// ============================================================================
+// EVIDENCE SCHEDULING & REMINDERS
+// ============================================================================
+
+function calculateNextDueDate(cadence, customIntervalDays, fromDate = null) {
+  const base = fromDate ? new Date(fromDate) : new Date();
+  const next = new Date(base);
+  switch (cadence) {
+    case 'weekly': next.setDate(base.getDate() + 7); break;
+    case 'monthly': next.setMonth(base.getMonth() + 1); break;
+    case 'quarterly': next.setMonth(base.getMonth() + 3); break;
+    case 'annually': next.setFullYear(base.getFullYear() + 1); break;
+    case 'custom':
+      if (customIntervalDays) next.setDate(base.getDate() + customIntervalDays);
+      break;
+  }
+  return next.toISOString().split('T')[0];
+}
+
+async function handleListEvidenceSchedules(env, org, url) {
+  const params = new URL(url).searchParams;
+  const owner = params.get('owner');
+  const active = params.get('active');
+
+  let query = `SELECT es.*, u.name as owner_name, u.email as owner_email, cu.name as created_by_name
+    FROM evidence_schedules es
+    LEFT JOIN users u ON u.id = es.owner_user_id
+    LEFT JOIN users cu ON cu.id = es.created_by
+    WHERE es.org_id = ?`;
+  const bindings = [org.id];
+
+  if (owner) { query += ' AND es.owner_user_id = ?'; bindings.push(owner); }
+  if (active !== null && active !== undefined && active !== '') { query += ' AND es.is_active = ?'; bindings.push(active === 'true' ? 1 : 0); }
+
+  query += ' ORDER BY es.next_due_date ASC, es.created_at DESC';
+  const { results } = await env.DB.prepare(query).bind(...bindings).all();
+  for (const s of results) { try { s.control_ids = JSON.parse(s.control_ids || '[]'); } catch { s.control_ids = []; } }
+  return jsonResponse({ schedules: results });
+}
+
+async function handleCreateEvidenceSchedule(request, env, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const { title, description, cadence, custom_interval_days, owner_user_id, control_ids } = await request.json();
+  if (!title || !cadence || !owner_user_id) return jsonResponse({ error: 'title, cadence, and owner_user_id required' }, 400);
+  if (cadence === 'custom' && (!custom_interval_days || custom_interval_days < 1)) return jsonResponse({ error: 'custom_interval_days required for custom cadence' }, 400);
+
+  const nextDueDate = calculateNextDueDate(cadence, custom_interval_days);
+  const id = generateId();
+
+  await env.DB.prepare(
+    `INSERT INTO evidence_schedules (id, org_id, title, description, cadence, custom_interval_days, owner_user_id, control_ids, next_due_date, created_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(id, org.id, title, description || null, cadence, custom_interval_days || null, owner_user_id, JSON.stringify(control_ids || []), nextDueDate, user.id).run();
+
+  await auditLog(env, org.id, user.id, 'create', 'evidence_schedule', id, { title, cadence });
+
+  if (owner_user_id !== user.id) {
+    await createNotification(env, org.id, owner_user_id, 'evidence_reminder', 'Evidence Schedule Assigned',
+      `You were assigned evidence schedule "${title}" (${cadence})`, 'evidence_schedule', id, {});
+  }
+
+  const schedule = await env.DB.prepare('SELECT * FROM evidence_schedules WHERE id = ?').bind(id).first();
+  if (schedule) { try { schedule.control_ids = JSON.parse(schedule.control_ids || '[]'); } catch { schedule.control_ids = []; } }
+  return jsonResponse({ schedule }, 201);
+}
+
+async function handleGetEvidenceSchedule(env, org, scheduleId) {
+  const schedule = await env.DB.prepare(
+    `SELECT es.*, u.name as owner_name, u.email as owner_email
+     FROM evidence_schedules es LEFT JOIN users u ON u.id = es.owner_user_id
+     WHERE es.id = ? AND es.org_id = ?`
+  ).bind(scheduleId, org.id).first();
+  if (!schedule) return jsonResponse({ error: 'Schedule not found' }, 404);
+  try { schedule.control_ids = JSON.parse(schedule.control_ids || '[]'); } catch { schedule.control_ids = []; }
+  return jsonResponse({ schedule });
+}
+
+async function handleUpdateEvidenceSchedule(request, env, org, user, scheduleId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const schedule = await env.DB.prepare('SELECT * FROM evidence_schedules WHERE id = ? AND org_id = ?').bind(scheduleId, org.id).first();
+  if (!schedule) return jsonResponse({ error: 'Schedule not found' }, 404);
+
+  const body = await request.json();
+  const fields = ['title', 'description', 'cadence', 'custom_interval_days', 'owner_user_id', 'control_ids', 'is_active'];
+  const updates = [];
+  const values = [];
+
+  for (const field of fields) {
+    if (body[field] !== undefined) {
+      updates.push(`${field} = ?`);
+      values.push(field === 'control_ids' ? JSON.stringify(body[field]) : body[field]);
+    }
+  }
+
+  if (body.cadence || body.custom_interval_days) {
+    const newCadence = body.cadence || schedule.cadence;
+    const newInterval = body.custom_interval_days || schedule.custom_interval_days;
+    updates.push('next_due_date = ?');
+    values.push(calculateNextDueDate(newCadence, newInterval));
+  }
+
+  if (updates.length === 0) return jsonResponse({ error: 'No fields to update' }, 400);
+  updates.push("updated_at = datetime('now')");
+  values.push(scheduleId);
+
+  await env.DB.prepare(`UPDATE evidence_schedules SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run();
+  await auditLog(env, org.id, user.id, 'update', 'evidence_schedule', scheduleId, body);
+
+  const updated = await env.DB.prepare('SELECT * FROM evidence_schedules WHERE id = ?').bind(scheduleId).first();
+  if (updated) { try { updated.control_ids = JSON.parse(updated.control_ids || '[]'); } catch { updated.control_ids = []; } }
+  return jsonResponse({ schedule: updated });
+}
+
+async function handleDeleteEvidenceSchedule(env, org, user, scheduleId) {
+  if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const schedule = await env.DB.prepare('SELECT * FROM evidence_schedules WHERE id = ? AND org_id = ?').bind(scheduleId, org.id).first();
+  if (!schedule) return jsonResponse({ error: 'Schedule not found' }, 404);
+  await env.DB.prepare('DELETE FROM evidence_schedules WHERE id = ?').bind(scheduleId).run();
+  await auditLog(env, org.id, user.id, 'delete', 'evidence_schedule', scheduleId, { title: schedule.title });
+  return jsonResponse({ message: 'Schedule deleted' });
+}
+
+async function handleCompleteEvidenceSchedule(request, env, org, user, scheduleId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const schedule = await env.DB.prepare('SELECT * FROM evidence_schedules WHERE id = ? AND org_id = ?').bind(scheduleId, org.id).first();
+  if (!schedule) return jsonResponse({ error: 'Schedule not found' }, 404);
+
+  const body = await request.json().catch(() => ({}));
+  const nextDueDate = calculateNextDueDate(schedule.cadence, schedule.custom_interval_days);
+
+  await env.DB.prepare(
+    "UPDATE evidence_schedules SET last_completed_date = datetime('now'), next_due_date = ?, updated_at = datetime('now') WHERE id = ?"
+  ).bind(nextDueDate, scheduleId).run();
+
+  await auditLog(env, org.id, user.id, 'complete', 'evidence_schedule', scheduleId, { evidence_id: body.evidence_id || null, next_due_date: nextDueDate });
+
+  const updated = await env.DB.prepare('SELECT * FROM evidence_schedules WHERE id = ?').bind(scheduleId).first();
+  if (updated) { try { updated.control_ids = JSON.parse(updated.control_ids || '[]'); } catch { updated.control_ids = []; } }
+  return jsonResponse({ schedule: updated });
+}
+
+async function handleEvidenceScheduleStats(env, org) {
+  const { results: schedules } = await env.DB.prepare(
+    'SELECT next_due_date FROM evidence_schedules WHERE org_id = ? AND is_active = 1'
+  ).bind(org.id).all();
+
+  const today = new Date().toISOString().split('T')[0];
+  const nextWeek = new Date(); nextWeek.setDate(nextWeek.getDate() + 7);
+  const nextWeekStr = nextWeek.toISOString().split('T')[0];
+  const nextMonth = new Date(); nextMonth.setMonth(nextMonth.getMonth() + 1);
+  const nextMonthStr = nextMonth.toISOString().split('T')[0];
+
+  let overdue = 0, dueThisWeek = 0, dueThisMonth = 0;
+  for (const s of schedules) {
+    if (s.next_due_date < today) overdue++;
+    else if (s.next_due_date <= nextWeekStr) dueThisWeek++;
+    else if (s.next_due_date <= nextMonthStr) dueThisMonth++;
+  }
+
+  return jsonResponse({ stats: { total: schedules.length, overdue, due_this_week: dueThisWeek, due_this_month: dueThisMonth } });
+}
+
+// ============================================================================
+// SCHEDULED WORKER - DAILY EVIDENCE CHECKS
+// ============================================================================
+
+async function handleScheduledEvidenceChecks(env) {
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const warningDate = new Date(); warningDate.setDate(warningDate.getDate() + 14);
+    const warningDateStr = warningDate.toISOString().split('T')[0];
+
+    console.log('[CRON] Running evidence checks for:', today);
+
+    // 1. Due evidence schedules → notify owner + managers
+    const { results: dueSchedules } = await env.DB.prepare(
+      `SELECT es.*, u.name as owner_name FROM evidence_schedules es
+       LEFT JOIN users u ON u.id = es.owner_user_id
+       WHERE es.is_active = 1 AND es.next_due_date <= ?`
+    ).bind(today).all();
+
+    console.log(`[CRON] ${dueSchedules.length} due evidence schedules`);
+
+    for (const s of dueSchedules) {
+      await createNotification(env, s.org_id, s.owner_user_id, 'evidence_reminder',
+        'Evidence Collection Due',
+        `Evidence schedule "${s.title}" is due for collection`,
+        'evidence_schedule', s.id, { next_due_date: s.next_due_date });
+
+      await notifyOrgRole(env, s.org_id, null, 'manager', 'evidence_reminder',
+        'Evidence Collection Due',
+        `Evidence schedule "${s.title}" is due (owner: ${s.owner_name || 'Unknown'})`,
+        'evidence_schedule', s.id, { next_due_date: s.next_due_date });
+    }
+
+    // 2. Expired evidence → mark expired + notify managers
+    const { results: expiredEvidence } = await env.DB.prepare(
+      `SELECT * FROM evidence WHERE status = 'active' AND expiry_date IS NOT NULL AND expiry_date <= ?`
+    ).bind(today).all();
+
+    console.log(`[CRON] ${expiredEvidence.length} expired evidence items`);
+
+    for (const ev of expiredEvidence) {
+      await env.DB.prepare("UPDATE evidence SET status = 'expired', updated_at = datetime('now') WHERE id = ?").bind(ev.id).run();
+      await notifyOrgRole(env, ev.org_id, null, 'manager', 'evidence_expiry',
+        'Evidence Expired',
+        `Evidence "${ev.title}" has expired`,
+        'evidence', ev.id, { expiry_date: ev.expiry_date });
+    }
+
+    // 3. Evidence expiring within 14 days → warn managers
+    const { results: expiringEvidence } = await env.DB.prepare(
+      `SELECT * FROM evidence WHERE status = 'active' AND expiry_date IS NOT NULL AND expiry_date > ? AND expiry_date <= ?`
+    ).bind(today, warningDateStr).all();
+
+    console.log(`[CRON] ${expiringEvidence.length} evidence items expiring soon`);
+
+    for (const ev of expiringEvidence) {
+      const daysLeft = Math.ceil((new Date(ev.expiry_date) - new Date(today)) / (1000 * 60 * 60 * 24));
+      await notifyOrgRole(env, ev.org_id, null, 'manager', 'evidence_expiry',
+        'Evidence Expiring Soon',
+        `Evidence "${ev.title}" expires in ${daysLeft} day${daysLeft !== 1 ? 's' : ''} (${ev.expiry_date})`,
+        'evidence', ev.id, { expiry_date: ev.expiry_date, days_remaining: daysLeft });
+    }
+
+    console.log('[CRON] Evidence checks completed');
+  } catch (error) {
+    console.error('[CRON] Evidence check error:', error);
+  }
 }

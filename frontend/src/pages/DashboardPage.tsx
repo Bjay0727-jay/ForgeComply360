@@ -69,6 +69,7 @@ export function DashboardPage() {
   const [trends, setTrends] = useState<TrendPoint[]>([]);
   const [snapshotLoading, setSnapshotLoading] = useState(false);
   const [snapshotMsg, setSnapshotMsg] = useState('');
+  const [scheduleStats, setScheduleStats] = useState<{ total: number; overdue: number; due_this_week: number; due_this_month: number } | null>(null);
 
   useEffect(() => {
     // Core dashboard stats (always loaded)
@@ -93,6 +94,11 @@ export function DashboardPage() {
     // Compliance trends
     api<{ trends: TrendPoint[] }>('/api/v1/compliance/trends?days=30')
       .then((d) => setTrends(d.trends || []))
+      .catch(() => {});
+
+    // Evidence schedule stats
+    api<{ stats: { total: number; overdue: number; due_this_week: number; due_this_month: number } }>('/api/v1/evidence/schedules/stats')
+      .then((d) => setScheduleStats(d.stats))
       .catch(() => {});
   }, []);
 
@@ -358,6 +364,36 @@ export function DashboardPage() {
             </p>
           )}
         </div>
+
+        {/* Evidence Schedules */}
+        {scheduleStats && (scheduleStats.total > 0 || scheduleStats.overdue > 0) && (
+          <div className="bg-white rounded-xl border border-gray-200 p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="font-semibold text-gray-900">Evidence Schedules</h2>
+              <a href="/evidence/schedules" className="text-sm text-blue-600 hover:text-blue-800">View All &rarr;</a>
+            </div>
+            <div className="space-y-2">
+              {scheduleStats.overdue > 0 && (
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-600">Overdue</span>
+                  <span className="font-semibold text-red-600">{scheduleStats.overdue}</span>
+                </div>
+              )}
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-600">Due This Week</span>
+                <span className="font-semibold text-amber-600">{scheduleStats.due_this_week}</span>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-600">Due This Month</span>
+                <span className="font-semibold text-blue-600">{scheduleStats.due_this_month}</span>
+              </div>
+              <div className="flex justify-between text-sm pt-1 border-t border-gray-100">
+                <span className="text-gray-600">Total Active</span>
+                <span className="font-semibold text-gray-900">{scheduleStats.total}</span>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Quick Actions */}
         <div className="bg-white rounded-xl border border-gray-200 p-6">

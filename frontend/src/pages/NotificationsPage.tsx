@@ -12,6 +12,8 @@ const TYPE_COLORS: Record<string, string> = {
   evidence_upload: 'bg-green-100 text-green-700',
   approval_request: 'bg-amber-100 text-amber-700',
   approval_decision: 'bg-indigo-100 text-indigo-700',
+  evidence_reminder: 'bg-purple-100 text-purple-700',
+  evidence_expiry: 'bg-orange-100 text-orange-700',
 };
 
 const TYPE_LABELS: Record<string, string> = {
@@ -24,6 +26,8 @@ const TYPE_LABELS: Record<string, string> = {
   evidence_upload: 'Evidence',
   approval_request: 'Approval',
   approval_decision: 'Decision',
+  evidence_reminder: 'Evidence',
+  evidence_expiry: 'Expiry',
 };
 
 const RESOURCE_ROUTES: Record<string, string> = {
@@ -35,6 +39,7 @@ const RESOURCE_ROUTES: Record<string, string> = {
   user: '/users',
   compliance_snapshot: '/',
   approval_request: '/approvals',
+  evidence_schedule: '/evidence/schedules',
 };
 
 const ALL_TYPES = Object.keys(TYPE_LABELS);
