@@ -159,6 +159,10 @@ async function handleRequest(request, env, url) {
   if (path === '/api/v1/vendors' && method === 'GET') return handleListVendors(env, org);
   if (path === '/api/v1/vendors' && method === 'POST') return handleCreateVendor(request, env, org, user);
   if (path.match(/^\/api\/v1\/vendors\/[\w-]+$/) && method === 'PUT') return handleUpdateVendor(request, env, org, user, path.split('/').pop());
+  if (path === '/api/v1/vendors/stats' && method === 'GET') return handleVendorStats(env, org);
+  if (path.match(/^\/api\/v1\/vendors\/[\w-]+\/assess$/) && method === 'POST') return handleAssessVendor(request, env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/vendors\/[\w-]+$/) && method === 'GET') return handleGetVendor(env, org, path.split('/').pop());
+  if (path.match(/^\/api\/v1\/vendors\/[\w-]+$/) && method === 'DELETE') return handleDeleteVendor(env, org, user, path.split('/').pop());
 
   // Monitoring (ControlPulse CCM)
   if (path === '/api/v1/monitoring/checks' && method === 'GET') return handleListMonitoringChecks(env, org);
@@ -1706,6 +1710,76 @@ async function handleUpdateVendor(request, env, org, user, vendorId) {
 
   await env.DB.prepare(`UPDATE vendors SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run();
   await auditLog(env, org.id, user.id, 'update', 'vendor', vendorId, body);
+
+  const updated = await env.DB.prepare('SELECT * FROM vendors WHERE id = ?').bind(vendorId).first();
+  return jsonResponse({ vendor: updated });
+}
+
+async function handleGetVendor(env, org, vendorId) {
+  const vendor = await env.DB.prepare('SELECT * FROM vendors WHERE id = ? AND org_id = ?').bind(vendorId, org.id).first();
+  if (!vendor) return jsonResponse({ error: 'Vendor not found' }, 404);
+  return jsonResponse({ vendor });
+}
+
+async function handleDeleteVendor(env, org, user, vendorId) {
+  if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const vendor = await env.DB.prepare('SELECT * FROM vendors WHERE id = ? AND org_id = ?').bind(vendorId, org.id).first();
+  if (!vendor) return jsonResponse({ error: 'Vendor not found' }, 404);
+  await env.DB.prepare('DELETE FROM vendors WHERE id = ?').bind(vendorId).run();
+  await auditLog(env, org.id, user.id, 'delete', 'vendor', vendorId, { name: vendor.name });
+  return jsonResponse({ success: true });
+}
+
+async function handleVendorStats(env, org) {
+  const now = new Date().toISOString().split('T')[0];
+  const thirtyDaysOut = new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0];
+  const [totals, byCriticality, byStatus, byTier] = await Promise.all([
+    env.DB.prepare(
+      `SELECT COUNT(*) as total, AVG(overall_risk_score) as avg_score,
+       SUM(CASE WHEN next_assessment_date IS NOT NULL AND next_assessment_date < ? THEN 1 ELSE 0 END) as overdue_assessments,
+       SUM(CASE WHEN contract_end IS NOT NULL AND contract_end <= ? AND contract_end >= ? THEN 1 ELSE 0 END) as expiring_contracts,
+       SUM(CASE WHEN criticality IN ('critical', 'high') THEN 1 ELSE 0 END) as critical_high
+       FROM vendors WHERE org_id = ?`
+    ).bind(now, thirtyDaysOut, now, org.id).first(),
+    env.DB.prepare("SELECT criticality, COUNT(*) as count FROM vendors WHERE org_id = ? GROUP BY criticality").bind(org.id).all(),
+    env.DB.prepare("SELECT status, COUNT(*) as count FROM vendors WHERE org_id = ? GROUP BY status").bind(org.id).all(),
+    env.DB.prepare("SELECT risk_tier, COUNT(*) as count FROM vendors WHERE org_id = ? GROUP BY risk_tier").bind(org.id).all(),
+  ]);
+  const by_criticality = {}; for (const r of byCriticality.results) by_criticality[r.criticality] = r.count;
+  const by_status = {}; for (const r of byStatus.results) by_status[r.status] = r.count;
+  const by_tier = {}; for (const r of byTier.results) by_tier[r.risk_tier] = r.count;
+  return jsonResponse({ stats: { total: totals.total, avg_score: Math.round((totals.avg_score || 0) * 10) / 10, overdue_assessments: totals.overdue_assessments || 0, expiring_contracts: totals.expiring_contracts || 0, critical_high: totals.critical_high || 0, by_criticality, by_status, by_tier } });
+}
+
+async function handleAssessVendor(request, env, org, user, vendorId) {
+  if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const vendor = await env.DB.prepare('SELECT * FROM vendors WHERE id = ? AND org_id = ?').bind(vendorId, org.id).first();
+  if (!vendor) return jsonResponse({ error: 'Vendor not found' }, 404);
+
+  const body = await request.json();
+  const { security_posture, data_handling, compliance_status, incident_history, financial_stability } = body;
+  const scores = [security_posture, data_handling, compliance_status, incident_history, financial_stability];
+  if (scores.some(s => s === undefined || s < 1 || s > 5)) return jsonResponse({ error: 'All 5 assessment scores (1-5) required' }, 400);
+
+  const overall = scores.reduce((a, b) => a + b, 0);
+  const risk_tier = overall >= 21 ? 1 : overall >= 16 ? 2 : overall >= 11 ? 3 : 4;
+
+  const now = new Date();
+  const last_assessment_date = now.toISOString();
+  const intervalDays = risk_tier === 1 ? 90 : risk_tier === 2 ? 180 : risk_tier === 3 ? 365 : 730;
+  const next_assessment_date = new Date(now.getTime() + intervalDays * 86400000).toISOString();
+
+  let meta = {}; try { meta = JSON.parse(vendor.metadata || '{}'); } catch {}
+  const assessments = meta.assessments || [];
+  assessments.push({ date: last_assessment_date, assessor: user.name || user.email, scores: { security_posture, data_handling, compliance_status, incident_history, financial_stability }, overall_score: overall, risk_tier });
+  meta.assessments = assessments;
+
+  await env.DB.prepare(
+    'UPDATE vendors SET overall_risk_score = ?, risk_tier = ?, last_assessment_date = ?, next_assessment_date = ?, metadata = ?, updated_at = ? WHERE id = ?'
+  ).bind(overall, risk_tier, last_assessment_date, next_assessment_date, JSON.stringify(meta), last_assessment_date, vendorId).run();
+
+  await auditLog(env, org.id, user.id, 'assess', 'vendor', vendorId, { overall_score: overall, risk_tier });
+  await notifyOrgRole(env, org.id, user.id, 'manager', 'vendor_assessment', 'Vendor Assessment Completed', `${vendor.name} assessed: score ${overall}/25, tier ${risk_tier}`, 'vendor', vendorId, { overall_score: overall, risk_tier });
 
   const updated = await env.DB.prepare('SELECT * FROM vendors WHERE id = ?').bind(vendorId).first();
   return jsonResponse({ vendor: updated });

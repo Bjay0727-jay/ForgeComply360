@@ -652,3 +652,96 @@ export async function exportRiskRegisterDoc(risks: any[], orgName: string): Prom
 
   await exportAsDocx('Risk Register Report', html);
 }
+
+// ============================================================================
+// VENDOR EXPORTS (VendorGuard TPRM)
+// ============================================================================
+
+export function exportVendorsCSV(vendors: any[]): void {
+  const headers = ['Name', 'Category', 'Criticality', 'Risk Tier', 'Status', 'Overall Risk Score', 'Contact Name', 'Contact Email', 'Contract Start', 'Contract End', 'Last Assessment', 'Next Assessment', 'Data Classification', 'BAA', 'Created', 'Updated'];
+  const rows: string[] = [headers.map(csvCell).join(',')];
+  for (const v of vendors) {
+    rows.push([
+      csvCell(v.name), csvCell(v.category), csvCell(v.criticality), csvCell(v.risk_tier),
+      csvCell(v.status), csvCell(v.overall_risk_score), csvCell(v.contact_name), csvCell(v.contact_email),
+      csvCell(v.contract_start), csvCell(v.contract_end), csvCell(v.last_assessment_date),
+      csvCell(v.next_assessment_date), csvCell(v.data_classification), csvCell(v.has_baa ? 'Yes' : 'No'),
+      csvCell(v.created_at), csvCell(v.updated_at),
+    ].join(','));
+  }
+  const blob = new Blob([rows.join('\n')], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `Vendor_Registry_${new Date().toISOString().split('T')[0]}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+export async function exportVendorAssessmentDoc(vendor: any, orgName: string): Promise<void> {
+  let meta: any = {};
+  try { meta = JSON.parse(vendor.metadata || '{}'); } catch {}
+  const assessments = (meta.assessments || []).slice(-5);
+
+  const tierLabel = (t: number) => t === 1 ? 'Tier 1 — Critical (Quarterly)' : t === 2 ? 'Tier 2 — High (Semi-Annual)' : t === 3 ? 'Tier 3 — Moderate (Annual)' : 'Tier 4 — Low (Biennial)';
+  const scoreColor = (s: number) => s >= 21 ? '#dcfce7' : s >= 16 ? '#fef9c3' : s >= 11 ? '#ffedd5' : '#fee2e2';
+
+  let html = `<div style="text-align:center;margin-bottom:40px;">
+    <h1 style="font-size:22pt;color:#1e3a5f;">Vendor Risk Assessment Report</h1>
+    <p style="font-size:12pt;color:#4a5568;">${escapeHtml(orgName)} &mdash; VendorGuard TPRM</p>
+    <p style="font-size:10pt;color:#a0aec0;">Generated: ${new Date().toLocaleDateString()}</p>
+  </div>`;
+
+  html += `<h2 style="color:#1e3a5f;border-bottom:2px solid #3182ce;padding-bottom:4px;">Vendor Information</h2>`;
+  html += `<table style="width:100%;border-collapse:collapse;margin-bottom:20px;">`;
+  const infoRows: [string, string][] = [
+    ['Vendor Name', vendor.name || ''],
+    ['Category', vendor.category || 'N/A'],
+    ['Criticality', (vendor.criticality || 'medium').toUpperCase()],
+    ['Status', (vendor.status || 'active').replace('_', ' ').toUpperCase()],
+    ['Risk Tier', vendor.risk_tier ? tierLabel(vendor.risk_tier) : 'Not assessed'],
+    ['Overall Risk Score', vendor.overall_risk_score ? `${vendor.overall_risk_score}/25` : 'Not assessed'],
+    ['Contact', `${vendor.contact_name || ''} ${vendor.contact_email ? '(' + vendor.contact_email + ')' : ''}`],
+    ['Contract Period', `${vendor.contract_start || 'N/A'} to ${vendor.contract_end || 'N/A'}`],
+    ['Data Classification', (vendor.data_classification || 'N/A').toUpperCase()],
+    ['BAA in Place', vendor.has_baa ? 'Yes' : 'No'],
+    ['Last Assessment', vendor.last_assessment_date ? new Date(vendor.last_assessment_date).toLocaleDateString() : 'Never'],
+    ['Next Assessment', vendor.next_assessment_date ? new Date(vendor.next_assessment_date).toLocaleDateString() : 'N/A'],
+  ];
+  for (const [label, value] of infoRows) {
+    html += `<tr><td style="padding:6px 12px;border:1px solid #e2e8f0;font-weight:bold;width:200px;background:#f7fafc;">${label}</td><td style="padding:6px 12px;border:1px solid #e2e8f0;">${escapeHtml(value)}</td></tr>`;
+  }
+  html += '</table>';
+
+  if (assessments.length > 0) {
+    html += `<h2 style="color:#1e3a5f;border-bottom:2px solid #3182ce;padding-bottom:4px;">Assessment History</h2>`;
+    html += `<table style="width:100%;border-collapse:collapse;margin-bottom:20px;font-size:9pt;">
+      <tr style="background:#edf2f7;"><th style="padding:6px;border:1px solid #e2e8f0;">Date</th><th style="padding:6px;border:1px solid #e2e8f0;">Assessor</th><th style="padding:6px;border:1px solid #e2e8f0;">Security</th><th style="padding:6px;border:1px solid #e2e8f0;">Data</th><th style="padding:6px;border:1px solid #e2e8f0;">Compliance</th><th style="padding:6px;border:1px solid #e2e8f0;">Incidents</th><th style="padding:6px;border:1px solid #e2e8f0;">Financial</th><th style="padding:6px;border:1px solid #e2e8f0;font-weight:bold;">Overall</th><th style="padding:6px;border:1px solid #e2e8f0;">Tier</th></tr>`;
+    for (const a of assessments) {
+      const sc = a.scores || {};
+      html += `<tr>
+        <td style="padding:4px 6px;border:1px solid #e2e8f0;">${new Date(a.date).toLocaleDateString()}</td>
+        <td style="padding:4px 6px;border:1px solid #e2e8f0;">${escapeHtml(a.assessor || '')}</td>
+        <td style="padding:4px 6px;border:1px solid #e2e8f0;text-align:center;">${sc.security_posture || '-'}</td>
+        <td style="padding:4px 6px;border:1px solid #e2e8f0;text-align:center;">${sc.data_handling || '-'}</td>
+        <td style="padding:4px 6px;border:1px solid #e2e8f0;text-align:center;">${sc.compliance_status || '-'}</td>
+        <td style="padding:4px 6px;border:1px solid #e2e8f0;text-align:center;">${sc.incident_history || '-'}</td>
+        <td style="padding:4px 6px;border:1px solid #e2e8f0;text-align:center;">${sc.financial_stability || '-'}</td>
+        <td style="padding:4px 6px;border:1px solid #e2e8f0;text-align:center;font-weight:bold;background:${scoreColor(a.overall_score || 0)};">${a.overall_score || '-'}/25</td>
+        <td style="padding:4px 6px;border:1px solid #e2e8f0;text-align:center;">${a.risk_tier || '-'}</td>
+      </tr>`;
+    }
+    html += '</table>';
+  }
+
+  html += `<h2 style="color:#1e3a5f;border-bottom:2px solid #3182ce;padding-bottom:4px;">Risk Tier Definitions</h2>`;
+  html += `<table style="width:100%;border-collapse:collapse;font-size:9pt;">
+    <tr><td style="padding:4px 8px;border:1px solid #e2e8f0;font-weight:bold;background:#fee2e2;">Tier 4 (5-10)</td><td style="padding:4px 8px;border:1px solid #e2e8f0;">Critical risk — biennial reassessment minimum, immediate remediation required</td></tr>
+    <tr><td style="padding:4px 8px;border:1px solid #e2e8f0;font-weight:bold;background:#ffedd5;">Tier 3 (11-15)</td><td style="padding:4px 8px;border:1px solid #e2e8f0;">Moderate risk — annual reassessment, active monitoring required</td></tr>
+    <tr><td style="padding:4px 8px;border:1px solid #e2e8f0;font-weight:bold;background:#fef9c3;">Tier 2 (16-20)</td><td style="padding:4px 8px;border:1px solid #e2e8f0;">Low-moderate risk — semi-annual reassessment</td></tr>
+    <tr><td style="padding:4px 8px;border:1px solid #e2e8f0;font-weight:bold;background:#dcfce7;">Tier 1 (21-25)</td><td style="padding:4px 8px;border:1px solid #e2e8f0;">Low risk — quarterly reassessment, standard monitoring</td></tr>
+  </table>`;
+  html += '<p style="font-size:8pt;color:#a0aec0;margin-top:40px;text-align:center;">Generated by ForgeComply 360 &mdash; VendorGuard TPRM</p>';
+
+  await exportAsDocx('Vendor Risk Assessment - ' + (vendor.name || 'Report'), html);
+}
