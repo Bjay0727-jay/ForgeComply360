@@ -140,6 +140,12 @@ async function handleRequest(request, env, url) {
   // SSP / OSCAL
   if (path === '/api/v1/ssp/generate' && method === 'POST') return handleGenerateSSP(request, env, org, user);
   if (path === '/api/v1/ssp' && method === 'GET') return handleListSSPs(env, org);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+$/) && method === 'GET') return handleGetSSP(env, org, path.split('/').pop());
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/sections\/[\w-]+$/) && method === 'PUT') return handleUpdateSSPSection(request, env, org, user, path.split('/')[4], path.split('/')[6]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/ai-populate$/) && method === 'POST') return handleAIPopulateSSP(request, env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/ai-refine$/) && method === 'POST') return handleAIRefineSSP(request, env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/status$/) && method === 'PUT') return handleUpdateSSPStatus(request, env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/versions$/) && method === 'POST') return handleCreateSSPVersion(request, env, org, user, path.split('/')[4]);
 
   // Risks (RiskForge)
   if (path === '/api/v1/risks' && method === 'GET') return handleListRisks(env, org);
@@ -1169,6 +1175,59 @@ async function handleLinkEvidence(request, env, org, user) {
 // SSP / OSCAL GENERATION
 // ============================================================================
 
+const SSP_SECTION_KEYS = ['system_info','authorization_boundary','data_flow','network_architecture','system_interconnections','personnel','control_implementations','contingency_plan','incident_response','continuous_monitoring'];
+
+const SSP_SECTION_LABELS = {
+  system_info: 'System Information', authorization_boundary: 'Authorization Boundary',
+  data_flow: 'Data Flow', network_architecture: 'Network Architecture',
+  system_interconnections: 'System Interconnections', personnel: 'Personnel & Roles',
+  control_implementations: 'Control Implementations', contingency_plan: 'Contingency Plan Summary',
+  incident_response: 'Incident Response Summary', continuous_monitoring: 'Continuous Monitoring Strategy',
+};
+
+const SSP_SECTION_PROMPTS = {
+  authorization_boundary: {
+    system: 'You are a senior cybersecurity architect writing formal System Security Plan documentation for a U.S. federal information system. Write in professional third-person prose.',
+    user: 'Write the Authorization Boundary section for "{{system_name}}" ({{impact_level}} impact, {{framework_name}} framework). Describe what components, services, and data are within the authorization boundary, what is explicitly excluded, and any shared services. Organization: {{org_name}}. Write 200-400 words.',
+  },
+  data_flow: {
+    system: 'You are a senior cybersecurity architect writing formal System Security Plan documentation. Write in professional third-person prose.',
+    user: 'Write the Data Flow section for "{{system_name}}" ({{impact_level}} impact). Describe how data enters, is processed within, and exits the system. Include data at rest and in transit, encryption requirements, and data classification handling. Organization: {{org_name}}. Write 200-400 words.',
+  },
+  network_architecture: {
+    system: 'You are a senior cybersecurity architect writing formal System Security Plan documentation. Write in professional third-person prose.',
+    user: 'Write the Network Architecture section for "{{system_name}}" ({{impact_level}} impact). Describe network zones, segmentation, firewalls, DMZs, and connectivity. Organization: {{org_name}}. Write 200-400 words.',
+  },
+  system_interconnections: {
+    system: 'You are a senior cybersecurity architect writing formal System Security Plan documentation. Write in professional third-person prose.',
+    user: 'Write the System Interconnections section for "{{system_name}}" ({{impact_level}} impact). Describe external connections, ISAs, MOUs, APIs, and third-party integrations. Organization: {{org_name}}. Write 150-300 words.',
+  },
+  personnel: {
+    system: 'You are a senior cybersecurity architect writing formal System Security Plan documentation. Write in professional third-person prose.',
+    user: 'Write the Personnel & Roles section for "{{system_name}}" ({{impact_level}} impact). Describe the System Owner, ISSO, Authorizing Official, system administrators, and other key security roles with their responsibilities. Organization: {{org_name}}. Write 200-300 words.',
+  },
+  contingency_plan: {
+    system: 'You are a senior cybersecurity architect writing formal System Security Plan documentation. Write in professional third-person prose.',
+    user: 'Write the Contingency Plan Summary section for "{{system_name}}" ({{impact_level}} impact). Summarize the BC/DR strategy including RTO/RPO, backup procedures, alternate processing sites, and recovery priorities. Organization: {{org_name}}. Write 200-400 words.',
+  },
+  incident_response: {
+    system: 'You are a senior cybersecurity architect writing formal System Security Plan documentation. Write in professional third-person prose.',
+    user: 'Write the Incident Response Summary section for "{{system_name}}" ({{impact_level}} impact). Describe the IR process including detection, analysis, containment, eradication, recovery, and post-incident activities. Include reporting requirements and escalation procedures. Organization: {{org_name}}. Write 200-400 words.',
+  },
+  continuous_monitoring: {
+    system: 'You are a senior cybersecurity architect writing formal System Security Plan documentation. Write in professional third-person prose.',
+    user: 'Write the Continuous Monitoring Strategy section for "{{system_name}}" ({{impact_level}} impact, {{framework_name}} framework). Describe ongoing assessment activities, automated scanning, POA&M management, and how the security posture is continuously evaluated. Organization: {{org_name}}. Write 200-400 words.',
+  },
+};
+
+function buildEmptyAuthoring(userId) {
+  const sections = {};
+  for (const key of SSP_SECTION_KEYS) {
+    sections[key] = { content: '', status: 'empty', ai_generated: false, last_edited_by: userId, last_edited_at: new Date().toISOString() };
+  }
+  return { sections };
+}
+
 async function handleGenerateSSP(request, env, org, user) {
   if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
   const { system_id, framework_id } = await request.json();
@@ -1246,12 +1305,31 @@ async function handleGenerateSSP(request, env, org, user) {
     },
   };
 
+  // Build authoring sections
+  const authoring = buildEmptyAuthoring(user.id);
+  authoring.sections.system_info = {
+    content: `System Name: ${system.name}\nAcronym: ${system.acronym || 'N/A'}\nDescription: ${system.description || 'To be defined'}\nImpact Level: ${system.impact_level}\nDeployment Model: ${system.deployment_model || 'On-Premises'}\nStatus: ${system.status}`,
+    status: 'draft', ai_generated: false, last_edited_by: user.id, last_edited_at: new Date().toISOString(),
+  };
+  authoring.sections.control_implementations = {
+    content: `${implementations.length} controls mapped to ${system.name} under ${framework.name}. See OSCAL control-implementation section for detailed per-control narratives.`,
+    status: 'draft', ai_generated: false, last_edited_by: user.id, last_edited_at: new Date().toISOString(),
+  };
+  if (system.boundary_description) {
+    authoring.sections.authorization_boundary = {
+      content: system.boundary_description, status: 'draft', ai_generated: false, last_edited_by: user.id, last_edited_at: new Date().toISOString(),
+    };
+  }
+  oscalSSP._authoring = authoring;
+
+  const initMetadata = JSON.stringify({ versions: [{ version: '1.0', created_at: new Date().toISOString(), created_by: user.id, summary: 'Initial generation' }], workflow: {} });
+
   // Save SSP document
   const id = generateId();
   await env.DB.prepare(
-    `INSERT INTO ssp_documents (id, org_id, system_id, framework_id, title, oscal_json, generated_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).bind(id, org.id, system_id, framework_id, `SSP - ${system.name} - ${framework.name}`, JSON.stringify(oscalSSP), user.id).run();
+    `INSERT INTO ssp_documents (id, org_id, system_id, framework_id, title, oscal_json, generated_by, metadata)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(id, org.id, system_id, framework_id, `SSP - ${system.name} - ${framework.name}`, JSON.stringify(oscalSSP), user.id, initMetadata).run();
 
   await auditLog(env, org.id, user.id, 'generate', 'ssp', id, { system_id, framework_id });
   return jsonResponse({ ssp: { id, oscal: oscalSSP } }, 201);
@@ -1268,6 +1346,184 @@ async function handleListSSPs(env, org) {
      ORDER BY sd.created_at DESC`
   ).bind(org.id).all();
   return jsonResponse({ documents: results });
+}
+
+async function handleGetSSP(env, org, sspId) {
+  const doc = await env.DB.prepare(
+    `SELECT sd.*, s.name as system_name, s.acronym as system_acronym, s.impact_level, s.description as system_description,
+            cf.name as framework_name, u1.name as generated_by_name, u2.name as approved_by_name
+     FROM ssp_documents sd
+     LEFT JOIN systems s ON s.id = sd.system_id
+     LEFT JOIN compliance_frameworks cf ON cf.id = sd.framework_id
+     LEFT JOIN users u1 ON u1.id = sd.generated_by
+     LEFT JOIN users u2 ON u2.id = sd.approved_by
+     WHERE sd.id = ? AND sd.org_id = ?`
+  ).bind(sspId, org.id).first();
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+  try { doc.oscal_json = JSON.parse(doc.oscal_json || '{}'); } catch { doc.oscal_json = {}; }
+  try { doc.metadata = JSON.parse(doc.metadata || '{}'); } catch { doc.metadata = {}; }
+  // Ensure _authoring exists for older docs
+  if (!doc.oscal_json._authoring) doc.oscal_json._authoring = buildEmptyAuthoring(doc.generated_by);
+  return jsonResponse({ document: doc });
+}
+
+async function handleUpdateSSPSection(request, env, org, user, sspId, sectionKey) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  if (!SSP_SECTION_KEYS.includes(sectionKey)) return jsonResponse({ error: 'Invalid section key' }, 400);
+
+  const doc = await env.DB.prepare('SELECT id, oscal_json FROM ssp_documents WHERE id = ? AND org_id = ?').bind(sspId, org.id).first();
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+
+  const { content } = await request.json();
+  if (content === undefined) return jsonResponse({ error: 'content required' }, 400);
+
+  let oscal; try { oscal = JSON.parse(doc.oscal_json || '{}'); } catch { oscal = {}; }
+  if (!oscal._authoring) oscal._authoring = buildEmptyAuthoring(user.id);
+  oscal._authoring.sections[sectionKey] = {
+    content, status: content.trim() ? 'draft' : 'empty', ai_generated: false,
+    last_edited_by: user.id, last_edited_at: new Date().toISOString(),
+  };
+
+  await env.DB.prepare('UPDATE ssp_documents SET oscal_json = ?, updated_at = datetime(\'now\') WHERE id = ?').bind(JSON.stringify(oscal), sspId).run();
+  await auditLog(env, org.id, user.id, 'update', 'ssp_section', sspId, { section: sectionKey });
+  return jsonResponse({ section: oscal._authoring.sections[sectionKey] });
+}
+
+async function handleAIPopulateSSP(request, env, org, user, sspId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  const doc = await env.DB.prepare(
+    `SELECT sd.*, s.name as system_name, s.acronym as system_acronym, s.impact_level, s.description as system_description,
+            cf.name as framework_name
+     FROM ssp_documents sd
+     LEFT JOIN systems s ON s.id = sd.system_id
+     LEFT JOIN compliance_frameworks cf ON cf.id = sd.framework_id
+     WHERE sd.id = ? AND sd.org_id = ?`
+  ).bind(sspId, org.id).first();
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+
+  const body = await request.json().catch(() => ({}));
+  let oscal; try { oscal = JSON.parse(doc.oscal_json || '{}'); } catch { oscal = {}; }
+  if (!oscal._authoring) oscal._authoring = buildEmptyAuthoring(user.id);
+
+  const orgRow = await env.DB.prepare('SELECT name FROM organizations WHERE id = ?').bind(org.id).first();
+  const orgName = orgRow?.name || 'Organization';
+
+  const vars = {
+    system_name: doc.system_name || 'System', impact_level: doc.impact_level || 'moderate',
+    framework_name: doc.framework_name || 'Framework', org_name: orgName,
+  };
+
+  // Determine which sections to populate
+  let targetSections = body.sections;
+  if (!targetSections || !Array.isArray(targetSections) || targetSections.length === 0) {
+    targetSections = SSP_SECTION_KEYS.filter(k => SSP_SECTION_PROMPTS[k] && (!oscal._authoring.sections[k]?.content?.trim() || oscal._authoring.sections[k]?.status === 'empty'));
+  }
+
+  const results = {};
+  for (const key of targetSections) {
+    const prompts = SSP_SECTION_PROMPTS[key];
+    if (!prompts) continue;
+    try {
+      const userPrompt = substituteVariables(prompts.user, vars);
+      const content = await runAI(env, prompts.system, userPrompt);
+      oscal._authoring.sections[key] = {
+        content: content || '', status: content ? 'draft' : 'empty', ai_generated: true,
+        last_edited_by: user.id, last_edited_at: new Date().toISOString(),
+      };
+      results[key] = 'success';
+    } catch (e) {
+      results[key] = 'error: ' + (e.message || 'AI generation failed');
+    }
+  }
+
+  await env.DB.prepare('UPDATE ssp_documents SET oscal_json = ?, updated_at = datetime(\'now\') WHERE id = ?').bind(JSON.stringify(oscal), sspId).run();
+  await auditLog(env, org.id, user.id, 'ai_populate', 'ssp', sspId, { sections: Object.keys(results) });
+  return jsonResponse({ results, sections: oscal._authoring.sections });
+}
+
+async function handleAIRefineSSP(request, env, org, user, sspId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  const doc = await env.DB.prepare(
+    `SELECT sd.*, s.name as system_name, s.impact_level, cf.name as framework_name
+     FROM ssp_documents sd LEFT JOIN systems s ON s.id = sd.system_id
+     LEFT JOIN compliance_frameworks cf ON cf.id = sd.framework_id
+     WHERE sd.id = ? AND sd.org_id = ?`
+  ).bind(sspId, org.id).first();
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+
+  const { section_key, instructions } = await request.json();
+  if (!section_key || !SSP_SECTION_KEYS.includes(section_key)) return jsonResponse({ error: 'Invalid section_key' }, 400);
+
+  let oscal; try { oscal = JSON.parse(doc.oscal_json || '{}'); } catch { oscal = {}; }
+  if (!oscal._authoring) oscal._authoring = buildEmptyAuthoring(user.id);
+  const currentContent = oscal._authoring.sections[section_key]?.content || '';
+
+  const sysPrompt = 'You are a senior cybersecurity compliance consultant. Refine and improve the following System Security Plan section. Maintain a professional, formal tone appropriate for federal compliance documentation.';
+  const userPrompt = `System: ${doc.system_name || 'System'} (${doc.impact_level || 'moderate'} impact, ${doc.framework_name || 'Framework'})\n\nSection: ${SSP_SECTION_LABELS[section_key]}\n\nCurrent content:\n${currentContent}\n\n${instructions ? 'Refinement instructions: ' + instructions + '\n\n' : ''}Please improve this section. Maintain accuracy, add detail where appropriate, and ensure compliance language is used. Write 200-400 words.`;
+
+  const refined = await runAI(env, sysPrompt, userPrompt);
+  oscal._authoring.sections[section_key] = {
+    content: refined || currentContent, status: 'draft', ai_generated: true,
+    last_edited_by: user.id, last_edited_at: new Date().toISOString(),
+  };
+
+  await env.DB.prepare('UPDATE ssp_documents SET oscal_json = ?, updated_at = datetime(\'now\') WHERE id = ?').bind(JSON.stringify(oscal), sspId).run();
+  await auditLog(env, org.id, user.id, 'ai_refine', 'ssp_section', sspId, { section: section_key });
+  return jsonResponse({ section: oscal._authoring.sections[section_key] });
+}
+
+async function handleUpdateSSPStatus(request, env, org, user, sspId) {
+  const doc = await env.DB.prepare('SELECT id, status, oscal_json FROM ssp_documents WHERE id = ? AND org_id = ?').bind(sspId, org.id).first();
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+
+  const { status: newStatus } = await request.json();
+  const transitions = {
+    draft: { in_review: 'analyst' },
+    in_review: { approved: 'manager', draft: 'manager' },
+    approved: { published: 'admin', draft: 'admin' },
+    published: { archived: 'admin' },
+  };
+
+  const allowed = transitions[doc.status];
+  if (!allowed || !allowed[newStatus]) return jsonResponse({ error: `Cannot transition from ${doc.status} to ${newStatus}` }, 400);
+  if (!requireRole(user, allowed[newStatus])) return jsonResponse({ error: 'Insufficient role for this transition' }, 403);
+
+  const updates = ['status = ?', 'updated_at = datetime(\'now\')'];
+  const values = [newStatus];
+
+  if (newStatus === 'approved') { updates.push('approved_by = ?', 'approved_at = datetime(\'now\')'); values.push(user.id); }
+  if (newStatus === 'published') { updates.push('published_at = datetime(\'now\')'); }
+  if (newStatus === 'draft' && (doc.status === 'in_review' || doc.status === 'approved')) { updates.push('approved_by = NULL', 'approved_at = NULL'); }
+
+  values.push(sspId);
+  await env.DB.prepare(`UPDATE ssp_documents SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run();
+
+  await auditLog(env, org.id, user.id, 'status_change', 'ssp', sspId, { from: doc.status, to: newStatus });
+  notifyOrgRole(env, org.id, user.id, 'manager', 'ssp_status', 'SSP Status Changed', `SSP moved to ${newStatus}`, 'ssp', sspId).catch(() => {});
+  return jsonResponse({ status: newStatus });
+}
+
+async function handleCreateSSPVersion(request, env, org, user, sspId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  const doc = await env.DB.prepare('SELECT id, version, metadata FROM ssp_documents WHERE id = ? AND org_id = ?').bind(sspId, org.id).first();
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+
+  const { summary } = await request.json();
+  let meta; try { meta = JSON.parse(doc.metadata || '{}'); } catch { meta = {}; }
+  if (!meta.versions) meta.versions = [];
+
+  // Increment version: 1.0 -> 1.1 -> 1.2 etc.
+  const current = parseFloat(doc.version || '1.0');
+  const newVersion = (current + 0.1).toFixed(1);
+
+  meta.versions.push({ version: newVersion, created_at: new Date().toISOString(), created_by: user.id, summary: summary || `Version ${newVersion}` });
+
+  await env.DB.prepare('UPDATE ssp_documents SET version = ?, metadata = ?, updated_at = datetime(\'now\') WHERE id = ?').bind(newVersion, JSON.stringify(meta), sspId).run();
+  await auditLog(env, org.id, user.id, 'version', 'ssp', sspId, { version: newVersion });
+  return jsonResponse({ version: newVersion, versions: meta.versions });
 }
 
 // ============================================================================
