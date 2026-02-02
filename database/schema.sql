@@ -480,8 +480,37 @@ CREATE TABLE IF NOT EXISTS notification_preferences (
   role_change INTEGER DEFAULT 1,
   compliance_alert INTEGER DEFAULT 1,
   evidence_upload INTEGER DEFAULT 1,
+  approval_request INTEGER DEFAULT 1,
+  approval_decision INTEGER DEFAULT 1,
   updated_at TEXT DEFAULT (datetime('now'))
 );
+
+-- ============================================================================
+-- APPROVAL WORKFLOWS
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS approval_requests (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  request_type TEXT NOT NULL CHECK (request_type IN ('poam_closure', 'risk_acceptance', 'ssp_publication')),
+  resource_type TEXT NOT NULL,
+  resource_id TEXT NOT NULL,
+  requested_by TEXT NOT NULL REFERENCES users(id),
+  requested_at TEXT DEFAULT (datetime('now')),
+  status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+  justification TEXT,
+  reviewer_id TEXT REFERENCES users(id),
+  reviewed_at TEXT,
+  reviewer_comment TEXT,
+  target_status TEXT NOT NULL,
+  snapshot TEXT DEFAULT '{}',
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_approvals_org ON approval_requests(org_id);
+CREATE INDEX IF NOT EXISTS idx_approvals_status ON approval_requests(org_id, status);
+CREATE INDEX IF NOT EXISTS idx_approvals_resource ON approval_requests(resource_type, resource_id);
 
 -- ============================================================================
 -- ADD-ON MODULES

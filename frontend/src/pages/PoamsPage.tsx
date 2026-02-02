@@ -72,6 +72,13 @@ export function PoamsPage() {
   const [comments, setComments] = useState<any[]>([]);
   const [newComment, setNewComment] = useState('');
 
+  // Approval workflow
+  const [showApprovalModal, setShowApprovalModal] = useState(false);
+  const [approvalTarget, setApprovalTarget] = useState<{ id: string; name: string } | null>(null);
+  const [approvalJustification, setApprovalJustification] = useState('');
+  const [requestingApproval, setRequestingApproval] = useState(false);
+  const [approvalError, setApprovalError] = useState<string | null>(null);
+
   const loadPoams = useCallback(() => {
     const params = new URLSearchParams();
     if (filterSystem) params.set('system_id', filterSystem);
@@ -112,8 +119,34 @@ export function PoamsPage() {
   };
 
   const updateStatus = async (id: string, status: string) => {
+    if (['completed', 'accepted'].includes(status)) {
+      const poam = poams.find((p: any) => p.id === id);
+      setApprovalTarget({ id, name: poam?.weakness_name || '' });
+      setApprovalJustification('');
+      setApprovalError(null);
+      setShowApprovalModal(true);
+      return;
+    }
     await api(`/api/v1/poams/${id}`, { method: 'PUT', body: JSON.stringify({ status }) });
     loadPoams();
+  };
+
+  const submitApprovalRequest = async () => {
+    if (!approvalTarget || !approvalJustification.trim()) return;
+    setRequestingApproval(true);
+    setApprovalError(null);
+    try {
+      await api('/api/v1/approvals', {
+        method: 'POST',
+        body: JSON.stringify({ request_type: 'poam_closure', resource_id: approvalTarget.id, justification: approvalJustification.trim() }),
+      });
+      setShowApprovalModal(false);
+      setApprovalTarget(null);
+    } catch (e: any) {
+      setApprovalError(e.message || 'Failed to submit approval request');
+    } finally {
+      setRequestingApproval(false);
+    }
   };
 
   const saveEdit = async (id: string) => {
@@ -427,6 +460,37 @@ export function PoamsPage() {
               </div>
             );
           })}
+        </div>
+      )}
+      {/* Approval Request Modal */}
+      {showApprovalModal && approvalTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4 p-6">
+            <h2 className="text-lg font-bold text-gray-900 mb-1">Request Approval</h2>
+            <p className="text-sm text-gray-500 mb-4">Closing a POA&M requires manager approval.</p>
+            <div className="bg-gray-50 rounded-lg p-3 mb-4">
+              <p className="font-medium text-gray-900 text-sm">{approvalTarget.name}</p>
+            </div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Justification (required)</label>
+            <textarea
+              value={approvalJustification}
+              onChange={(e) => setApprovalJustification(e.target.value)}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              rows={3}
+              placeholder="Explain why this POA&M should be closed..."
+            />
+            {approvalError && <p className="text-sm text-red-600 mt-2">{approvalError}</p>}
+            <div className="flex items-center justify-end gap-2 mt-4">
+              <button onClick={() => { setShowApprovalModal(false); setApprovalTarget(null); }} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800" disabled={requestingApproval}>Cancel</button>
+              <button
+                onClick={submitApprovalRequest}
+                disabled={requestingApproval || !approvalJustification.trim()}
+                className="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg disabled:opacity-50"
+              >
+                {requestingApproval ? 'Submitting...' : 'Submit for Approval'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

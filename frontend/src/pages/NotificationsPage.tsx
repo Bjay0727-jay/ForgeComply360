@@ -10,6 +10,8 @@ const TYPE_COLORS: Record<string, string> = {
   role_change: 'bg-purple-100 text-purple-700',
   compliance_alert: 'bg-red-100 text-red-700',
   evidence_upload: 'bg-green-100 text-green-700',
+  approval_request: 'bg-amber-100 text-amber-700',
+  approval_decision: 'bg-indigo-100 text-indigo-700',
 };
 
 const TYPE_LABELS: Record<string, string> = {
@@ -20,6 +22,8 @@ const TYPE_LABELS: Record<string, string> = {
   role_change: 'Role',
   compliance_alert: 'Compliance',
   evidence_upload: 'Evidence',
+  approval_request: 'Approval',
+  approval_decision: 'Decision',
 };
 
 const RESOURCE_ROUTES: Record<string, string> = {
@@ -30,6 +34,7 @@ const RESOURCE_ROUTES: Record<string, string> = {
   evidence: '/evidence',
   user: '/users',
   compliance_snapshot: '/',
+  approval_request: '/approvals',
 };
 
 const ALL_TYPES = Object.keys(TYPE_LABELS);

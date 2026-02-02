@@ -71,6 +71,13 @@ export function RisksPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [heatMapFilter, setHeatMapFilter] = useState<{ l: number; i: number } | null>(null);
 
+  // Approval workflow
+  const [showApprovalModal, setShowApprovalModal] = useState(false);
+  const [approvalRiskId, setApprovalRiskId] = useState<string | null>(null);
+  const [approvalJustification, setApprovalJustification] = useState('');
+  const [requestingApproval, setRequestingApproval] = useState(false);
+  const [approvalError, setApprovalError] = useState<string | null>(null);
+
   const [form, setForm] = useState({
     title: '', description: '', system_id: '', category: 'technical',
     likelihood: 3, impact: 3, treatment: 'mitigate', treatment_plan: '',
@@ -130,12 +137,37 @@ export function RisksPage() {
   };
 
   const handleSaveEdit = async (riskId: string) => {
+    if (editFields.treatment === 'accept' || editFields.status === 'accepted') {
+      setApprovalRiskId(riskId);
+      setApprovalJustification('');
+      setApprovalError(null);
+      setShowApprovalModal(true);
+      return;
+    }
     setSavingEdit(true);
     try {
       await api(`/api/v1/risks/${riskId}`, { method: 'PUT', body: JSON.stringify(editFields) });
       loadRisks();
       loadStats();
     } catch {} finally { setSavingEdit(false); }
+  };
+
+  const submitRiskApproval = async () => {
+    if (!approvalRiskId || !approvalJustification.trim()) return;
+    setRequestingApproval(true);
+    setApprovalError(null);
+    try {
+      await api('/api/v1/approvals', {
+        method: 'POST',
+        body: JSON.stringify({ request_type: 'risk_acceptance', resource_id: approvalRiskId, justification: approvalJustification.trim() }),
+      });
+      setShowApprovalModal(false);
+      setApprovalRiskId(null);
+    } catch (e: any) {
+      setApprovalError(e.message || 'Failed to submit approval request');
+    } finally {
+      setRequestingApproval(false);
+    }
   };
 
   const handleDelete = async (riskId: string) => {
@@ -566,6 +598,38 @@ export function RisksPage() {
               </div>
             );
           })}
+        </div>
+      )}
+      {/* Risk Acceptance Approval Modal */}
+      {showApprovalModal && approvalRiskId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4 p-6">
+            <h2 className="text-lg font-bold text-gray-900 mb-1">Request Approval</h2>
+            <p className="text-sm text-gray-500 mb-4">Accepting a risk requires admin approval.</p>
+            <div className="bg-gray-50 rounded-lg p-3 mb-4">
+              <p className="font-medium text-gray-900 text-sm">{risks.find((r: any) => r.id === approvalRiskId)?.title || 'Risk'}</p>
+              <p className="text-xs text-gray-400 mt-0.5">Score: {risks.find((r: any) => r.id === approvalRiskId)?.risk_score || '?'} &middot; Level: {risks.find((r: any) => r.id === approvalRiskId)?.risk_level || '?'}</p>
+            </div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Justification (required)</label>
+            <textarea
+              value={approvalJustification}
+              onChange={(e) => setApprovalJustification(e.target.value)}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              rows={3}
+              placeholder="Explain why this risk should be accepted..."
+            />
+            {approvalError && <p className="text-sm text-red-600 mt-2">{approvalError}</p>}
+            <div className="flex items-center justify-end gap-2 mt-4">
+              <button onClick={() => { setShowApprovalModal(false); setApprovalRiskId(null); }} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800" disabled={requestingApproval}>Cancel</button>
+              <button
+                onClick={submitRiskApproval}
+                disabled={requestingApproval || !approvalJustification.trim()}
+                className="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg disabled:opacity-50"
+              >
+                {requestingApproval ? 'Submitting...' : 'Submit for Approval'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

@@ -57,6 +57,12 @@ export function SSPPage() {
   // Workflow
   const [statusChanging, setStatusChanging] = useState(false);
 
+  // Approval workflow
+  const [showApprovalModal, setShowApprovalModal] = useState(false);
+  const [approvalJustification, setApprovalJustification] = useState('');
+  const [requestingApproval, setRequestingApproval] = useState(false);
+  const [approvalError, setApprovalError] = useState<string | null>(null);
+
   useEffect(() => {
     Promise.all([api('/api/v1/ssp'), api('/api/v1/frameworks/enabled'), api('/api/v1/systems')])
       .then(([d, f, s]) => {
@@ -166,6 +172,12 @@ export function SSPPage() {
 
   const handleStatusChange = async (newStatus: string) => {
     if (!activeDoc) return;
+    if (newStatus === 'published') {
+      setApprovalJustification('');
+      setApprovalError(null);
+      setShowApprovalModal(true);
+      return;
+    }
     setStatusChanging(true);
     try {
       await api(`/api/v1/ssp/${activeDoc.id}/status`, {
@@ -174,6 +186,23 @@ export function SSPPage() {
       setActiveDoc({ ...activeDoc, status: newStatus });
       refreshDocList();
     } catch { } finally { setStatusChanging(false); }
+  };
+
+  const submitPublicationApproval = async () => {
+    if (!activeDoc || !approvalJustification.trim()) return;
+    setRequestingApproval(true);
+    setApprovalError(null);
+    try {
+      await api('/api/v1/approvals', {
+        method: 'POST',
+        body: JSON.stringify({ request_type: 'ssp_publication', resource_id: activeDoc.id, justification: approvalJustification.trim() }),
+      });
+      setShowApprovalModal(false);
+    } catch (e: any) {
+      setApprovalError(e.message || 'Failed to submit approval request');
+    } finally {
+      setRequestingApproval(false);
+    }
   };
 
   const handleSaveVersion = async () => {
@@ -302,7 +331,7 @@ export function SSPPage() {
             {activeDoc.status === 'approved' && isAdmin && (
               <button onClick={() => handleStatusChange('published')} disabled={statusChanging}
                 className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-medium hover:bg-emerald-700 disabled:opacity-50">
-                Publish
+                Request Publication
               </button>
             )}
             <button onClick={handleSaveVersion} className="px-3 py-1.5 bg-gray-100 text-gray-700 rounded-lg text-xs font-medium hover:bg-gray-200">
@@ -559,6 +588,39 @@ export function SSPPage() {
           </div>
         )}
       </div>
+
+      {/* SSP Publication Approval Modal */}
+      {showApprovalModal && activeDoc && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4 p-6">
+            <h2 className="text-lg font-bold text-gray-900 mb-1">Request Publication Approval</h2>
+            <p className="text-sm text-gray-500 mb-4">Publishing an SSP requires admin approval.</p>
+            <div className="bg-gray-50 rounded-lg p-3 mb-4">
+              <p className="font-medium text-gray-900 text-sm">{activeDoc.title}</p>
+              <p className="text-xs text-gray-400 mt-0.5">Version {activeDoc.version}</p>
+            </div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Justification (required)</label>
+            <textarea
+              value={approvalJustification}
+              onChange={(e) => setApprovalJustification(e.target.value)}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              rows={3}
+              placeholder="Explain why this SSP should be published..."
+            />
+            {approvalError && <p className="text-sm text-red-600 mt-2">{approvalError}</p>}
+            <div className="flex items-center justify-end gap-2 mt-4">
+              <button onClick={() => setShowApprovalModal(false)} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800" disabled={requestingApproval}>Cancel</button>
+              <button
+                onClick={submitPublicationApproval}
+                disabled={requestingApproval || !approvalJustification.trim()}
+                className="px-4 py-2 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg disabled:opacity-50"
+              >
+                {requestingApproval ? 'Submitting...' : 'Submit for Approval'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

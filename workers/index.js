@@ -213,6 +213,20 @@ async function handleRequest(request, env, url) {
   if (path === '/api/v1/ai/templates' && method === 'GET') return handleListAITemplates(env, org);
   if (path === '/api/v1/ai/templates' && method === 'POST') return handleCreateAITemplate(request, env, org, user);
 
+  // Approvals
+  if (path === '/api/v1/approvals' && method === 'POST') return handleCreateApproval(request, env, org, user);
+  if (path === '/api/v1/approvals' && method === 'GET') return handleListApprovals(env, url, org, user);
+  if (path === '/api/v1/approvals/pending/count' && method === 'GET') return handlePendingApprovalCount(env, org, user);
+  if (path.match(/^\/api\/v1\/approvals\/[\w-]+\/approve$/) && method === 'PUT') return handleApproveRequest(request, env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/approvals\/[\w-]+\/reject$/) && method === 'PUT') return handleRejectRequest(request, env, org, user, path.split('/')[4]);
+
+  // Bulk Import
+  if (path === '/api/v1/import/systems' && method === 'POST') return handleBulkImportSystems(request, env, org, user);
+  if (path === '/api/v1/import/risks' && method === 'POST') return handleBulkImportRisks(request, env, org, user);
+  if (path === '/api/v1/import/vendors' && method === 'POST') return handleBulkImportVendors(request, env, org, user);
+  if (path === '/api/v1/import/poams' && method === 'POST') return handleBulkImportPoams(request, env, org, user);
+  if (path === '/api/v1/import/implementations' && method === 'POST') return handleBulkImportImplementations(request, env, org, user);
+
   return jsonResponse({ error: 'Not found' }, 404);
 }
 
@@ -2005,14 +2019,14 @@ async function handleMarkAllRead(env, user) {
 async function handleGetNotificationPrefs(env, user) {
   let prefs = await env.DB.prepare('SELECT * FROM notification_preferences WHERE user_id = ?').bind(user.id).first();
   if (!prefs) {
-    prefs = { poam_update: 1, risk_alert: 1, monitoring_fail: 1, control_change: 1, role_change: 1, compliance_alert: 1, evidence_upload: 1 };
+    prefs = { poam_update: 1, risk_alert: 1, monitoring_fail: 1, control_change: 1, role_change: 1, compliance_alert: 1, evidence_upload: 1, approval_request: 1, approval_decision: 1 };
   }
   return jsonResponse({ preferences: prefs });
 }
 
 async function handleUpdateNotificationPrefs(request, env, user) {
   const body = await request.json();
-  const types = ['poam_update', 'risk_alert', 'monitoring_fail', 'control_change', 'role_change', 'compliance_alert', 'evidence_upload'];
+  const types = ['poam_update', 'risk_alert', 'monitoring_fail', 'control_change', 'role_change', 'compliance_alert', 'evidence_upload', 'approval_request', 'approval_decision'];
   const values = types.map(t => body[t] !== undefined ? (body[t] ? 1 : 0) : 1);
 
   await env.DB.prepare(
@@ -2684,4 +2698,397 @@ async function handleGetComplianceTrends(env, url, org) {
   query += ' ORDER BY cs.snapshot_date ASC';
   const { results } = await env.DB.prepare(query).bind(...params).all();
   return jsonResponse({ trends: results });
+}
+
+// ============================================================================
+// BULK IMPORT
+// ============================================================================
+
+async function handleBulkImportSystems(request, env, org, user) {
+  if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const { rows } = await request.json();
+  if (!Array.isArray(rows) || rows.length === 0) return jsonResponse({ error: 'rows array is required' }, 400);
+  if (rows.length > 200) return jsonResponse({ error: 'Maximum 200 rows per import' }, 400);
+
+  const { count } = await env.DB.prepare('SELECT COUNT(*) as count FROM systems WHERE org_id = ?').bind(org.id).first();
+  if (count + rows.length > (org.max_systems || 50)) {
+    return jsonResponse({ error: `Would exceed system limit (${org.max_systems || 50}). Current: ${count}, importing: ${rows.length}` }, 400);
+  }
+
+  const validImpact = ['low', 'moderate', 'high'];
+  const validDeploy = ['cloud', 'on_premises', 'hybrid', 'government_cloud'];
+  const validService = ['iaas', 'paas', 'saas', 'other'];
+  const results = { success: 0, failed: 0, errors: [] };
+
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    try {
+      if (!r.name || !r.name.trim()) throw new Error('Name is required');
+      const il = (r.impact_level || 'moderate').toLowerCase();
+      if (!validImpact.includes(il)) throw new Error(`Invalid impact_level: ${r.impact_level}`);
+      if (r.deployment_model && !validDeploy.includes(r.deployment_model.toLowerCase())) throw new Error(`Invalid deployment_model: ${r.deployment_model}`);
+      if (r.service_model && !validService.includes(r.service_model.toLowerCase())) throw new Error(`Invalid service_model: ${r.service_model}`);
+      const id = generateId();
+      await env.DB.prepare(
+        'INSERT INTO systems (id, org_id, name, acronym, description, impact_level, deployment_model, service_model) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      ).bind(id, org.id, r.name.trim(), r.acronym || null, r.description || null, il, r.deployment_model ? r.deployment_model.toLowerCase() : null, r.service_model ? r.service_model.toUpperCase() : null).run();
+      results.success++;
+    } catch (err) {
+      results.failed++;
+      results.errors.push({ row: i + 1, error: err.message });
+    }
+  }
+
+  await auditLog(env, org.id, user.id, 'bulk_import', 'system', null, { count: results.success, failed: results.failed });
+  return jsonResponse(results, 201);
+}
+
+async function handleBulkImportRisks(request, env, org, user) {
+  if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const { rows } = await request.json();
+  if (!Array.isArray(rows) || rows.length === 0) return jsonResponse({ error: 'rows array is required' }, 400);
+  if (rows.length > 200) return jsonResponse({ error: 'Maximum 200 rows per import' }, 400);
+
+  const { results: allSystems } = await env.DB.prepare('SELECT id, name FROM systems WHERE org_id = ?').bind(org.id).all();
+  const systemMap = new Map(allSystems.map(s => [s.name.toLowerCase(), s.id]));
+
+  const validCat = ['technical', 'operational', 'compliance', 'financial', 'reputational', 'strategic'];
+  const validTreatment = ['accept', 'mitigate', 'transfer', 'avoid'];
+  const results = { success: 0, failed: 0, errors: [] };
+  const baseTime = Date.now();
+
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    try {
+      if (!r.title || !r.title.trim()) throw new Error('Title is required');
+      const likelihood = parseInt(r.likelihood) || 3;
+      const impact = parseInt(r.impact) || 3;
+      if (likelihood < 1 || likelihood > 5) throw new Error('Likelihood must be 1-5');
+      if (impact < 1 || impact > 5) throw new Error('Impact must be 1-5');
+      if (r.category && !validCat.includes(r.category.toLowerCase())) throw new Error(`Invalid category: ${r.category}`);
+      if (r.treatment && !validTreatment.includes(r.treatment.toLowerCase())) throw new Error(`Invalid treatment: ${r.treatment}`);
+
+      let systemId = null;
+      if (r.system && r.system.trim()) {
+        systemId = systemMap.get(r.system.trim().toLowerCase());
+        if (!systemId) throw new Error(`System not found: "${r.system}"`);
+      }
+
+      const score = likelihood * impact;
+      const level = score >= 15 ? 'critical' : score >= 10 ? 'high' : score >= 5 ? 'moderate' : 'low';
+      const riskId = 'RISK-' + (baseTime + i).toString(36).toUpperCase();
+      let relatedControls = null;
+      if (r.related_controls && r.related_controls.trim()) {
+        relatedControls = JSON.stringify(r.related_controls.split(';').map(s => s.trim()).filter(Boolean));
+      }
+
+      const id = generateId();
+      await env.DB.prepare(
+        'INSERT INTO risks (id, org_id, system_id, risk_id, title, description, category, likelihood, impact, risk_level, treatment, treatment_plan, treatment_due_date, owner, related_controls) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      ).bind(id, org.id, systemId, riskId, r.title.trim(), r.description || null, r.category ? r.category.toLowerCase() : null, likelihood, impact, level, r.treatment ? r.treatment.toLowerCase() : 'mitigate', r.treatment_plan || null, r.treatment_due_date || null, r.owner || null, relatedControls).run();
+      results.success++;
+    } catch (err) {
+      results.failed++;
+      results.errors.push({ row: i + 1, error: err.message });
+    }
+  }
+
+  await auditLog(env, org.id, user.id, 'bulk_import', 'risk', null, { count: results.success, failed: results.failed });
+  return jsonResponse(results, 201);
+}
+
+async function handleBulkImportVendors(request, env, org, user) {
+  if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const { rows } = await request.json();
+  if (!Array.isArray(rows) || rows.length === 0) return jsonResponse({ error: 'rows array is required' }, 400);
+  if (rows.length > 200) return jsonResponse({ error: 'Maximum 200 rows per import' }, 400);
+
+  const validCrit = ['low', 'medium', 'high', 'critical'];
+  const results = { success: 0, failed: 0, errors: [] };
+
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    try {
+      if (!r.name || !r.name.trim()) throw new Error('Name is required');
+      if (r.criticality && !validCrit.includes(r.criticality.toLowerCase())) throw new Error(`Invalid criticality: ${r.criticality}`);
+      const hasBaa = r.has_baa && (r.has_baa.toLowerCase() === 'yes' || r.has_baa === '1') ? 1 : 0;
+      const id = generateId();
+      await env.DB.prepare(
+        'INSERT INTO vendors (id, org_id, name, description, category, criticality, contact_name, contact_email, contract_start, contract_end, data_classification, has_baa) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      ).bind(id, org.id, r.name.trim(), r.description || null, r.category || null, r.criticality ? r.criticality.toLowerCase() : 'medium', r.contact_name || null, r.contact_email || null, r.contract_start || null, r.contract_end || null, r.data_classification || null, hasBaa).run();
+      results.success++;
+    } catch (err) {
+      results.failed++;
+      results.errors.push({ row: i + 1, error: err.message });
+    }
+  }
+
+  await auditLog(env, org.id, user.id, 'bulk_import', 'vendor', null, { count: results.success, failed: results.failed });
+  return jsonResponse(results, 201);
+}
+
+async function handleBulkImportPoams(request, env, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const { rows } = await request.json();
+  if (!Array.isArray(rows) || rows.length === 0) return jsonResponse({ error: 'rows array is required' }, 400);
+  if (rows.length > 200) return jsonResponse({ error: 'Maximum 200 rows per import' }, 400);
+
+  const { results: allSystems } = await env.DB.prepare('SELECT id, name FROM systems WHERE org_id = ?').bind(org.id).all();
+  const systemMap = new Map(allSystems.map(s => [s.name.toLowerCase(), s.id]));
+  const { results: allUsers } = await env.DB.prepare('SELECT id, name FROM users WHERE org_id = ?').bind(org.id).all();
+  const userMap = new Map(allUsers.map(u => [u.name.toLowerCase(), u.id]));
+
+  const validRisk = ['low', 'moderate', 'high', 'critical'];
+  const results = { success: 0, failed: 0, errors: [] };
+  const baseTime = Date.now();
+
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    try {
+      if (!r.weakness_name || !r.weakness_name.trim()) throw new Error('Weakness Name is required');
+      if (!r.system || !r.system.trim()) throw new Error('System is required');
+      const systemId = systemMap.get(r.system.trim().toLowerCase());
+      if (!systemId) throw new Error(`System not found: "${r.system}"`);
+      if (r.risk_level && !validRisk.includes(r.risk_level.toLowerCase())) throw new Error(`Invalid risk_level: ${r.risk_level}`);
+
+      let assignedTo = null;
+      if (r.assigned_to && r.assigned_to.trim()) {
+        assignedTo = userMap.get(r.assigned_to.trim().toLowerCase());
+        // Don't throw if user not found, just leave null
+      }
+
+      const poamId = 'POAM-' + (baseTime + i).toString(36).toUpperCase();
+      const id = generateId();
+      await env.DB.prepare(
+        'INSERT INTO poams (id, org_id, system_id, poam_id, weakness_name, weakness_description, risk_level, status, scheduled_completion, responsible_party, assigned_to, cost_estimate, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      ).bind(id, org.id, systemId, poamId, r.weakness_name.trim(), r.weakness_description || null, r.risk_level ? r.risk_level.toLowerCase() : 'moderate', 'draft', r.scheduled_completion || null, r.responsible_party || null, assignedTo, r.cost_estimate ? parseFloat(r.cost_estimate) || null : null, user.id).run();
+      results.success++;
+    } catch (err) {
+      results.failed++;
+      results.errors.push({ row: i + 1, error: err.message });
+    }
+  }
+
+  await auditLog(env, org.id, user.id, 'bulk_import', 'poam', null, { count: results.success, failed: results.failed });
+  return jsonResponse(results, 201);
+}
+
+async function handleBulkImportImplementations(request, env, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const { rows, system_id, framework_id } = await request.json();
+  if (!system_id || !framework_id) return jsonResponse({ error: 'system_id and framework_id are required' }, 400);
+  if (!Array.isArray(rows) || rows.length === 0) return jsonResponse({ error: 'rows array is required' }, 400);
+  if (rows.length > 500) return jsonResponse({ error: 'Maximum 500 rows per import' }, 400);
+
+  // Verify system and framework exist
+  const sys = await env.DB.prepare('SELECT id FROM systems WHERE id = ? AND org_id = ?').bind(system_id, org.id).first();
+  if (!sys) return jsonResponse({ error: 'System not found' }, 404);
+
+  const validStatus = ['implemented', 'partially_implemented', 'planned', 'alternative', 'not_applicable', 'not_implemented'];
+  const results = { success: 0, failed: 0, errors: [] };
+
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    try {
+      if (!r.control_id || !r.control_id.trim()) throw new Error('Control ID is required');
+      const status = r.status ? r.status.toLowerCase() : 'not_implemented';
+      if (!validStatus.includes(status)) throw new Error(`Invalid status: ${r.status}`);
+
+      const id = generateId();
+      await env.DB.prepare(
+        `INSERT INTO control_implementations (id, org_id, system_id, framework_id, control_id, status, implementation_description, responsible_role, ai_narrative)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(system_id, framework_id, control_id) DO UPDATE SET
+           status = ?, implementation_description = COALESCE(?, implementation_description),
+           responsible_role = COALESCE(?, responsible_role), ai_narrative = COALESCE(?, ai_narrative), updated_at = datetime('now')`
+      ).bind(id, org.id, system_id, framework_id, r.control_id.trim(), status, r.implementation_description || null, r.responsible_role || null, r.ai_narrative || null,
+             status, r.implementation_description || null, r.responsible_role || null, r.ai_narrative || null).run();
+      results.success++;
+    } catch (err) {
+      results.failed++;
+      results.errors.push({ row: i + 1, error: err.message });
+    }
+  }
+
+  await auditLog(env, org.id, user.id, 'bulk_import', 'implementation', null, { system_id, framework_id, count: results.success, failed: results.failed });
+  return jsonResponse(results, 201);
+}
+
+// ============================================================================
+// APPROVAL WORKFLOWS
+// ============================================================================
+
+async function handleCreateApproval(request, env, org, user) {
+  const { request_type, resource_id, justification } = await request.json();
+
+  const typeConfig = {
+    poam_closure:    { resource_type: 'poam', minRequester: 'analyst', minApprover: 'manager', targetStatuses: ['completed', 'accepted'] },
+    risk_acceptance: { resource_type: 'risk', minRequester: 'manager', minApprover: 'admin',  targetStatuses: ['accepted'] },
+    ssp_publication: { resource_type: 'ssp',  minRequester: 'manager', minApprover: 'admin',  targetStatuses: ['published'] },
+  };
+
+  const config = typeConfig[request_type];
+  if (!config) return jsonResponse({ error: 'Invalid request_type' }, 400);
+  if (!resource_id) return jsonResponse({ error: 'resource_id required' }, 400);
+  if (!justification || justification.trim().length === 0) return jsonResponse({ error: 'Justification required' }, 400);
+  if (!requireRole(user, config.minRequester)) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  let snapshot, target_status;
+  if (request_type === 'poam_closure') {
+    const resource = await env.DB.prepare('SELECT p.*, s.name as system_name FROM poams p LEFT JOIN systems s ON s.id = p.system_id WHERE p.id = ? AND p.org_id = ?').bind(resource_id, org.id).first();
+    if (!resource) return jsonResponse({ error: 'POA&M not found' }, 404);
+    if (['completed', 'accepted'].includes(resource.status)) return jsonResponse({ error: 'POA&M is already closed' }, 400);
+    snapshot = { poam_id: resource.poam_id, weakness_name: resource.weakness_name, risk_level: resource.risk_level, system_name: resource.system_name, current_status: resource.status };
+    target_status = 'completed';
+  } else if (request_type === 'risk_acceptance') {
+    const resource = await env.DB.prepare('SELECT r.*, s.name as system_name FROM risks r LEFT JOIN systems s ON s.id = r.system_id WHERE r.id = ? AND r.org_id = ?').bind(resource_id, org.id).first();
+    if (!resource) return jsonResponse({ error: 'Risk not found' }, 404);
+    if (resource.status === 'accepted') return jsonResponse({ error: 'Risk is already accepted' }, 400);
+    snapshot = { risk_id: resource.risk_id, title: resource.title, risk_level: resource.risk_level, risk_score: resource.risk_score, system_name: resource.system_name, current_status: resource.status };
+    target_status = 'accepted';
+  } else if (request_type === 'ssp_publication') {
+    const resource = await env.DB.prepare('SELECT d.*, s.name as system_name FROM ssp_documents d LEFT JOIN systems s ON s.id = d.system_id WHERE d.id = ? AND d.org_id = ?').bind(resource_id, org.id).first();
+    if (!resource) return jsonResponse({ error: 'SSP not found' }, 404);
+    if (resource.status !== 'approved') return jsonResponse({ error: 'SSP must be in approved status to request publication' }, 400);
+    snapshot = { title: resource.title, version: resource.version, system_name: resource.system_name, current_status: resource.status };
+    target_status = 'published';
+  }
+
+  const existing = await env.DB.prepare(
+    "SELECT id FROM approval_requests WHERE org_id = ? AND resource_type = ? AND resource_id = ? AND status = 'pending'"
+  ).bind(org.id, config.resource_type, resource_id).first();
+  if (existing) return jsonResponse({ error: 'A pending approval request already exists for this item' }, 409);
+
+  const id = generateId();
+  await env.DB.prepare(
+    `INSERT INTO approval_requests (id, org_id, request_type, resource_type, resource_id, requested_by, justification, target_status, snapshot) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(id, org.id, request_type, config.resource_type, resource_id, user.id, justification.trim(), target_status, JSON.stringify(snapshot)).run();
+
+  await auditLog(env, org.id, user.id, 'create', 'approval_request', id, { request_type, resource_id, target_status }, request);
+
+  const snapshotName = snapshot.weakness_name || snapshot.title || resource_id;
+  await notifyOrgRole(env, org.id, user.id, config.minApprover, 'approval_request',
+    'Approval Requested',
+    `${user.name} requests approval: ${request_type.replace(/_/g, ' ')} for "${snapshotName}"`,
+    'approval_request', id, { request_type, resource_id }
+  );
+
+  const approval = await env.DB.prepare('SELECT * FROM approval_requests WHERE id = ?').bind(id).first();
+  return jsonResponse({ approval: { ...approval, snapshot: JSON.parse(approval.snapshot || '{}') } }, 201);
+}
+
+async function handleListApprovals(env, url, org, user) {
+  const status = url.searchParams.get('status');
+  const requestType = url.searchParams.get('request_type');
+  const page = parseInt(url.searchParams.get('page') || '1');
+  const limit = Math.min(parseInt(url.searchParams.get('limit') || '50'), 100);
+  const offset = (page - 1) * limit;
+
+  let sql = `SELECT ar.*, u.name as requested_by_name, u.email as requested_by_email, rv.name as reviewer_name
+             FROM approval_requests ar
+             LEFT JOIN users u ON u.id = ar.requested_by
+             LEFT JOIN users rv ON rv.id = ar.reviewer_id
+             WHERE ar.org_id = ?`;
+  const params = [org.id];
+
+  if (status) { sql += ' AND ar.status = ?'; params.push(status); }
+  if (requestType) { sql += ' AND ar.request_type = ?'; params.push(requestType); }
+
+  const countSql = sql.replace(/SELECT ar\.\*.*FROM/, 'SELECT COUNT(*) as total FROM');
+  const totalResult = await env.DB.prepare(countSql).bind(...params).first();
+
+  sql += ' ORDER BY ar.created_at DESC LIMIT ? OFFSET ?';
+  params.push(limit, offset);
+
+  const { results } = await env.DB.prepare(sql).bind(...params).all();
+  const approvals = results.map(r => ({ ...r, snapshot: JSON.parse(r.snapshot || '{}') }));
+
+  return jsonResponse({ approvals, total: totalResult?.total || 0, page, limit });
+}
+
+async function handlePendingApprovalCount(env, org, user) {
+  let sql = "SELECT COUNT(*) as count FROM approval_requests WHERE org_id = ? AND status = 'pending'";
+  const params = [org.id];
+
+  if (requireRole(user, 'admin')) {
+    // Admin+ sees all pending
+  } else if (requireRole(user, 'manager')) {
+    sql += " AND request_type = 'poam_closure'";
+  } else {
+    return jsonResponse({ count: 0 });
+  }
+
+  const result = await env.DB.prepare(sql).bind(...params).first();
+  return jsonResponse({ count: result?.count || 0 });
+}
+
+async function handleApproveRequest(request, env, org, user, approvalId) {
+  const approval = await env.DB.prepare('SELECT * FROM approval_requests WHERE id = ? AND org_id = ?').bind(approvalId, org.id).first();
+  if (!approval) return jsonResponse({ error: 'Approval request not found' }, 404);
+  if (approval.status !== 'pending') return jsonResponse({ error: 'Request is no longer pending' }, 400);
+  if (approval.requested_by === user.id) return jsonResponse({ error: 'Cannot approve your own request' }, 403);
+
+  const approverRole = { poam_closure: 'manager', risk_acceptance: 'admin', ssp_publication: 'admin' };
+  if (!requireRole(user, approverRole[approval.request_type])) return jsonResponse({ error: 'Insufficient role to approve' }, 403);
+
+  const { comment } = await request.json();
+
+  // Auto-execute the underlying action
+  if (approval.request_type === 'poam_closure') {
+    await env.DB.prepare("UPDATE poams SET status = ?, actual_completion = datetime('now'), updated_at = datetime('now') WHERE id = ? AND org_id = ?")
+      .bind(approval.target_status, approval.resource_id, org.id).run();
+    await auditLog(env, org.id, user.id, 'status_change', 'poam', approval.resource_id, { from: 'pending_approval', to: approval.target_status, approval_id: approvalId });
+  } else if (approval.request_type === 'risk_acceptance') {
+    await env.DB.prepare("UPDATE risks SET treatment = 'accept', status = 'accepted', updated_at = datetime('now') WHERE id = ? AND org_id = ?")
+      .bind(approval.resource_id, org.id).run();
+    await auditLog(env, org.id, user.id, 'status_change', 'risk', approval.resource_id, { from: 'pending_approval', to: 'accepted', approval_id: approvalId });
+  } else if (approval.request_type === 'ssp_publication') {
+    await env.DB.prepare("UPDATE ssp_documents SET status = 'published', published_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND org_id = ?")
+      .bind(approval.resource_id, org.id).run();
+    await auditLog(env, org.id, user.id, 'status_change', 'ssp', approval.resource_id, { from: 'approved', to: 'published', approval_id: approvalId });
+  }
+
+  await env.DB.prepare(
+    "UPDATE approval_requests SET status = 'approved', reviewer_id = ?, reviewed_at = datetime('now'), reviewer_comment = ?, updated_at = datetime('now') WHERE id = ?"
+  ).bind(user.id, comment || null, approvalId).run();
+
+  await auditLog(env, org.id, user.id, 'approve', 'approval_request', approvalId, { request_type: approval.request_type, resource_id: approval.resource_id }, request);
+
+  const snapshot = JSON.parse(approval.snapshot || '{}');
+  await createNotification(env, org.id, approval.requested_by, 'approval_decision',
+    'Request Approved',
+    `Your ${approval.request_type.replace(/_/g, ' ')} request for "${snapshot.weakness_name || snapshot.title || ''}" was approved by ${user.name}${comment ? ': ' + comment : ''}`,
+    'approval_request', approvalId, { decision: 'approved', request_type: approval.request_type, resource_id: approval.resource_id }
+  );
+
+  const updated = await env.DB.prepare('SELECT * FROM approval_requests WHERE id = ?').bind(approvalId).first();
+  return jsonResponse({ approval: { ...updated, snapshot: JSON.parse(updated.snapshot || '{}') } });
+}
+
+async function handleRejectRequest(request, env, org, user, approvalId) {
+  const approval = await env.DB.prepare('SELECT * FROM approval_requests WHERE id = ? AND org_id = ?').bind(approvalId, org.id).first();
+  if (!approval) return jsonResponse({ error: 'Approval request not found' }, 404);
+  if (approval.status !== 'pending') return jsonResponse({ error: 'Request is no longer pending' }, 400);
+
+  const approverRole = { poam_closure: 'manager', risk_acceptance: 'admin', ssp_publication: 'admin' };
+  if (!requireRole(user, approverRole[approval.request_type])) return jsonResponse({ error: 'Insufficient role to reject' }, 403);
+
+  const { comment } = await request.json();
+  if (!comment || comment.trim().length === 0) return jsonResponse({ error: 'Comment is required when rejecting' }, 400);
+
+  await env.DB.prepare(
+    "UPDATE approval_requests SET status = 'rejected', reviewer_id = ?, reviewed_at = datetime('now'), reviewer_comment = ?, updated_at = datetime('now') WHERE id = ?"
+  ).bind(user.id, comment.trim(), approvalId).run();
+
+  await auditLog(env, org.id, user.id, 'reject', 'approval_request', approvalId, { request_type: approval.request_type, resource_id: approval.resource_id, comment: comment.trim() }, request);
+
+  const snapshot = JSON.parse(approval.snapshot || '{}');
+  await createNotification(env, org.id, approval.requested_by, 'approval_decision',
+    'Request Rejected',
+    `Your ${approval.request_type.replace(/_/g, ' ')} request for "${snapshot.weakness_name || snapshot.title || ''}" was rejected by ${user.name}: ${comment.trim()}`,
+    'approval_request', approvalId, { decision: 'rejected', request_type: approval.request_type, resource_id: approval.resource_id }
+  );
+
+  const updated = await env.DB.prepare('SELECT * FROM approval_requests WHERE id = ?').bind(approvalId).first();
+  return jsonResponse({ approval: { ...updated, snapshot: JSON.parse(updated.snapshot || '{}') } });
 }

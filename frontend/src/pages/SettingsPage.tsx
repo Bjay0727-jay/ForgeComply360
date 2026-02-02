@@ -14,6 +14,7 @@ export function SettingsPage() {
   const [notifPrefs, setNotifPrefs] = useState<Record<string, number>>({
     poam_update: 1, risk_alert: 1, monitoring_fail: 1, control_change: 1,
     role_change: 1, compliance_alert: 1, evidence_upload: 1,
+    approval_request: 1, approval_decision: 1,
   });
 
   const load = () => {
@@ -129,6 +130,8 @@ export function SettingsPage() {
             { key: 'role_change', label: 'Role Changes', desc: 'When your user role is changed' },
             { key: 'compliance_alert', label: 'Compliance Alerts', desc: 'When compliance drops below 70% threshold' },
             { key: 'evidence_upload', label: 'Evidence Uploads', desc: 'When new evidence files are uploaded' },
+            { key: 'approval_request', label: 'Approval Requests', desc: 'When someone requests your approval for a sensitive action' },
+            { key: 'approval_decision', label: 'Approval Decisions', desc: 'When your approval request is approved or rejected' },
           ].map((item) => (
             <div key={item.key} className="flex items-center justify-between py-2">
               <div>
