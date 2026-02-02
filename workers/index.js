@@ -167,6 +167,9 @@ async function handleRequest(request, env, url) {
   if (path.match(/^\/api\/v1\/monitoring\/checks\/[\w-]+\/run$/) && method === 'POST') return handleRunMonitoringCheck(request, env, org, user, path.split('/')[5]);
   if (path.match(/^\/api\/v1\/monitoring\/checks\/[\w-]+\/results$/) && method === 'GET') return handleGetCheckResults(env, org, path.split('/')[5]);
   if (path === '/api/v1/monitoring/dashboard' && method === 'GET') return handleMonitoringDashboard(env, org);
+  if (path === '/api/v1/monitoring/drift' && method === 'GET') return handleMonitoringDrift(env, org);
+  if (path === '/api/v1/monitoring/bulk-run' && method === 'POST') return handleBulkRunChecks(request, env, org, user);
+  if (path === '/api/v1/monitoring/export-csv' && method === 'GET') return handleMonitoringExportCSV(env, org);
 
   // User Management
   if (path === '/api/v1/users' && method === 'GET') return handleListUsers(env, org, user);
@@ -2289,6 +2292,96 @@ async function handleGetCheckResults(env, org, checkId) {
      WHERE mcr.check_id = ? AND mcr.org_id = ? ORDER BY mcr.run_at DESC LIMIT 50`
   ).bind(checkId, org.id).all();
   return jsonResponse({ results });
+}
+
+// ============================================================================
+// MONITORING — ConMon Enhancements
+// ============================================================================
+
+async function handleMonitoringDrift(env, org) {
+  // Compare latest two snapshots per system+framework to find compliance drops
+  const { results: snapshotDrift } = await env.DB.prepare(
+    `WITH ranked AS (
+       SELECT cs.*, cf.name as framework_name, s.name as system_name,
+         ROW_NUMBER() OVER (PARTITION BY cs.system_id, cs.framework_id ORDER BY cs.snapshot_date DESC) as rn
+       FROM compliance_snapshots cs
+       LEFT JOIN compliance_frameworks cf ON cf.id = cs.framework_id
+       LEFT JOIN systems s ON s.id = cs.system_id
+       WHERE cs.org_id = ?
+     )
+     SELECT a.system_id, a.framework_id, a.framework_name, a.system_name,
+       a.snapshot_date as current_date, a.compliance_percentage as current_pct,
+       b.snapshot_date as previous_date, b.compliance_percentage as previous_pct,
+       (a.compliance_percentage - b.compliance_percentage) as delta
+     FROM ranked a JOIN ranked b ON a.system_id = b.system_id AND a.framework_id = b.framework_id AND a.rn = 1 AND b.rn = 2
+     WHERE a.compliance_percentage < b.compliance_percentage`
+  ).bind(org.id).all();
+
+  // Find controls changed to non-implemented status in last 7 days
+  const { results: controlDrift } = await env.DB.prepare(
+    `SELECT ci.id, ci.control_id, ci.status, ci.updated_at, s.name as system_name, cf.name as framework_name
+     FROM control_implementations ci
+     LEFT JOIN systems s ON s.id = ci.system_id
+     LEFT JOIN compliance_frameworks cf ON cf.id = ci.framework_id
+     WHERE ci.org_id = ? AND ci.status IN ('not_implemented', 'planned') AND ci.updated_at >= datetime('now', '-7 days')
+     ORDER BY ci.updated_at DESC LIMIT 50`
+  ).bind(org.id).all();
+
+  return jsonResponse({ drift: { snapshot_drift: snapshotDrift, control_drift: controlDrift } });
+}
+
+async function handleBulkRunChecks(request, env, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const { system_id, result, notes } = await request.json();
+  if (!system_id || !result) return jsonResponse({ error: 'system_id and result required' }, 400);
+  if (!['pass', 'fail', 'warning', 'error'].includes(result)) return jsonResponse({ error: 'Invalid result' }, 400);
+
+  const { results: checks } = await env.DB.prepare(
+    'SELECT * FROM monitoring_checks WHERE org_id = ? AND system_id = ? AND is_active = 1'
+  ).bind(org.id, system_id).all();
+
+  if (!checks.length) return jsonResponse({ error: 'No active checks for this system' }, 404);
+
+  for (const check of checks) {
+    const resultId = generateId();
+    await env.DB.prepare(
+      "INSERT INTO monitoring_check_results (id, check_id, org_id, result, notes, run_by) VALUES (?, ?, ?, ?, ?, ?)"
+    ).bind(resultId, check.id, org.id, result, notes || '', user.id).run();
+    await env.DB.prepare(
+      "UPDATE monitoring_checks SET last_result = ?, last_result_details = ?, last_run_at = datetime('now'), updated_at = datetime('now') WHERE id = ?"
+    ).bind(result, notes || '', check.id).run();
+  }
+
+  await auditLog(env, org.id, user.id, 'bulk_run', 'monitoring_check', system_id, { result, count: checks.length });
+  if (['fail', 'error'].includes(result)) {
+    await notifyOrgRole(env, org.id, user.id, 'analyst', 'monitoring_fail', 'Bulk Check Run Failed', `${checks.length} checks marked as ${result} for system`, 'monitoring_check', system_id, { result, count: checks.length });
+  }
+
+  return jsonResponse({ message: `Ran ${checks.length} checks`, count: checks.length }, 201);
+}
+
+async function handleMonitoringExportCSV(env, org) {
+  const { results } = await env.DB.prepare(
+    `SELECT mc.*, s.name as system_name, cf.name as framework_name
+     FROM monitoring_checks mc
+     LEFT JOIN systems s ON s.id = mc.system_id
+     LEFT JOIN compliance_frameworks cf ON cf.id = mc.framework_id
+     WHERE mc.org_id = ? ORDER BY mc.system_id, mc.check_name`
+  ).bind(org.id).all();
+
+  const header = 'Check ID,Check Name,Type,System,Framework,Frequency,Last Result,Last Run,Active,Description\n';
+  const rows = results.map(r =>
+    `"${r.id}","${(r.check_name || '').replace(/"/g, '""')}","${r.check_type}","${(r.system_name || '').replace(/"/g, '""')}","${(r.framework_name || '').replace(/"/g, '""')}","${r.frequency}","${r.last_result || 'not_run'}","${r.last_run_at || 'Never'}","${r.is_active ? 'Yes' : 'No'}","${(r.check_description || '').replace(/"/g, '""')}"`
+  ).join('\n');
+
+  return new Response(header + rows, {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/csv',
+      'Content-Disposition': 'attachment; filename="monitoring_checks.csv"',
+      ...corsHeaders(),
+    },
+  });
 }
 
 // ============================================================================

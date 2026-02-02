@@ -23,6 +23,7 @@ interface MonitoringCheck {
   framework_id: string;
   last_result: string | null;
   last_run_at: string | null;
+  is_active: number;
   created_at: string;
 }
 
@@ -42,6 +43,34 @@ interface SystemOption {
 interface FrameworkOption {
   id: string;
   name: string;
+}
+
+interface TrendPoint {
+  snapshot_date: string;
+  compliance_percentage: number;
+  framework_name: string;
+  system_name: string;
+}
+
+interface SnapshotDrift {
+  system_id: string;
+  framework_id: string;
+  framework_name: string;
+  system_name: string;
+  current_date: string;
+  current_pct: number;
+  previous_date: string;
+  previous_pct: number;
+  delta: number;
+}
+
+interface ControlDrift {
+  id: string;
+  control_id: string;
+  status: string;
+  updated_at: string;
+  system_name: string;
+  framework_name: string;
 }
 
 const CHECK_TYPES = ['automated', 'manual', 'hybrid'];
@@ -70,6 +99,22 @@ const RESULT_DOT: Record<string, string> = {
   error: 'bg-red-400',
 };
 
+const FREQ_HOURS: Record<string, number> = {
+  continuous: 1,
+  daily: 24,
+  weekly: 168,
+  monthly: 720,
+  quarterly: 2160,
+  annually: 8760,
+};
+
+function isOverdue(check: MonitoringCheck): boolean {
+  if (!check.last_run_at || !check.is_active) return false;
+  const maxHours = FREQ_HOURS[check.frequency] || 720;
+  const elapsed = (Date.now() - new Date(check.last_run_at).getTime()) / (1000 * 60 * 60);
+  return elapsed > maxHours;
+}
+
 function scoreColor(score: number): string {
   if (score >= 80) return '#22c55e';
   if (score >= 50) return '#eab308';
@@ -92,6 +137,11 @@ function formatTimestamp(dateStr: string | null): string {
     hour: '2-digit',
     minute: '2-digit',
   });
+}
+
+function formatShortDate(dateStr: string): string {
+  const d = new Date(dateStr);
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
 function HealthDonut({ score }: { score: number }) {
@@ -123,6 +173,64 @@ function HealthDonut({ score }: { score: number }) {
         Health
       </text>
     </svg>
+  );
+}
+
+function TrendChart({ data }: { data: TrendPoint[] }) {
+  if (data.length < 2) {
+    return <p className="text-sm text-gray-400 py-4 text-center">Need at least 2 snapshots for a trend line.</p>;
+  }
+
+  const width = 600;
+  const height = 160;
+  const paddingX = 40;
+  const paddingY = 20;
+  const chartW = width - paddingX * 2;
+  const chartH = height - paddingY * 2;
+
+  const minVal = Math.min(...data.map((d) => d.compliance_percentage));
+  const maxVal = Math.max(...data.map((d) => d.compliance_percentage));
+  const range = maxVal - minVal || 1;
+
+  const points = data.map((d, i) => {
+    const x = paddingX + (i / (data.length - 1)) * chartW;
+    const y = paddingY + chartH - ((d.compliance_percentage - minVal) / range) * chartH;
+    return { x, y, ...d };
+  });
+
+  const pathD = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
+  const areaD = pathD + ` L ${points[points.length - 1].x} ${paddingY + chartH} L ${points[0].x} ${paddingY + chartH} Z`;
+
+  return (
+    <div className="w-full overflow-x-auto">
+      <svg viewBox={`0 0 ${width} ${height}`} className="w-full max-w-[600px]" preserveAspectRatio="xMidYMid meet">
+        <defs>
+          <linearGradient id="conmonTrendGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.3" />
+            <stop offset="100%" stopColor="#3b82f6" stopOpacity="0.02" />
+          </linearGradient>
+        </defs>
+        <text x={paddingX - 4} y={paddingY + 4} fontSize="9" fill="#9ca3af" textAnchor="end">{maxVal}%</text>
+        <text x={paddingX - 4} y={paddingY + chartH + 4} fontSize="9" fill="#9ca3af" textAnchor="end">{minVal}%</text>
+        <line x1={paddingX} y1={paddingY} x2={paddingX + chartW} y2={paddingY} stroke="#e5e7eb" strokeDasharray="4 2" />
+        <line x1={paddingX} y1={paddingY + chartH} x2={paddingX + chartW} y2={paddingY + chartH} stroke="#e5e7eb" strokeDasharray="4 2" />
+        <path d={areaD} fill="url(#conmonTrendGrad)" />
+        <path d={pathD} fill="none" stroke="#3b82f6" strokeWidth="2" strokeLinecap="round" />
+        {points.map((p, i) => (
+          <circle key={i} cx={p.x} cy={p.y} r="3" fill="#3b82f6" />
+        ))}
+        {points.length > 0 && (
+          <>
+            <text x={points[0].x} y={paddingY + chartH + 14} fontSize="8" fill="#9ca3af" textAnchor="middle">
+              {formatShortDate(points[0].snapshot_date)}
+            </text>
+            <text x={points[points.length - 1].x} y={paddingY + chartH + 14} fontSize="8" fill="#9ca3af" textAnchor="middle">
+              {formatShortDate(points[points.length - 1].snapshot_date)}
+            </text>
+          </>
+        )}
+      </svg>
+    </div>
   );
 }
 
@@ -159,22 +267,50 @@ export function MonitoringPage() {
   const [runForm, setRunForm] = useState({ result: 'pass', notes: '' });
   const [submittingRun, setSubmittingRun] = useState(false);
 
+  // Trend data
+  const [trendData, setTrendData] = useState<TrendPoint[]>([]);
+  const [trendSystem, setTrendSystem] = useState('');
+  const [trendFramework, setTrendFramework] = useState('');
+  const [trendDays, setTrendDays] = useState('30');
+
+  // Drift data
+  const [snapshotDrift, setSnapshotDrift] = useState<SnapshotDrift[]>([]);
+  const [controlDrift, setControlDrift] = useState<ControlDrift[]>([]);
+  const [showDrift, setShowDrift] = useState(false);
+
+  // Bulk run
+  const [bulkSystem, setBulkSystem] = useState('');
+  const [bulkRunning, setBulkRunning] = useState(false);
+
   const loadData = () => {
     Promise.all([
       api('/api/v1/monitoring/dashboard').catch(() => null),
       api('/api/v1/monitoring/checks').catch(() => ({ checks: [] })),
       api('/api/v1/systems').catch(() => ({ systems: [] })),
       api('/api/v1/frameworks/enabled').catch(() => ({ frameworks: [] })),
-    ]).then(([dashData, checksData, sysData, fwData]) => {
+      api('/api/v1/monitoring/drift').catch(() => ({ drift: { snapshot_drift: [], control_drift: [] } })),
+    ]).then(([dashData, checksData, sysData, fwData, driftData]) => {
       if (dashData) setStats(dashData);
       setChecks(checksData.checks || []);
       setSystems(sysData.systems || []);
       setFrameworks(fwData.frameworks || []);
+      if (driftData?.drift) {
+        setSnapshotDrift(driftData.drift.snapshot_drift || []);
+        setControlDrift(driftData.drift.control_drift || []);
+      }
       setLoading(false);
     });
   };
 
   useEffect(loadData, []);
+
+  // Load trends when filters change
+  useEffect(() => {
+    const params = new URLSearchParams({ days: trendDays });
+    if (trendSystem) params.set('system_id', trendSystem);
+    if (trendFramework) params.set('framework_id', trendFramework);
+    api(`/api/v1/compliance/trends?${params}`).then((d) => setTrendData(d.trends || [])).catch(() => setTrendData([]));
+  }, [trendSystem, trendFramework, trendDays]);
 
   const handleCreateCheck = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -229,13 +365,46 @@ export function MonitoringPage() {
       });
       setRunningId(null);
       setRunForm({ result: 'pass', notes: '' });
-      // Refresh results for this check
       const data = await api(`/api/v1/monitoring/checks/${checkId}/results`);
       setResults((prev) => ({ ...prev, [checkId]: data.results || [] }));
       loadData();
     } catch {
     } finally {
       setSubmittingRun(false);
+    }
+  };
+
+  const handleBulkRun = async () => {
+    if (!bulkSystem) return;
+    setBulkRunning(true);
+    try {
+      await api('/api/v1/monitoring/bulk-run', {
+        method: 'POST',
+        body: JSON.stringify({ system_id: bulkSystem, result: 'pass', notes: 'Bulk run — all checks pass' }),
+      });
+      loadData();
+    } catch {
+    } finally {
+      setBulkRunning(false);
+    }
+  };
+
+  const handleExportCSV = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const baseUrl = (window as any).__API_BASE || '';
+      const res = await fetch(`${baseUrl}/api/v1/monitoring/export-csv`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'monitoring_checks.csv';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      // silent
     }
   };
 
@@ -248,6 +417,11 @@ export function MonitoringPage() {
   }
 
   const healthScore = stats?.health_score ?? 0;
+  const overdueCount = checks.filter((c) => isOverdue(c)).length;
+  const latestPct = trendData.length > 0 ? trendData[trendData.length - 1].compliance_percentage : null;
+  const prevPct = trendData.length > 1 ? trendData[0].compliance_percentage : null;
+  const delta = latestPct !== null && prevPct !== null ? latestPct - prevPct : null;
+  const totalDriftItems = snapshotDrift.length + controlDrift.length;
 
   return (
     <div>
@@ -262,20 +436,49 @@ export function MonitoringPage() {
               Continuous monitoring and automated compliance checks
             </p>
           </div>
-          <span
-            className={`text-sm px-3 py-1 rounded-full font-semibold ${scoreBadgeClass(healthScore)}`}
-          >
+          <span className={`text-sm px-3 py-1 rounded-full font-semibold ${scoreBadgeClass(healthScore)}`}>
             {healthScore}% Health
           </span>
         </div>
-        {canManage && (
+        <div className="flex items-center gap-2">
           <button
-            onClick={() => setShowCreate(true)}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700"
+            onClick={handleExportCSV}
+            className="px-3 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50"
           >
-            + Create Check
+            Export CSV
           </button>
-        )}
+          {canEdit && (
+            <div className="flex items-center gap-1">
+              <select
+                value={bulkSystem}
+                onChange={(e) => setBulkSystem(e.target.value)}
+                className="px-2 py-2 border border-gray-300 rounded-lg text-sm"
+              >
+                <option value="">Bulk Run...</option>
+                {systems.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+              {bulkSystem && (
+                <button
+                  onClick={handleBulkRun}
+                  disabled={bulkRunning}
+                  className="px-3 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50"
+                >
+                  {bulkRunning ? 'Running...' : 'Go'}
+                </button>
+              )}
+            </div>
+          )}
+          {canManage && (
+            <button
+              onClick={() => setShowCreate(true)}
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700"
+            >
+              + Create Check
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Health Score Section */}
@@ -283,7 +486,7 @@ export function MonitoringPage() {
         <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
           <div className="flex items-center gap-8">
             <HealthDonut score={healthScore} />
-            <div className="flex-1 grid grid-cols-2 sm:grid-cols-5 gap-4">
+            <div className="flex-1 grid grid-cols-2 sm:grid-cols-6 gap-4">
               <div className="text-center">
                 <div className="text-2xl font-bold text-gray-900">{stats.total_checks}</div>
                 <div className="text-xs text-gray-500 mt-1">Total Checks</div>
@@ -304,10 +507,143 @@ export function MonitoringPage() {
                 <div className="text-2xl font-bold text-gray-400">{stats.not_run_count}</div>
                 <div className="text-xs text-gray-500 mt-1">Not Run</div>
               </div>
+              <div className="text-center">
+                <div className={`text-2xl font-bold ${overdueCount > 0 ? 'text-red-600' : 'text-gray-400'}`}>{overdueCount}</div>
+                <div className="text-xs text-gray-500 mt-1">Overdue</div>
+              </div>
             </div>
           </div>
         </div>
       )}
+
+      {/* Velocity Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+        <div className="bg-white rounded-xl border border-gray-200 p-5">
+          <div className="text-xs text-gray-500 uppercase tracking-wider mb-1">Current Compliance</div>
+          <div className="text-3xl font-bold text-gray-900">
+            {latestPct !== null ? `${latestPct}%` : '--'}
+          </div>
+        </div>
+        <div className="bg-white rounded-xl border border-gray-200 p-5">
+          <div className="text-xs text-gray-500 uppercase tracking-wider mb-1">30-Day Delta</div>
+          <div className="flex items-center gap-2">
+            <span className={`text-3xl font-bold ${delta !== null ? (delta >= 0 ? 'text-green-600' : 'text-red-600') : 'text-gray-400'}`}>
+              {delta !== null ? `${delta >= 0 ? '+' : ''}${delta.toFixed(1)}%` : '--'}
+            </span>
+            {delta !== null && (
+              <svg className={`w-5 h-5 ${delta >= 0 ? 'text-green-500' : 'text-red-500 rotate-180'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+              </svg>
+            )}
+          </div>
+        </div>
+        <div className="bg-white rounded-xl border border-gray-200 p-5">
+          <div className="text-xs text-gray-500 uppercase tracking-wider mb-1">Overdue Checks</div>
+          <div className={`text-3xl font-bold ${overdueCount > 0 ? 'text-red-600' : 'text-green-600'}`}>
+            {overdueCount}
+          </div>
+          <div className="text-xs text-gray-400 mt-1">{overdueCount === 0 ? 'All on schedule' : 'Action required'}</div>
+        </div>
+      </div>
+
+      {/* Compliance Trends */}
+      <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-semibold text-gray-900">Compliance Trends</h2>
+          <div className="flex items-center gap-2">
+            <select value={trendSystem} onChange={(e) => setTrendSystem(e.target.value)} className="px-2 py-1.5 border border-gray-300 rounded-lg text-xs">
+              <option value="">All Systems</option>
+              {systems.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+            <select value={trendFramework} onChange={(e) => setTrendFramework(e.target.value)} className="px-2 py-1.5 border border-gray-300 rounded-lg text-xs">
+              <option value="">All Frameworks</option>
+              {frameworks.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+            </select>
+            <select value={trendDays} onChange={(e) => setTrendDays(e.target.value)} className="px-2 py-1.5 border border-gray-300 rounded-lg text-xs">
+              <option value="7">7 days</option>
+              <option value="30">30 days</option>
+              <option value="90">90 days</option>
+              <option value="180">180 days</option>
+              <option value="365">1 year</option>
+            </select>
+          </div>
+        </div>
+        <TrendChart data={trendData} />
+      </div>
+
+      {/* Drift Detection */}
+      <div className="bg-white rounded-xl border border-gray-200 mb-6 overflow-hidden">
+        <button
+          onClick={() => setShowDrift(!showDrift)}
+          className="w-full p-5 flex items-center justify-between hover:bg-gray-50 transition-colors"
+        >
+          <div className="flex items-center gap-3">
+            <h2 className="font-semibold text-gray-900">Drift Detection</h2>
+            {totalDriftItems > 0 && (
+              <span className="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-medium">
+                {totalDriftItems} issue{totalDriftItems !== 1 ? 's' : ''}
+              </span>
+            )}
+            {totalDriftItems === 0 && (
+              <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700 font-medium">No drift</span>
+            )}
+          </div>
+          <svg className={`w-4 h-4 text-gray-400 transition-transform ${showDrift ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+        {showDrift && (
+          <div className="border-t border-gray-100 p-5 space-y-4">
+            {/* Snapshot drift */}
+            {snapshotDrift.length > 0 && (
+              <div>
+                <h3 className="text-sm font-medium text-gray-700 mb-2">Framework Compliance Degradations</h3>
+                <div className="space-y-2">
+                  {snapshotDrift.map((d, i) => (
+                    <div key={i} className="flex items-center justify-between p-3 bg-red-50 rounded-lg border border-red-100">
+                      <div>
+                        <span className="text-sm font-medium text-gray-900">{d.framework_name}</span>
+                        <span className="text-xs text-gray-500 ml-2">({d.system_name})</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm text-gray-500">{d.previous_pct}%</span>
+                        <svg className="w-4 h-4 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 8l4 4m0 0l-4 4m4-4H3" />
+                        </svg>
+                        <span className="text-sm font-semibold text-red-700">{d.current_pct}%</span>
+                        <span className="text-xs px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-medium">{d.delta.toFixed(1)}%</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {/* Control drift */}
+            {controlDrift.length > 0 && (
+              <div>
+                <h3 className="text-sm font-medium text-gray-700 mb-2">Recently Degraded Controls (7 days)</h3>
+                <div className="space-y-1">
+                  {controlDrift.map((c) => (
+                    <div key={c.id} className="flex items-center justify-between p-2 bg-yellow-50 rounded-lg border border-yellow-100">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-mono font-medium text-gray-900">{c.control_id}</span>
+                        <span className="text-xs text-gray-500">{c.system_name} / {c.framework_name}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs px-1.5 py-0.5 rounded bg-yellow-100 text-yellow-700 capitalize">{c.status.replace('_', ' ')}</span>
+                        <span className="text-xs text-gray-400">{formatTimestamp(c.updated_at)}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {totalDriftItems === 0 && (
+              <p className="text-sm text-gray-400 text-center py-2">No compliance drift detected. All systems stable.</p>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* Create Check Form */}
       {showCreate && (
@@ -409,6 +745,9 @@ export function MonitoringPage() {
       )}
 
       {/* Checks List */}
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="font-semibold text-gray-900">Monitoring Checks ({checks.length})</h2>
+      </div>
       {checks.length === 0 ? (
         <div className="bg-white rounded-xl border border-gray-200 p-12 text-center">
           <p className="text-gray-500">No monitoring checks yet. Create your first one to get started.</p>
@@ -420,11 +759,12 @@ export function MonitoringPage() {
             const checkResults = results[check.id] || [];
             const isLoadingResults = loadingResults === check.id;
             const isRunning = runningId === check.id;
+            const overdue = isOverdue(check);
 
             return (
               <div
                 key={check.id}
-                className="bg-white rounded-xl border border-gray-200 overflow-hidden"
+                className={`bg-white rounded-xl border overflow-hidden ${overdue ? 'border-red-300' : 'border-gray-200'}`}
               >
                 {/* Check Card Header */}
                 <div
@@ -442,7 +782,12 @@ export function MonitoringPage() {
                         }`}
                       />
                       <div>
-                        <h3 className="font-semibold text-gray-900">{check.check_name}</h3>
+                        <div className="flex items-center gap-2">
+                          <h3 className="font-semibold text-gray-900">{check.check_name}</h3>
+                          {overdue && (
+                            <span className="text-xs px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-semibold uppercase">Overdue</span>
+                          )}
+                        </div>
                         <p className="text-xs text-gray-500 mt-0.5">
                           {check.control_id && (
                             <span className="mr-2">{check.control_id}</span>
