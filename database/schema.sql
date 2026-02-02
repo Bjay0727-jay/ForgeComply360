@@ -388,6 +388,7 @@ CREATE TABLE IF NOT EXISTS risks (
   risk_level TEXT,
   treatment TEXT DEFAULT 'mitigate' CHECK (treatment IN ('accept', 'mitigate', 'transfer', 'avoid')),
   treatment_plan TEXT,
+  treatment_due_date TEXT,
   owner TEXT,
   status TEXT DEFAULT 'open' CHECK (status IN ('open', 'in_treatment', 'monitored', 'closed', 'accepted')),
   related_controls TEXT DEFAULT '[]',
