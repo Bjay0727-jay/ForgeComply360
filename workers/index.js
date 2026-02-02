@@ -147,10 +147,13 @@ async function handleRequest(request, env, url) {
   if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/status$/) && method === 'PUT') return handleUpdateSSPStatus(request, env, org, user, path.split('/')[4]);
   if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/versions$/) && method === 'POST') return handleCreateSSPVersion(request, env, org, user, path.split('/')[4]);
 
-  // Risks (RiskForge)
-  if (path === '/api/v1/risks' && method === 'GET') return handleListRisks(env, org);
+  // Risks (RiskForge ERM)
+  if (path === '/api/v1/risks' && method === 'GET') return handleListRisks(request, env, org);
   if (path === '/api/v1/risks' && method === 'POST') return handleCreateRisk(request, env, org, user);
+  if (path === '/api/v1/risks/stats' && method === 'GET') return handleRiskStats(env, org);
+  if (path.match(/^\/api\/v1\/risks\/[\w-]+$/) && method === 'GET') return handleGetRisk(env, org, path.split('/').pop());
   if (path.match(/^\/api\/v1\/risks\/[\w-]+$/) && method === 'PUT') return handleUpdateRisk(request, env, org, user, path.split('/').pop());
+  if (path.match(/^\/api\/v1\/risks\/[\w-]+$/) && method === 'DELETE') return handleDeleteRisk(env, org, user, path.split('/').pop());
 
   // Vendors (VendorGuard)
   if (path === '/api/v1/vendors' && method === 'GET') return handleListVendors(env, org);
@@ -1530,31 +1533,52 @@ async function handleCreateSSPVersion(request, env, org, user, sspId) {
 // RISKS (RiskForge ERM)
 // ============================================================================
 
-async function handleListRisks(env, org) {
-  const { results } = await env.DB.prepare(
-    'SELECT * FROM risks WHERE org_id = ? ORDER BY risk_score DESC, created_at DESC'
-  ).bind(org.id).all();
+async function handleListRisks(request, env, org) {
+  const url = new URL(request.url);
+  const systemId = url.searchParams.get('system_id');
+  const status = url.searchParams.get('status');
+  const category = url.searchParams.get('category');
+  const riskLevel = url.searchParams.get('risk_level');
+  const search = url.searchParams.get('search');
+  const likelihood = url.searchParams.get('likelihood');
+  const impact = url.searchParams.get('impact');
+
+  let sql = 'SELECT r.*, s.name as system_name FROM risks r LEFT JOIN systems s ON s.id = r.system_id WHERE r.org_id = ?';
+  const params = [org.id];
+
+  if (systemId) { sql += ' AND r.system_id = ?'; params.push(systemId); }
+  if (status) { sql += ' AND r.status = ?'; params.push(status); }
+  if (category) { sql += ' AND r.category = ?'; params.push(category); }
+  if (riskLevel) { sql += ' AND r.risk_level = ?'; params.push(riskLevel); }
+  if (likelihood) { sql += ' AND r.likelihood = ?'; params.push(likelihood); }
+  if (impact) { sql += ' AND r.impact = ?'; params.push(impact); }
+  if (search) { sql += ' AND (r.title LIKE ? OR r.description LIKE ?)'; params.push(`%${search}%`, `%${search}%`); }
+
+  sql += ' ORDER BY r.risk_score DESC, r.created_at DESC';
+  const { results } = await env.DB.prepare(sql).bind(...params).all();
   return jsonResponse({ risks: results });
 }
 
 async function handleCreateRisk(request, env, org, user) {
   if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Forbidden' }, 403);
   const body = await request.json();
-  const { system_id, title, description, category, likelihood, impact, treatment, treatment_plan, owner } = body;
+  const { system_id, title, description, category, likelihood, impact, treatment, treatment_plan, treatment_due_date, owner, related_controls } = body;
   if (!title) return jsonResponse({ error: 'Title is required' }, 400);
 
   const id = generateId();
   const riskId = `RISK-${Date.now().toString(36).toUpperCase()}`;
-  const riskLevel = (likelihood || 3) * (impact || 3) >= 15 ? 'critical' : (likelihood || 3) * (impact || 3) >= 10 ? 'high' : (likelihood || 3) * (impact || 3) >= 5 ? 'moderate' : 'low';
+  const l = likelihood || 3, i = impact || 3;
+  const score = l * i;
+  const riskLevel = score >= 15 ? 'critical' : score >= 10 ? 'high' : score >= 5 ? 'moderate' : 'low';
 
   await env.DB.prepare(
-    `INSERT INTO risks (id, org_id, system_id, risk_id, title, description, category, likelihood, impact, risk_level, treatment, treatment_plan, owner)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(id, org.id, system_id || null, riskId, title, description || null, category || 'technical', likelihood || 3, impact || 3, riskLevel, treatment || 'mitigate', treatment_plan || null, owner || null).run();
+    `INSERT INTO risks (id, org_id, system_id, risk_id, title, description, category, likelihood, impact, risk_level, treatment, treatment_plan, treatment_due_date, owner, related_controls)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(id, org.id, system_id || null, riskId, title, description || null, category || 'technical', l, i, riskLevel, treatment || 'mitigate', treatment_plan || null, treatment_due_date || null, owner || null, related_controls ? JSON.stringify(related_controls) : '[]').run();
 
   await auditLog(env, org.id, user.id, 'create', 'risk', id, { title, risk_level: riskLevel });
   if (['high', 'critical'].includes(riskLevel)) await notifyOrgRole(env, org.id, user.id, 'manager', 'risk_alert', 'High Risk Created', 'Risk "' + title + '" rated ' + riskLevel, 'risk', id, { risk_level: riskLevel });
-  const risk = await env.DB.prepare('SELECT * FROM risks WHERE id = ?').bind(id).first();
+  const risk = await env.DB.prepare('SELECT r.*, s.name as system_name FROM risks r LEFT JOIN systems s ON s.id = r.system_id WHERE r.id = ?').bind(id).first();
   return jsonResponse({ risk }, 201);
 }
 
@@ -1564,7 +1588,20 @@ async function handleUpdateRisk(request, env, org, user, riskId) {
   const risk = await env.DB.prepare('SELECT * FROM risks WHERE id = ? AND org_id = ?').bind(riskId, org.id).first();
   if (!risk) return jsonResponse({ error: 'Risk not found' }, 404);
 
-  const fields = ['title', 'description', 'category', 'likelihood', 'impact', 'risk_level', 'treatment', 'treatment_plan', 'owner', 'status'];
+  // Auto-recalculate risk_level when likelihood or impact change
+  if ((body.likelihood !== undefined || body.impact !== undefined) && body.risk_level === undefined) {
+    const l = body.likelihood !== undefined ? body.likelihood : risk.likelihood;
+    const i = body.impact !== undefined ? body.impact : risk.impact;
+    const score = l * i;
+    body.risk_level = score >= 15 ? 'critical' : score >= 10 ? 'high' : score >= 5 ? 'moderate' : 'low';
+  }
+
+  // Serialize related_controls if it's an array
+  if (Array.isArray(body.related_controls)) {
+    body.related_controls = JSON.stringify(body.related_controls);
+  }
+
+  const fields = ['title', 'description', 'category', 'likelihood', 'impact', 'risk_level', 'treatment', 'treatment_plan', 'treatment_due_date', 'owner', 'status', 'related_controls'];
   const updates = [];
   const values = [];
 
@@ -1581,8 +1618,41 @@ async function handleUpdateRisk(request, env, org, user, riskId) {
   await auditLog(env, org.id, user.id, 'update', 'risk', riskId, body);
   if (body.risk_level && ['high', 'critical'].includes(body.risk_level)) await notifyOrgRole(env, org.id, user.id, 'manager', 'risk_alert', 'Risk Escalated', 'Risk escalated to ' + body.risk_level, 'risk', riskId, { risk_level: body.risk_level });
 
-  const updated = await env.DB.prepare('SELECT * FROM risks WHERE id = ?').bind(riskId).first();
+  const updated = await env.DB.prepare('SELECT r.*, s.name as system_name FROM risks r LEFT JOIN systems s ON s.id = r.system_id WHERE r.id = ?').bind(riskId).first();
   return jsonResponse({ risk: updated });
+}
+
+async function handleGetRisk(env, org, riskId) {
+  const risk = await env.DB.prepare(
+    'SELECT r.*, s.name as system_name FROM risks r LEFT JOIN systems s ON s.id = r.system_id WHERE r.id = ? AND r.org_id = ?'
+  ).bind(riskId, org.id).first();
+  if (!risk) return jsonResponse({ error: 'Risk not found' }, 404);
+  return jsonResponse({ risk });
+}
+
+async function handleDeleteRisk(env, org, user, riskId) {
+  if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const risk = await env.DB.prepare('SELECT * FROM risks WHERE id = ? AND org_id = ?').bind(riskId, org.id).first();
+  if (!risk) return jsonResponse({ error: 'Risk not found' }, 404);
+  await env.DB.prepare('DELETE FROM risks WHERE id = ?').bind(riskId).run();
+  await auditLog(env, org.id, user.id, 'delete', 'risk', riskId, { title: risk.title });
+  return jsonResponse({ success: true });
+}
+
+async function handleRiskStats(env, org) {
+  const [totals, byLevel, byTreatment, byCategory] = await Promise.all([
+    env.DB.prepare("SELECT COUNT(*) as total, AVG(risk_score) as avg_score, SUM(CASE WHEN status != 'closed' THEN 1 ELSE 0 END) as open_count, SUM(CASE WHEN treatment_plan IS NOT NULL AND treatment_plan != '' THEN 1 ELSE 0 END) as with_treatment FROM risks WHERE org_id = ?").bind(org.id).first(),
+    env.DB.prepare("SELECT risk_level, COUNT(*) as count FROM risks WHERE org_id = ? AND status != 'closed' GROUP BY risk_level").bind(org.id).all(),
+    env.DB.prepare("SELECT treatment, COUNT(*) as count FROM risks WHERE org_id = ? AND status != 'closed' GROUP BY treatment").bind(org.id).all(),
+    env.DB.prepare("SELECT category, COUNT(*) as count FROM risks WHERE org_id = ? AND status != 'closed' GROUP BY category").bind(org.id).all(),
+  ]);
+  const by_level = {};
+  for (const r of byLevel.results) by_level[r.risk_level] = r.count;
+  const by_treatment = {};
+  for (const r of byTreatment.results) by_treatment[r.treatment] = r.count;
+  const by_category = {};
+  for (const r of byCategory.results) by_category[r.category] = r.count;
+  return jsonResponse({ stats: { total: totals.total, open_count: totals.open_count, avg_score: Math.round((totals.avg_score || 0) * 10) / 10, with_treatment: totals.with_treatment, by_level, by_treatment, by_category } });
 }
 
 // ============================================================================
