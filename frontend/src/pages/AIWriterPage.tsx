@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useExperience } from '../hooks/useExperience';
 import { useAuth } from '../hooks/useAuth';
 import { api } from '../utils/api';
-import { exportAsDocx } from '../utils/exportHelpers';
+import { exportAsDocx, exportComplianceDocByTemplate, COMPLIANCE_DOC_TYPES } from '../utils/exportHelpers';
 
 interface Template {
   id: string;
@@ -232,6 +232,14 @@ export function AIWriterPage() {
     return icons[cat] || icons.custom;
   };
 
+  const ATO_TEMPLATE_IDS = new Set([
+    'tpl-sar', 'tpl-isra', 'tpl-pia', 'tpl-iscp', 'tpl-cmp',
+    'tpl-isa', 'tpl-ato-letter', 'tpl-fips199', 'tpl-cptt',
+  ]);
+
+  const atoTemplates = templates.filter(t => ATO_TEMPLATE_IDS.has(t.id));
+  const writerTemplates = templates.filter(t => !ATO_TEMPLATE_IDS.has(t.id));
+
   const categoryColor = (cat: string) => {
     const colors: Record<string, string> = {
       control_narrative: 'bg-blue-50 text-blue-700 border-blue-200',
@@ -283,27 +291,79 @@ export function AIWriterPage() {
             {/* Template Grid */}
             <div className="bg-white rounded-xl border border-gray-200 p-6">
               <h2 className="font-semibold text-gray-900 mb-4">Select Template</h2>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {templates.map(tpl => (
-                  <button
-                    key={tpl.id}
-                    onClick={() => selectTemplate(tpl)}
-                    className={`text-left p-3 rounded-lg border-2 transition-all ${selectedTemplate?.id === tpl.id ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-200' : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'}`}
-                  >
-                    <div className="flex items-start gap-2">
-                      <div className={`p-1.5 rounded-md ${categoryColor(tpl.category)}`}>
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={categoryIcon(tpl.category)} />
-                        </svg>
-                      </div>
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium text-gray-900 truncate">{tpl.name}</p>
-                        <p className="text-xs text-gray-500 mt-0.5 line-clamp-2">{tpl.description}</p>
-                      </div>
+
+              {/* ATO Package Documents */}
+              {atoTemplates.length > 0 && (
+                <>
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="flex items-center gap-1.5 px-2 py-1 bg-indigo-50 rounded-md">
+                      <svg className="w-3.5 h-3.5 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
+                      <span className="text-xs font-semibold text-indigo-700">ATO Package Documents</span>
                     </div>
-                  </button>
-                ))}
-              </div>
+                    <span className="text-[10px] text-gray-400">{atoTemplates.length} templates</span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-5">
+                    {atoTemplates.map(tpl => (
+                      <button
+                        key={tpl.id}
+                        onClick={() => selectTemplate(tpl)}
+                        className={`text-left p-3 rounded-lg border-2 transition-all ${selectedTemplate?.id === tpl.id ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-200' : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'}`}
+                      >
+                        <div className="flex items-start gap-2">
+                          <div className={`p-1.5 rounded-md bg-indigo-50 text-indigo-700 border-indigo-200`}>
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={categoryIcon(tpl.category)} />
+                            </svg>
+                          </div>
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <p className="text-sm font-medium text-gray-900 truncate">{tpl.name}</p>
+                              {COMPLIANCE_DOC_TYPES[tpl.id] && (
+                                <span className="text-[9px] px-1.5 py-0.5 bg-indigo-100 text-indigo-600 rounded font-medium whitespace-nowrap">{COMPLIANCE_DOC_TYPES[tpl.id]}</span>
+                              )}
+                            </div>
+                            <p className="text-xs text-gray-500 mt-0.5 line-clamp-2">{tpl.description}</p>
+                          </div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              {/* Writing Tools */}
+              {writerTemplates.length > 0 && (
+                <>
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="flex items-center gap-1.5 px-2 py-1 bg-gray-100 rounded-md">
+                      <svg className="w-3.5 h-3.5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+                      <span className="text-xs font-semibold text-gray-700">Writing Tools</span>
+                    </div>
+                    <span className="text-[10px] text-gray-400">{writerTemplates.length} templates</span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {writerTemplates.map(tpl => (
+                      <button
+                        key={tpl.id}
+                        onClick={() => selectTemplate(tpl)}
+                        className={`text-left p-3 rounded-lg border-2 transition-all ${selectedTemplate?.id === tpl.id ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-200' : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'}`}
+                      >
+                        <div className="flex items-start gap-2">
+                          <div className={`p-1.5 rounded-md ${categoryColor(tpl.category)}`}>
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={categoryIcon(tpl.category)} />
+                            </svg>
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium text-gray-900 truncate">{tpl.name}</p>
+                            <p className="text-xs text-gray-500 mt-0.5 line-clamp-2">{tpl.description}</p>
+                          </div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
             </div>
 
             {/* Context & Variables */}
@@ -421,7 +481,18 @@ export function AIWriterPage() {
                   {!isEditing ? (
                     <>
                       <button
-                        onClick={() => exportAsDocx(selectedTemplate?.name || 'AI Document', isEditing ? editedContent : generatedContent)}
+                        onClick={() => {
+                          const content = isEditing ? editedContent : generatedContent;
+                          const title = selectedTemplate?.name || 'AI Document';
+                          if (selectedTemplate && COMPLIANCE_DOC_TYPES[selectedTemplate.id]) {
+                            const sys = systems.find(s => s.id === selectedSystem);
+                            exportComplianceDocByTemplate(selectedTemplate.id, title, content, {
+                              system_name: sys?.name || '', system_acronym: sys?.acronym || '', impact_level: sys?.impact_level || '',
+                            });
+                          } else {
+                            exportAsDocx(title, content);
+                          }
+                        }}
                         className="px-2.5 py-1.5 text-xs font-medium text-green-700 bg-green-50 rounded-md hover:bg-green-100 flex items-center gap-1"
                       >
                         <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
