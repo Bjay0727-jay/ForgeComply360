@@ -125,6 +125,7 @@ export function DashboardPage() {
   const [myWork, setMyWork] = useState<MyWorkData | null>(null);
   const [pendingApprovalCount, setPendingApprovalCount] = useState<number | null>(null);
   const [compScores, setCompScores] = useState<ComplianceScoresResponse | null>(null);
+  const [alertSummary, setAlertSummary] = useState<{ poams_overdue: number; poams_upcoming: number; ato_expiring: number; vendor_assessments_due: number; vendor_contracts_ending: number; risks_overdue: number; policies_review_due: number; total: number } | null>(null);
 
   useEffect(() => {
     // Core dashboard stats (always loaded)
@@ -143,6 +144,11 @@ export function DashboardPage() {
 
     // Analyst+ data
     if (canEdit) {
+      // Compliance alert summary
+      api<any>('/api/v1/alerts/summary')
+        .then((d) => setAlertSummary(d))
+        .catch(() => {});
+
       // Compliance scores (weighted scoring engine)
       api<ComplianceScoresResponse>('/api/v1/compliance/scores')
         .then((d) => setCompScores(d))
@@ -219,6 +225,53 @@ export function DashboardPage() {
           {t('compliance')} overview for your organization
         </p>
       </div>
+
+      {/* Compliance Alert Banner */}
+      {alertSummary && alertSummary.total > 0 && (
+        <div className="mb-6 bg-amber-50 border border-amber-200 rounded-xl p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <svg className="w-5 h-5 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+            <span className="font-semibold text-amber-800">{alertSummary.total} Compliance Alert{alertSummary.total !== 1 ? 's' : ''}</span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {alertSummary.poams_overdue > 0 && (
+              <a href="/poams" className="inline-flex items-center gap-1.5 px-3 py-1 bg-red-100 text-red-700 rounded-full text-xs font-medium hover:bg-red-200 transition-colors">
+                <span className="w-1.5 h-1.5 bg-red-500 rounded-full" />{alertSummary.poams_overdue} POA&M overdue
+              </a>
+            )}
+            {alertSummary.poams_upcoming > 0 && (
+              <a href="/poams" className="inline-flex items-center gap-1.5 px-3 py-1 bg-orange-100 text-orange-700 rounded-full text-xs font-medium hover:bg-orange-200 transition-colors">
+                <span className="w-1.5 h-1.5 bg-orange-500 rounded-full" />{alertSummary.poams_upcoming} POA&M due soon
+              </a>
+            )}
+            {alertSummary.ato_expiring > 0 && (
+              <a href="/systems" className="inline-flex items-center gap-1.5 px-3 py-1 bg-amber-100 text-amber-700 rounded-full text-xs font-medium hover:bg-amber-200 transition-colors">
+                <span className="w-1.5 h-1.5 bg-amber-500 rounded-full" />{alertSummary.ato_expiring} ATO expiring
+              </a>
+            )}
+            {alertSummary.vendor_assessments_due > 0 && (
+              <a href="/vendors" className="inline-flex items-center gap-1.5 px-3 py-1 bg-teal-100 text-teal-700 rounded-full text-xs font-medium hover:bg-teal-200 transition-colors">
+                <span className="w-1.5 h-1.5 bg-teal-500 rounded-full" />{alertSummary.vendor_assessments_due} vendor assessment{alertSummary.vendor_assessments_due !== 1 ? 's' : ''} due
+              </a>
+            )}
+            {alertSummary.vendor_contracts_ending > 0 && (
+              <a href="/vendors" className="inline-flex items-center gap-1.5 px-3 py-1 bg-teal-100 text-teal-700 rounded-full text-xs font-medium hover:bg-teal-200 transition-colors">
+                <span className="w-1.5 h-1.5 bg-teal-500 rounded-full" />{alertSummary.vendor_contracts_ending} contract{alertSummary.vendor_contracts_ending !== 1 ? 's' : ''} ending
+              </a>
+            )}
+            {alertSummary.risks_overdue > 0 && (
+              <a href="/risks" className="inline-flex items-center gap-1.5 px-3 py-1 bg-rose-100 text-rose-700 rounded-full text-xs font-medium hover:bg-rose-200 transition-colors">
+                <span className="w-1.5 h-1.5 bg-rose-500 rounded-full" />{alertSummary.risks_overdue} risk treatment overdue
+              </a>
+            )}
+            {alertSummary.policies_review_due > 0 && (
+              <a href="/policies" className="inline-flex items-center gap-1.5 px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-xs font-medium hover:bg-purple-200 transition-colors">
+                <span className="w-1.5 h-1.5 bg-purple-500 rounded-full" />{alertSummary.policies_review_due} policy review{alertSummary.policies_review_due !== 1 ? 's' : ''} due
+              </a>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Key Metrics — all roles */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">

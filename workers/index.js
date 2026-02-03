@@ -33,7 +33,9 @@ export default {
 
   async scheduled(event, env, ctx) {
     ctx.waitUntil(
-      handleScheduledEvidenceChecks(env).then(() => handleEmailDigest(env))
+      handleScheduledEvidenceChecks(env)
+        .then(() => handleScheduledComplianceAlerts(env))
+        .then(() => handleEmailDigest(env))
     );
   },
 };
@@ -223,6 +225,11 @@ async function handleRequest(request, env, url) {
   if (path === '/api/v1/compliance/score-config' && method === 'GET') return handleGetScoreConfig(env, org, user);
   if (path === '/api/v1/compliance/score-config' && method === 'PUT') return handleUpdateScoreConfig(request, env, org, user);
   if (path === '/api/v1/calendar/events' && method === 'GET') return handleCalendarEvents(env, url, org, user);
+
+  // Compliance Alerts
+  if (path === '/api/v1/alerts/summary' && method === 'GET') return handleAlertSummary(env, url, org, user);
+  if (path === '/api/v1/alert-settings' && method === 'GET') return handleGetAlertSettings(env, org, user);
+  if (path === '/api/v1/alert-settings' && method === 'PUT') return handleUpdateAlertSettings(request, env, org, user);
 
   // Policies
   if (path === '/api/v1/policies' && method === 'GET') return handleListPolicies(env, url, org);
@@ -614,6 +621,7 @@ const NOTIFICATION_TYPE_LABELS = {
   evidence_upload: 'Evidence Uploads', approval_request: 'Approval Requests', approval_decision: 'Approval Decisions',
   evidence_reminder: 'Evidence Reminders', evidence_expiry: 'Evidence Expiry',
   policy_update: 'Policy Updates', attestation_request: 'Attestation Requests',
+  deadline_alert: 'Deadline Alerts',
 };
 
 async function sendEmail(env, to, subject, html) {
@@ -2668,14 +2676,14 @@ async function handleMarkAllRead(env, user) {
 async function handleGetNotificationPrefs(env, user) {
   let prefs = await env.DB.prepare('SELECT * FROM notification_preferences WHERE user_id = ?').bind(user.id).first();
   if (!prefs) {
-    prefs = { poam_update: 1, risk_alert: 1, monitoring_fail: 1, control_change: 1, role_change: 1, compliance_alert: 1, evidence_upload: 1, approval_request: 1, approval_decision: 1, evidence_reminder: 1, evidence_expiry: 1, policy_update: 1, attestation_request: 1, email_digest: 1 };
+    prefs = { poam_update: 1, risk_alert: 1, monitoring_fail: 1, control_change: 1, role_change: 1, compliance_alert: 1, evidence_upload: 1, approval_request: 1, approval_decision: 1, evidence_reminder: 1, evidence_expiry: 1, policy_update: 1, attestation_request: 1, deadline_alert: 1, email_digest: 1 };
   }
   return jsonResponse({ preferences: prefs });
 }
 
 async function handleUpdateNotificationPrefs(request, env, user) {
   const body = await request.json();
-  const types = ['poam_update', 'risk_alert', 'monitoring_fail', 'control_change', 'role_change', 'compliance_alert', 'evidence_upload', 'approval_request', 'approval_decision', 'evidence_reminder', 'evidence_expiry', 'policy_update', 'attestation_request', 'email_digest'];
+  const types = ['poam_update', 'risk_alert', 'monitoring_fail', 'control_change', 'role_change', 'compliance_alert', 'evidence_upload', 'approval_request', 'approval_decision', 'evidence_reminder', 'evidence_expiry', 'policy_update', 'attestation_request', 'deadline_alert', 'email_digest'];
   const values = types.map(t => body[t] !== undefined ? (body[t] ? 1 : 0) : 1);
 
   await env.DB.prepare(
@@ -4705,6 +4713,222 @@ async function handleScheduledEvidenceChecks(env) {
   } catch (error) {
     console.error('[CRON] Evidence check error:', error);
   }
+}
+
+// ============================================================================
+// SCHEDULED WORKER - AUTOMATED COMPLIANCE ALERTS
+// ============================================================================
+
+const DEFAULT_ALERT_THRESHOLDS = {
+  poam_upcoming_days: 7,
+  ato_expiry_days: 30,
+  vendor_assessment_days: 14,
+  vendor_contract_days: 30,
+  policy_review_days: 30,
+  enabled: true,
+};
+
+function getOrgAlertThresholds(org) {
+  try {
+    const meta = typeof org.metadata === 'string' ? JSON.parse(org.metadata) : (org.metadata || {});
+    if (meta.alert_thresholds) return { ...DEFAULT_ALERT_THRESHOLDS, ...meta.alert_thresholds };
+  } catch {}
+  return { ...DEFAULT_ALERT_THRESHOLDS };
+}
+
+async function handleScheduledComplianceAlerts(env) {
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    console.log('[CRON] Running compliance alerts for:', today);
+
+    const { results: orgs } = await env.DB.prepare('SELECT * FROM organizations').all();
+    let totalAlerts = 0;
+
+    for (const org of orgs) {
+      const thresholds = getOrgAlertThresholds(org);
+      if (!thresholds.enabled) { console.log(`[CRON] Alerts disabled for org ${org.id}`); continue; }
+
+      const poamUpcomingDate = new Date(); poamUpcomingDate.setDate(poamUpcomingDate.getDate() + thresholds.poam_upcoming_days);
+      const atoDate = new Date(); atoDate.setDate(atoDate.getDate() + thresholds.ato_expiry_days);
+      const vendorAssessDate = new Date(); vendorAssessDate.setDate(vendorAssessDate.getDate() + thresholds.vendor_assessment_days);
+      const vendorContractDate = new Date(); vendorContractDate.setDate(vendorContractDate.getDate() + thresholds.vendor_contract_days);
+      const policyDate = new Date(); policyDate.setDate(policyDate.getDate() + thresholds.policy_review_days);
+
+      const [overduePoams, upcomingPoams, atoExpiring, vendorAssessments, vendorContracts, overdueRisks, policyReviews] = await Promise.all([
+        env.DB.prepare(
+          `SELECT id, title, scheduled_completion, assigned_to FROM poams WHERE org_id = ? AND scheduled_completion < ? AND status NOT IN ('completed','accepted','deferred')`
+        ).bind(org.id, today).all(),
+        env.DB.prepare(
+          `SELECT id, title, scheduled_completion, assigned_to FROM poams WHERE org_id = ? AND scheduled_completion BETWEEN ? AND ? AND status NOT IN ('completed','accepted','deferred')`
+        ).bind(org.id, today, poamUpcomingDate.toISOString().split('T')[0]).all(),
+        env.DB.prepare(
+          `SELECT id, name, acronym, authorization_expiry FROM systems WHERE org_id = ? AND authorization_expiry BETWEEN ? AND ?`
+        ).bind(org.id, today, atoDate.toISOString().split('T')[0]).all(),
+        env.DB.prepare(
+          `SELECT id, name, next_assessment_date, criticality FROM vendors WHERE org_id = ? AND next_assessment_date BETWEEN ? AND ? AND status = 'active'`
+        ).bind(org.id, today, vendorAssessDate.toISOString().split('T')[0]).all(),
+        env.DB.prepare(
+          `SELECT id, name, contract_end, criticality FROM vendors WHERE org_id = ? AND contract_end BETWEEN ? AND ? AND status = 'active'`
+        ).bind(org.id, today, vendorContractDate.toISOString().split('T')[0]).all(),
+        env.DB.prepare(
+          `SELECT id, title, treatment_due_date FROM risks WHERE org_id = ? AND treatment_due_date < ? AND status NOT IN ('closed','accepted')`
+        ).bind(org.id, today).all(),
+        env.DB.prepare(
+          `SELECT id, title, review_date, owner_id FROM policies WHERE org_id = ? AND review_date BETWEEN ? AND ? AND status = 'published'`
+        ).bind(org.id, today, policyDate.toISOString().split('T')[0]).all().catch(() => ({ results: [] })),
+      ]);
+
+      // Helper: check if already alerted in last 24h
+      async function alreadyAlerted(resourceType, resourceId) {
+        const existing = await env.DB.prepare(
+          "SELECT id FROM notifications WHERE org_id = ? AND resource_type = ? AND resource_id = ? AND type = 'deadline_alert' AND created_at > datetime('now', '-1 day')"
+        ).bind(org.id, resourceType, resourceId).first();
+        return !!existing;
+      }
+
+      // 1. Overdue POA&Ms → assigned_to + managers
+      for (const p of overduePoams.results) {
+        if (await alreadyAlerted('poam', p.id)) continue;
+        const daysOverdue = Math.ceil((new Date(today) - new Date(p.scheduled_completion)) / 86400000);
+        const msg = `POA&M "${p.title}" is ${daysOverdue} day${daysOverdue !== 1 ? 's' : ''} overdue (due ${p.scheduled_completion})`;
+        if (p.assigned_to) await createNotification(env, org.id, p.assigned_to, 'deadline_alert', 'POA&M Overdue', msg, 'poam', p.id, { days_overdue: daysOverdue });
+        await notifyOrgRole(env, org.id, p.assigned_to, 'manager', 'deadline_alert', 'POA&M Overdue', msg, 'poam', p.id, { days_overdue: daysOverdue });
+        totalAlerts++;
+      }
+
+      // 2. Upcoming POA&Ms → assigned_to
+      for (const p of upcomingPoams.results) {
+        if (await alreadyAlerted('poam', p.id)) continue;
+        const daysLeft = Math.ceil((new Date(p.scheduled_completion) - new Date(today)) / 86400000);
+        if (p.assigned_to) {
+          await createNotification(env, org.id, p.assigned_to, 'deadline_alert', 'POA&M Due Soon',
+            `POA&M "${p.title}" is due in ${daysLeft} day${daysLeft !== 1 ? 's' : ''} (${p.scheduled_completion})`,
+            'poam', p.id, { days_remaining: daysLeft });
+          totalAlerts++;
+        }
+      }
+
+      // 3. ATO expiring → managers
+      for (const s of atoExpiring.results) {
+        if (await alreadyAlerted('system', s.id)) continue;
+        const daysLeft = Math.ceil((new Date(s.authorization_expiry) - new Date(today)) / 86400000);
+        const name = s.acronym ? `${s.name} (${s.acronym})` : s.name;
+        await notifyOrgRole(env, org.id, null, 'manager', 'deadline_alert', 'ATO Expiring',
+          `System "${name}" ATO expires in ${daysLeft} day${daysLeft !== 1 ? 's' : ''} (${s.authorization_expiry})`,
+          'system', s.id, { days_remaining: daysLeft });
+        totalAlerts++;
+      }
+
+      // 4. Vendor assessments due → managers
+      for (const v of vendorAssessments.results) {
+        if (await alreadyAlerted('vendor', v.id)) continue;
+        const daysLeft = Math.ceil((new Date(v.next_assessment_date) - new Date(today)) / 86400000);
+        await notifyOrgRole(env, org.id, null, 'manager', 'deadline_alert', 'Vendor Assessment Due',
+          `Vendor "${v.name}" assessment due in ${daysLeft} day${daysLeft !== 1 ? 's' : ''} (${v.next_assessment_date})`,
+          'vendor', v.id, { days_remaining: daysLeft, criticality: v.criticality });
+        totalAlerts++;
+      }
+
+      // 5. Vendor contracts ending → managers
+      for (const v of vendorContracts.results) {
+        if (await alreadyAlerted('vendor_contract', `${v.id}_contract`)) continue;
+        const daysLeft = Math.ceil((new Date(v.contract_end) - new Date(today)) / 86400000);
+        await notifyOrgRole(env, org.id, null, 'manager', 'deadline_alert', 'Vendor Contract Ending',
+          `Vendor "${v.name}" contract ends in ${daysLeft} day${daysLeft !== 1 ? 's' : ''} (${v.contract_end})`,
+          'vendor_contract', `${v.id}_contract`, { days_remaining: daysLeft, criticality: v.criticality });
+        totalAlerts++;
+      }
+
+      // 6. Risk treatment overdue → managers
+      for (const r of overdueRisks.results) {
+        if (await alreadyAlerted('risk', r.id)) continue;
+        const daysOverdue = Math.ceil((new Date(today) - new Date(r.treatment_due_date)) / 86400000);
+        await notifyOrgRole(env, org.id, null, 'manager', 'deadline_alert', 'Risk Treatment Overdue',
+          `Risk "${r.title}" treatment is ${daysOverdue} day${daysOverdue !== 1 ? 's' : ''} overdue (due ${r.treatment_due_date})`,
+          'risk', r.id, { days_overdue: daysOverdue });
+        totalAlerts++;
+      }
+
+      // 7. Policy review due → owner + managers
+      for (const p of policyReviews.results) {
+        if (await alreadyAlerted('policy', p.id)) continue;
+        const daysLeft = Math.ceil((new Date(p.review_date) - new Date(today)) / 86400000);
+        const msg = `Policy "${p.title}" review due in ${daysLeft} day${daysLeft !== 1 ? 's' : ''} (${p.review_date})`;
+        if (p.owner_id) await createNotification(env, org.id, p.owner_id, 'deadline_alert', 'Policy Review Due', msg, 'policy', p.id, { days_remaining: daysLeft });
+        await notifyOrgRole(env, org.id, p.owner_id, 'manager', 'deadline_alert', 'Policy Review Due', msg, 'policy', p.id, { days_remaining: daysLeft });
+        totalAlerts++;
+      }
+    }
+
+    console.log(`[CRON] Compliance alerts completed: ${totalAlerts} alerts generated`);
+  } catch (error) {
+    console.error('[CRON] Compliance alerts error:', error);
+  }
+}
+
+// ============================================================================
+// COMPLIANCE ALERT SETTINGS & SUMMARY
+// ============================================================================
+
+async function handleGetAlertSettings(env, org, user) {
+  if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const thresholds = getOrgAlertThresholds(org);
+  return jsonResponse({ thresholds });
+}
+
+async function handleUpdateAlertSettings(request, env, org, user) {
+  if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const body = await request.json();
+  let meta; try { meta = typeof org.metadata === 'string' ? JSON.parse(org.metadata) : (org.metadata || {}); } catch { meta = {}; }
+
+  const current = meta.alert_thresholds || { ...DEFAULT_ALERT_THRESHOLDS };
+  const validFields = ['poam_upcoming_days', 'ato_expiry_days', 'vendor_assessment_days', 'vendor_contract_days', 'policy_review_days', 'enabled'];
+  for (const field of validFields) {
+    if (body[field] !== undefined) {
+      if (field === 'enabled') { current[field] = !!body[field]; }
+      else { const v = parseInt(body[field]); if (!isNaN(v) && v >= 0 && v <= 365) current[field] = v; }
+    }
+  }
+  meta.alert_thresholds = current;
+
+  await env.DB.prepare("UPDATE organizations SET metadata = ?, updated_at = datetime('now') WHERE id = ?")
+    .bind(JSON.stringify(meta), org.id).run();
+  return jsonResponse({ thresholds: current });
+}
+
+async function handleAlertSummary(env, url, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const today = new Date().toISOString().split('T')[0];
+  const thresholds = getOrgAlertThresholds(org);
+
+  const poamUpcomingDate = new Date(); poamUpcomingDate.setDate(poamUpcomingDate.getDate() + thresholds.poam_upcoming_days);
+  const atoDate = new Date(); atoDate.setDate(atoDate.getDate() + thresholds.ato_expiry_days);
+  const vendorAssessDate = new Date(); vendorAssessDate.setDate(vendorAssessDate.getDate() + thresholds.vendor_assessment_days);
+  const vendorContractDate = new Date(); vendorContractDate.setDate(vendorContractDate.getDate() + thresholds.vendor_contract_days);
+  const policyDate = new Date(); policyDate.setDate(policyDate.getDate() + thresholds.policy_review_days);
+
+  const [poamsOverdue, poamsUpcoming, atoExpiring, vendorAssessments, vendorContracts, risksOverdue, policiesReview] = await Promise.all([
+    env.DB.prepare("SELECT COUNT(*) as count FROM poams WHERE org_id = ? AND scheduled_completion < ? AND status NOT IN ('completed','accepted','deferred')").bind(org.id, today).first(),
+    env.DB.prepare("SELECT COUNT(*) as count FROM poams WHERE org_id = ? AND scheduled_completion BETWEEN ? AND ? AND status NOT IN ('completed','accepted','deferred')").bind(org.id, today, poamUpcomingDate.toISOString().split('T')[0]).first(),
+    env.DB.prepare("SELECT COUNT(*) as count FROM systems WHERE org_id = ? AND authorization_expiry BETWEEN ? AND ?").bind(org.id, today, atoDate.toISOString().split('T')[0]).first(),
+    env.DB.prepare("SELECT COUNT(*) as count FROM vendors WHERE org_id = ? AND next_assessment_date BETWEEN ? AND ? AND status = 'active'").bind(org.id, today, vendorAssessDate.toISOString().split('T')[0]).first(),
+    env.DB.prepare("SELECT COUNT(*) as count FROM vendors WHERE org_id = ? AND contract_end BETWEEN ? AND ? AND status = 'active'").bind(org.id, today, vendorContractDate.toISOString().split('T')[0]).first(),
+    env.DB.prepare("SELECT COUNT(*) as count FROM risks WHERE org_id = ? AND treatment_due_date < ? AND status NOT IN ('closed','accepted')").bind(org.id, today).first(),
+    env.DB.prepare("SELECT COUNT(*) as count FROM policies WHERE org_id = ? AND review_date BETWEEN ? AND ? AND status = 'published'").bind(org.id, today, policyDate.toISOString().split('T')[0]).first().catch(() => ({ count: 0 })),
+  ]);
+
+  const summary = {
+    poams_overdue: poamsOverdue.count,
+    poams_upcoming: poamsUpcoming.count,
+    ato_expiring: atoExpiring.count,
+    vendor_assessments_due: vendorAssessments.count,
+    vendor_contracts_ending: vendorContracts.count,
+    risks_overdue: risksOverdue.count,
+    policies_review_due: policiesReview?.count || 0,
+  };
+  summary.total = Object.values(summary).reduce((a, b) => a + b, 0);
+
+  return jsonResponse(summary);
 }
 
 // ============================================================================

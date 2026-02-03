@@ -25,6 +25,11 @@ export function SettingsPage() {
   const [scoreWeightsLoading, setScoreWeightsLoading] = useState(false);
   const [scoreWeightsMsg, setScoreWeightsMsg] = useState('');
 
+  // Alert thresholds state (admin+)
+  const [alertThresholds, setAlertThresholds] = useState({ poam_upcoming_days: 7, ato_expiry_days: 30, vendor_assessment_days: 14, vendor_contract_days: 30, policy_review_days: 30, enabled: true });
+  const [alertThresholdsLoading, setAlertThresholdsLoading] = useState(false);
+  const [alertThresholdsMsg, setAlertThresholdsMsg] = useState('');
+
   // 2FA state
   const [mfaSetup, setMfaSetup] = useState<{ secret: string; uri: string } | null>(null);
   const [setupCode, setSetupCode] = useState('');
@@ -109,8 +114,23 @@ export function SettingsPage() {
           }
         })
         .catch(() => {});
+
+      api<{ thresholds: any }>('/api/v1/alert-settings')
+        .then((d) => { if (d.thresholds) setAlertThresholds(d.thresholds); })
+        .catch(() => {});
     }
   }, [isAdmin]);
+
+  const saveAlertThresholds = async () => {
+    setAlertThresholdsLoading(true);
+    setAlertThresholdsMsg('');
+    try {
+      await api('/api/v1/alert-settings', { method: 'PUT', body: JSON.stringify(alertThresholds) });
+      setAlertThresholdsMsg('Alert thresholds saved successfully.');
+    } catch (err: any) {
+      setAlertThresholdsMsg(err.message || 'Failed to save thresholds.');
+    } finally { setAlertThresholdsLoading(false); }
+  };
 
   const scoreWeightsSum = Object.values(scoreWeights).reduce((s, v) => s + v, 0);
   const scoreWeightsValid = Math.abs(scoreWeightsSum - 100) <= 2;
@@ -342,6 +362,79 @@ export function SettingsPage() {
           {scoreWeightsMsg && (
             <p className={`text-xs mt-2 ${scoreWeightsMsg.includes('success') ? 'text-green-600' : 'text-red-600'}`}>
               {scoreWeightsMsg}
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Compliance Alert Thresholds — admin+ */}
+      {isAdmin && (
+        <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
+          <div className="flex items-center gap-3 mb-2">
+            <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center">
+              <svg className="w-4 h-4 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+            </div>
+            <div>
+              <h2 className="font-semibold text-gray-900">Compliance Alert Thresholds</h2>
+              <p className="text-xs text-gray-500">Configure how far in advance alerts are generated for upcoming deadlines</p>
+            </div>
+          </div>
+
+          <div className="mt-4 space-y-4">
+            <div className="flex items-center justify-between py-2 border-b">
+              <div>
+                <span className="text-sm font-medium text-gray-700">Alerts Enabled</span>
+                <p className="text-xs text-gray-400">Enable or disable automated deadline alerts</p>
+              </div>
+              <button
+                onClick={() => setAlertThresholds(t => ({ ...t, enabled: !t.enabled }))}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${alertThresholds.enabled ? 'bg-green-500' : 'bg-gray-300'}`}
+              >
+                <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${alertThresholds.enabled ? 'translate-x-6' : 'translate-x-1'}`} />
+              </button>
+            </div>
+            {[
+              { key: 'poam_upcoming_days', label: 'POA&M Upcoming', desc: 'Days before due date to alert', unit: 'days' },
+              { key: 'ato_expiry_days', label: 'ATO Expiry Warning', desc: 'Days before ATO expires to alert', unit: 'days' },
+              { key: 'vendor_assessment_days', label: 'Vendor Assessment Due', desc: 'Days before vendor assessment to alert', unit: 'days' },
+              { key: 'vendor_contract_days', label: 'Vendor Contract Ending', desc: 'Days before contract end to alert', unit: 'days' },
+              { key: 'policy_review_days', label: 'Policy Review Due', desc: 'Days before policy review date to alert', unit: 'days' },
+            ].map(({ key, label, desc, unit }) => (
+              <div key={key} className="flex items-center justify-between">
+                <div>
+                  <span className="text-sm font-medium text-gray-700">{label}</span>
+                  <p className="text-xs text-gray-400">{desc}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min="1"
+                    max="365"
+                    value={(alertThresholds as any)[key]}
+                    onChange={(e) => setAlertThresholds(t => ({ ...t, [key]: parseInt(e.target.value) || 1 }))}
+                    className="w-20 px-2 py-1.5 border rounded-lg text-sm text-right"
+                    disabled={!alertThresholds.enabled}
+                  />
+                  <span className="text-xs text-gray-400 w-8">{unit}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-4 flex justify-end">
+            <button
+              onClick={saveAlertThresholds}
+              disabled={alertThresholdsLoading}
+              className="px-4 py-1.5 text-xs font-medium text-white bg-amber-600 rounded-lg hover:bg-amber-700 disabled:opacity-50"
+            >
+              {alertThresholdsLoading ? 'Saving...' : 'Save Thresholds'}
+            </button>
+          </div>
+          {alertThresholdsMsg && (
+            <p className={`text-xs mt-2 ${alertThresholdsMsg.includes('success') ? 'text-green-600' : 'text-red-600'}`}>
+              {alertThresholdsMsg}
             </p>
           )}
         </div>
