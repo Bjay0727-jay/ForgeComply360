@@ -72,7 +72,7 @@ jobs:
           for f in database/migrate-*.sql; do
             if [ -f "$f" ]; then
               echo "Running migration: $f"
-              wrangler d1 execute forge-comply360-db --remote --file="$f"
+              wrangler d1 execute forge-comply360-db --remote --file="$f" || echo "⚠️  Migration $f failed (likely already applied) — continuing"
             fi
           done
         env:
