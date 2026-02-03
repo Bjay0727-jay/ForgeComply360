@@ -49,6 +49,8 @@ INSERT OR REPLACE INTO compliance_frameworks (id, name, version, category, descr
 ('fedramp-high', 'FedRAMP High', '5.0', 'federal', 'Federal Risk and Authorization Management Program - High Baseline', 421, 'FedRAMP PMO', 'FedRAMP Assessment'),
 ('fisma', 'FISMA', '2014', 'federal', 'Federal Information Security Modernization Act', 0, 'OMB/DHS', 'NIST RMF'),
 ('stateramp', 'StateRAMP', '2.0', 'federal', 'State Risk and Authorization Management Program', 300, 'StateRAMP PMO', 'StateRAMP Assessment'),
+('tx-csf', 'Texas Cybersecurity Framework', '2.0', 'federal', 'Texas Cybersecurity Framework aligned with NIST CSF for Texas state agencies, public universities, and junior colleges. Mandated by Texas Government Code 2054.', 42, 'Texas DIR', 'Maturity Self-Assessment'),
+('irs-1075', 'IRS Publication 1075', '2024', 'federal', 'Tax Information Security Guidelines for Federal, State, and Local Agencies', 180, 'IRS', 'Safeguard Review'),
 
 -- Defense
 ('cmmc-l1', 'CMMC Level 1', '2.0', 'defense', 'Cybersecurity Maturity Model Certification - Level 1 (Foundational)', 17, 'DoD CIO', 'Self-Assessment'),
@@ -59,7 +61,6 @@ INSERT OR REPLACE INTO compliance_frameworks (id, name, version, category, descr
 ('dod-srg-il4', 'DoD Cloud SRG IL4', '1.5', 'defense', 'DoD Cloud Computing Security Requirements Guide - Impact Level 4', 340, 'DISA', 'DoD Assessment'),
 ('dod-srg-il5', 'DoD Cloud SRG IL5', '1.5', 'defense', 'DoD Cloud Computing Security Requirements Guide - Impact Level 5', 365, 'DISA', 'DoD Assessment'),
 ('cjis', 'CJIS Security Policy', '5.9.4', 'defense', 'Criminal Justice Information Services Security Policy', 90, 'FBI CJIS', 'CJIS Audit'),
-('irs-1075', 'IRS Publication 1075', '2024', 'federal', 'Tax Information Security Guidelines', 180, 'IRS', 'Safeguard Review'),
 
 -- Healthcare
 ('hipaa', 'HIPAA Security Rule', '2013', 'healthcare', 'Health Insurance Portability and Accountability Act - Security Standards', 75, 'HHS OCR', 'Risk Assessment'),
