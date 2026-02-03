@@ -74,6 +74,7 @@ async function handleRequest(request, env, url) {
   if (path === '/api/v1/auth/register' && method === 'POST') return handleRegister(request, env);
   if (path === '/api/v1/auth/login' && method === 'POST') return handleLogin(request, env);
   if (path === '/api/v1/auth/refresh' && method === 'POST') return handleRefreshToken(request, env);
+  if (path === '/api/v1/auth/mfa/verify' && method === 'POST') return handleMFAVerify(request, env);
 
   // All routes below require auth
   const auth = await authenticateRequest(request, env);
@@ -84,6 +85,10 @@ async function handleRequest(request, env, url) {
   // Auth
   if (path === '/api/v1/auth/me' && method === 'GET') return jsonResponse({ user, org });
   if (path === '/api/v1/auth/logout' && method === 'POST') return handleLogout(request, env, user);
+  if (path === '/api/v1/auth/mfa/setup' && method === 'POST') return handleMFASetup(request, env, user);
+  if (path === '/api/v1/auth/mfa/verify-setup' && method === 'POST') return handleMFAVerifySetup(request, env, user);
+  if (path === '/api/v1/auth/mfa/disable' && method === 'POST') return handleMFADisable(request, env, user);
+  if (path === '/api/v1/auth/mfa/backup-codes' && method === 'POST') return handleMFARegenerateBackupCodes(request, env, user);
 
   // Experience Layer
   if (path === '/api/v1/experience' && method === 'GET') return handleGetExperience(env, org);
@@ -270,6 +275,7 @@ async function authenticateRequest(request, env) {
   const token = authHeader.slice(7);
   try {
     const payload = await verifyJWT(token, env.JWT_SECRET || 'dev-secret-change-me');
+    if (payload.purpose) return null; // reject MFA tokens used as access tokens
     const user = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(payload.sub).first();
     if (!user) return null;
     const org = await env.DB.prepare('SELECT * FROM organizations WHERE id = ?').bind(user.org_id).first();
@@ -378,6 +384,87 @@ function generateSalt() {
   return Array.from(crypto.getRandomValues(new Uint8Array(32)))
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
+}
+
+// ============================================================================
+// TOTP TWO-FACTOR AUTHENTICATION
+// ============================================================================
+
+const BASE32_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+
+function base32Encode(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let bits = 0, value = 0, output = '';
+  for (let i = 0; i < bytes.length; i++) {
+    value = (value << 8) | bytes[i];
+    bits += 8;
+    while (bits >= 5) { output += BASE32_CHARS[(value >>> (bits - 5)) & 31]; bits -= 5; }
+  }
+  if (bits > 0) output += BASE32_CHARS[(value << (5 - bits)) & 31];
+  return output;
+}
+
+function base32Decode(str) {
+  const cleaned = str.replace(/=+$/, '').toUpperCase();
+  let bits = 0, value = 0, index = 0;
+  const output = new Uint8Array(Math.floor(cleaned.length * 5 / 8));
+  for (let i = 0; i < cleaned.length; i++) {
+    const idx = BASE32_CHARS.indexOf(cleaned[i]);
+    if (idx === -1) continue;
+    value = (value << 5) | idx;
+    bits += 5;
+    if (bits >= 8) { output[index++] = (value >>> (bits - 8)) & 255; bits -= 8; }
+  }
+  return output.slice(0, index);
+}
+
+async function computeHOTP(secretBytes, counter, digits = 6) {
+  const counterBuf = new ArrayBuffer(8);
+  const view = new DataView(counterBuf);
+  view.setUint32(0, Math.floor(counter / 0x100000000));
+  view.setUint32(4, counter & 0xFFFFFFFF);
+  const key = await crypto.subtle.importKey('raw', secretBytes, { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']);
+  const sig = new Uint8Array(await crypto.subtle.sign('HMAC', key, counterBuf));
+  const offset = sig[sig.length - 1] & 0x0F;
+  const code = (((sig[offset] & 0x7F) << 24) | ((sig[offset + 1] & 0xFF) << 16) | ((sig[offset + 2] & 0xFF) << 8) | (sig[offset + 3] & 0xFF)) % (10 ** digits);
+  return code.toString().padStart(digits, '0');
+}
+
+async function verifyTOTP(secretBytes, inputCode, window = 1) {
+  const counter = Math.floor(Date.now() / 1000 / 30);
+  for (let i = -window; i <= window; i++) {
+    const expected = await computeHOTP(secretBytes, counter + i, 6);
+    if (timingSafeEqual(inputCode, expected)) return true;
+  }
+  return false;
+}
+
+function timingSafeEqual(a, b) {
+  if (a.length !== b.length) return false;
+  let mismatch = 0;
+  for (let i = 0; i < a.length; i++) mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return mismatch === 0;
+}
+
+function generateMFASecret() {
+  const bytes = crypto.getRandomValues(new Uint8Array(20));
+  return { bytes, base32: base32Encode(bytes) };
+}
+
+function generateBackupCodes(count = 8) {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const codes = [];
+  for (let i = 0; i < count; i++) {
+    const bytes = crypto.getRandomValues(new Uint8Array(8));
+    let code = '';
+    for (let j = 0; j < 8; j++) code += chars[bytes[j] % chars.length];
+    codes.push(code.slice(0, 4) + '-' + code.slice(4));
+  }
+  return codes;
+}
+
+function buildTOTPUri(secret, email, issuer = 'ForgeComply360') {
+  return `otpauth://totp/${encodeURIComponent(issuer)}:${encodeURIComponent(email)}?secret=${secret}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=6&period=30`;
 }
 
 // ============================================================================
@@ -634,6 +721,13 @@ async function handleLogin(request, env) {
 
   const org = await env.DB.prepare('SELECT * FROM organizations WHERE id = ?').bind(user.org_id).first();
 
+  // Check for 2FA — return MFA challenge instead of real tokens
+  if (user.mfa_enabled) {
+    const mfaToken = await createJWT({ sub: user.id, org: user.org_id, purpose: 'mfa' }, env.JWT_SECRET || 'dev-secret-change-me', 5);
+    await auditLog(env, user.org_id, user.id, 'login_mfa_pending', 'user', user.id, {}, request);
+    return jsonResponse({ mfa_required: true, mfa_token: mfaToken });
+  }
+
   const accessToken = await createJWT({ sub: user.id, org: user.org_id, role: user.role }, env.JWT_SECRET || 'dev-secret-change-me', 15);
   const refreshToken = generateId() + generateId();
   const refreshHash = await hashPassword(refreshToken, 'refresh-salt');
@@ -685,6 +779,135 @@ async function handleRefreshToken(request, env) {
 async function handleLogout(request, env, user) {
   await env.DB.prepare('UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?').bind(user.id).run();
   return jsonResponse({ message: 'Logged out' });
+}
+
+// ============================================================================
+// MFA ENDPOINTS
+// ============================================================================
+
+async function handleMFASetup(request, env, user) {
+  const fullUser = await env.DB.prepare('SELECT mfa_enabled FROM users WHERE id = ?').bind(user.id).first();
+  if (fullUser.mfa_enabled) return jsonResponse({ error: '2FA is already enabled' }, 400);
+
+  const { base32 } = generateMFASecret();
+  const uri = buildTOTPUri(base32, user.email);
+  await env.DB.prepare('UPDATE users SET mfa_secret = ? WHERE id = ?').bind(base32, user.id).run();
+  return jsonResponse({ secret: base32, uri });
+}
+
+async function handleMFAVerifySetup(request, env, user) {
+  const { code } = await request.json();
+  if (!code) return jsonResponse({ error: 'Code required' }, 400);
+
+  const fullUser = await env.DB.prepare('SELECT mfa_secret, mfa_enabled FROM users WHERE id = ?').bind(user.id).first();
+  if (!fullUser.mfa_secret) return jsonResponse({ error: 'No MFA setup in progress' }, 400);
+  if (fullUser.mfa_enabled) return jsonResponse({ error: '2FA is already enabled' }, 400);
+
+  const secretBytes = base32Decode(fullUser.mfa_secret);
+  const valid = await verifyTOTP(secretBytes, code.replace(/\s/g, ''));
+  if (!valid) return jsonResponse({ error: 'Invalid code. Check your authenticator app and try again.' }, 400);
+
+  const backupCodes = generateBackupCodes(8);
+  await env.DB.prepare('UPDATE users SET mfa_enabled = 1, mfa_backup_codes = ? WHERE id = ?')
+    .bind(JSON.stringify(backupCodes), user.id).run();
+  await auditLog(env, user.org_id, user.id, 'mfa_enabled', 'user', user.id, {});
+  return jsonResponse({ backup_codes: backupCodes });
+}
+
+async function handleMFAVerify(request, env) {
+  const { mfa_token, code } = await request.json();
+  if (!mfa_token || !code) return jsonResponse({ error: 'MFA token and code required' }, 400);
+
+  let payload;
+  try {
+    payload = await verifyJWT(mfa_token, env.JWT_SECRET || 'dev-secret-change-me');
+  } catch {
+    return jsonResponse({ error: 'Invalid or expired MFA token' }, 401);
+  }
+  if (payload.purpose !== 'mfa') return jsonResponse({ error: 'Invalid token type' }, 401);
+
+  const user = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(payload.sub).first();
+  if (!user || !user.mfa_enabled) return jsonResponse({ error: 'Invalid MFA state' }, 400);
+
+  const cleanCode = code.replace(/[\s-]/g, '');
+  let valid = false;
+
+  // Try TOTP
+  const secretBytes = base32Decode(user.mfa_secret);
+  valid = await verifyTOTP(secretBytes, cleanCode);
+
+  // Try backup codes if TOTP didn't match
+  if (!valid && user.mfa_backup_codes) {
+    const backupCodes = JSON.parse(user.mfa_backup_codes);
+    const normalizedInput = cleanCode.toUpperCase();
+    const matchIndex = backupCodes.findIndex(bc => bc.replace(/-/g, '') === normalizedInput);
+    if (matchIndex !== -1) {
+      valid = true;
+      backupCodes.splice(matchIndex, 1);
+      await env.DB.prepare('UPDATE users SET mfa_backup_codes = ? WHERE id = ?')
+        .bind(JSON.stringify(backupCodes), user.id).run();
+    }
+  }
+
+  if (!valid) return jsonResponse({ error: 'Invalid code' }, 401);
+
+  // Issue real tokens
+  const org = await env.DB.prepare('SELECT * FROM organizations WHERE id = ?').bind(user.org_id).first();
+  const accessToken = await createJWT({ sub: user.id, org: user.org_id, role: user.role }, env.JWT_SECRET || 'dev-secret-change-me', 15);
+  const refreshToken = generateId() + generateId();
+  const refreshHash = await hashPassword(refreshToken, 'refresh-salt');
+  const refreshExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
+  await env.DB.prepare('INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)')
+    .bind(generateId(), user.id, refreshHash, refreshExpiry).run();
+
+  await auditLog(env, user.org_id, user.id, 'login', 'user', user.id, { mfa: true }, request);
+
+  return jsonResponse({
+    access_token: accessToken,
+    refresh_token: refreshToken,
+    user: sanitizeUser(user),
+    org,
+  });
+}
+
+async function handleMFADisable(request, env, user) {
+  const { code } = await request.json();
+  if (!code) return jsonResponse({ error: 'Current TOTP code required' }, 400);
+
+  const fullUser = await env.DB.prepare('SELECT mfa_secret, mfa_enabled, mfa_backup_codes FROM users WHERE id = ?').bind(user.id).first();
+  if (!fullUser.mfa_enabled) return jsonResponse({ error: '2FA is not enabled' }, 400);
+
+  const cleanCode = code.replace(/[\s-]/g, '');
+  const secretBytes = base32Decode(fullUser.mfa_secret);
+  let valid = await verifyTOTP(secretBytes, cleanCode);
+
+  if (!valid && fullUser.mfa_backup_codes) {
+    const backupCodes = JSON.parse(fullUser.mfa_backup_codes);
+    valid = backupCodes.some(bc => bc.replace(/-/g, '') === cleanCode.toUpperCase());
+  }
+  if (!valid) return jsonResponse({ error: 'Invalid code' }, 401);
+
+  await env.DB.prepare('UPDATE users SET mfa_enabled = 0, mfa_secret = NULL, mfa_backup_codes = NULL WHERE id = ?').bind(user.id).run();
+  await auditLog(env, user.org_id, user.id, 'mfa_disabled', 'user', user.id, {});
+  return jsonResponse({ success: true });
+}
+
+async function handleMFARegenerateBackupCodes(request, env, user) {
+  const { code } = await request.json();
+  if (!code) return jsonResponse({ error: 'Current TOTP code required' }, 400);
+
+  const fullUser = await env.DB.prepare('SELECT mfa_secret, mfa_enabled FROM users WHERE id = ?').bind(user.id).first();
+  if (!fullUser.mfa_enabled) return jsonResponse({ error: '2FA is not enabled' }, 400);
+
+  const secretBytes = base32Decode(fullUser.mfa_secret);
+  const valid = await verifyTOTP(secretBytes, code.replace(/\s/g, ''));
+  if (!valid) return jsonResponse({ error: 'Invalid code' }, 401);
+
+  const newCodes = generateBackupCodes(8);
+  await env.DB.prepare('UPDATE users SET mfa_backup_codes = ? WHERE id = ?').bind(JSON.stringify(newCodes), user.id).run();
+  await auditLog(env, user.org_id, user.id, 'mfa_backup_regenerated', 'user', user.id, {});
+  return jsonResponse({ backup_codes: newCodes });
 }
 
 // ============================================================================
@@ -2633,7 +2856,7 @@ async function handleCreateAITemplate(request, env, org, user) {
 async function handleListUsers(env, org, user) {
   if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
   const { results } = await env.DB.prepare(
-    'SELECT id, email, name, role, onboarding_completed, last_login_at, created_at FROM users WHERE org_id = ? ORDER BY created_at'
+    'SELECT id, email, name, role, mfa_enabled, onboarding_completed, last_login_at, created_at FROM users WHERE org_id = ? ORDER BY created_at'
   ).bind(org.id).all();
   return jsonResponse({ users: results });
 }

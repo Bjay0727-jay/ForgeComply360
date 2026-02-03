@@ -2,9 +2,10 @@ import React, { useEffect, useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { useExperience } from '../hooks/useExperience';
 import { api } from '../utils/api';
+import { QRCodeSVG } from 'qrcode.react';
 
 export function SettingsPage() {
-  const { org, refreshUser, isAdmin, canManage } = useAuth();
+  const { user, org, refreshUser, isAdmin, canManage } = useAuth();
   const { config, isFederal, isHealthcare, isEnterprise } = useExperience();
   const [frameworks, setFrameworks] = useState<any[]>([]);
   const [enabledFrameworks, setEnabledFrameworks] = useState<any[]>([]);
@@ -18,6 +19,58 @@ export function SettingsPage() {
     evidence_reminder: 1, evidence_expiry: 1,
     email_digest: 1,
   });
+
+  // 2FA state
+  const [mfaSetup, setMfaSetup] = useState<{ secret: string; uri: string } | null>(null);
+  const [setupCode, setSetupCode] = useState('');
+  const [backupCodes, setBackupCodes] = useState<string[] | null>(null);
+  const [disableCode, setDisableCode] = useState('');
+  const [showDisable, setShowDisable] = useState(false);
+  const [regenCode, setRegenCode] = useState('');
+  const [showRegen, setShowRegen] = useState(false);
+  const [mfaLoading, setMfaLoading] = useState(false);
+  const [mfaError, setMfaError] = useState('');
+
+  const startMfaSetup = async () => {
+    setMfaLoading(true); setMfaError('');
+    try {
+      const data = await api('/api/v1/auth/mfa/setup', { method: 'POST' });
+      setMfaSetup(data);
+    } catch (err: any) { setMfaError(err.message); }
+    finally { setMfaLoading(false); }
+  };
+
+  const completeMfaSetup = async () => {
+    setMfaLoading(true); setMfaError('');
+    try {
+      const data = await api('/api/v1/auth/mfa/verify-setup', { method: 'POST', body: JSON.stringify({ code: setupCode }) });
+      setBackupCodes(data.backup_codes);
+      setMfaSetup(null);
+      setSetupCode('');
+      await refreshUser();
+    } catch (err: any) { setMfaError(err.message); }
+    finally { setMfaLoading(false); }
+  };
+
+  const disableMfa = async () => {
+    setMfaLoading(true); setMfaError('');
+    try {
+      await api('/api/v1/auth/mfa/disable', { method: 'POST', body: JSON.stringify({ code: disableCode }) });
+      setShowDisable(false); setDisableCode('');
+      await refreshUser();
+    } catch (err: any) { setMfaError(err.message); }
+    finally { setMfaLoading(false); }
+  };
+
+  const regenerateBackupCodes = async () => {
+    setMfaLoading(true); setMfaError('');
+    try {
+      const data = await api('/api/v1/auth/mfa/backup-codes', { method: 'POST', body: JSON.stringify({ code: regenCode }) });
+      setBackupCodes(data.backup_codes);
+      setShowRegen(false); setRegenCode('');
+    } catch (err: any) { setMfaError(err.message); }
+    finally { setMfaLoading(false); }
+  };
 
   const load = () => {
     Promise.all([
@@ -169,6 +222,129 @@ export function SettingsPage() {
             </button>
           </div>
         </div>
+      </div>
+
+      {/* Two-Factor Authentication */}
+      <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
+        <div className="flex items-center gap-3 mb-2">
+          <div className={`w-8 h-8 rounded-full flex items-center justify-center ${user?.mfa_enabled ? 'bg-green-100' : 'bg-gray-100'}`}>
+            <svg className={`w-4 h-4 ${user?.mfa_enabled ? 'text-green-600' : 'text-gray-500'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+            </svg>
+          </div>
+          <div>
+            <h2 className="font-semibold text-gray-900">Two-Factor Authentication</h2>
+            {user?.mfa_enabled ? (
+              <span className="text-xs text-green-600 font-medium">Enabled</span>
+            ) : (
+              <span className="text-xs text-gray-500">Not enabled</span>
+            )}
+          </div>
+        </div>
+
+        {mfaError && (
+          <div className="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded-lg mb-3 text-sm">{mfaError}</div>
+        )}
+
+        {/* Backup codes display (shown after setup or regen) */}
+        {backupCodes && (
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-4">
+            <h3 className="font-semibold text-amber-800 text-sm mb-1">Save Your Backup Codes</h3>
+            <p className="text-xs text-amber-700 mb-3">
+              Store these codes safely. Each can be used once if you lose access to your authenticator.
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              {backupCodes.map((code, i) => (
+                <code key={i} className="bg-white px-3 py-1.5 rounded border border-amber-200 text-sm font-mono text-center text-gray-900">{code}</code>
+              ))}
+            </div>
+            <button onClick={() => setBackupCodes(null)} className="mt-3 text-xs text-amber-700 underline hover:text-amber-800">
+              I've saved my codes
+            </button>
+          </div>
+        )}
+
+        {/* Setup flow */}
+        {!user?.mfa_enabled && !mfaSetup && !backupCodes && (
+          <div>
+            <p className="text-sm text-gray-500 mb-3">Add an extra layer of security by requiring a code from your authenticator app when signing in.</p>
+            <button onClick={startMfaSetup} disabled={mfaLoading} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
+              {mfaLoading ? 'Setting up...' : 'Enable 2FA'}
+            </button>
+          </div>
+        )}
+
+        {mfaSetup && (
+          <div className="space-y-4">
+            <p className="text-sm text-gray-600">Scan this QR code with your authenticator app (Google Authenticator, Authy, etc.):</p>
+            <div className="flex justify-center py-2">
+              <QRCodeSVG value={mfaSetup.uri} size={200} />
+            </div>
+            <div className="bg-gray-50 rounded-lg p-3">
+              <p className="text-xs text-gray-500 mb-1">Or enter this key manually:</p>
+              <code className="text-sm font-mono text-gray-900 break-all select-all">{mfaSetup.secret}</code>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-gray-700 mb-1 block">Enter the 6-digit code to verify:</label>
+              <input
+                type="text"
+                placeholder="000000"
+                value={setupCode}
+                onChange={(e) => setSetupCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-center font-mono text-lg tracking-widest focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <div className="flex gap-2">
+              <button onClick={completeMfaSetup} disabled={mfaLoading || setupCode.length < 6} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
+                {mfaLoading ? 'Verifying...' : 'Verify & Enable'}
+              </button>
+              <button onClick={() => { setMfaSetup(null); setSetupCode(''); setMfaError(''); }} className="px-4 py-2 text-gray-600 text-sm hover:text-gray-800">
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Enabled state — manage */}
+        {user?.mfa_enabled && !backupCodes && (
+          <div className="space-y-3 mt-3">
+            {/* Regenerate Backup Codes */}
+            {showRegen ? (
+              <div className="bg-gray-50 rounded-lg p-3">
+                <p className="text-xs text-gray-600 mb-2">Enter your current TOTP code to regenerate backup codes:</p>
+                <div className="flex gap-2">
+                  <input type="text" placeholder="000000" value={regenCode} onChange={(e) => setRegenCode(e.target.value.replace(/\D/g, '').slice(0, 6))} className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-center font-mono tracking-widest text-sm focus:ring-2 focus:ring-blue-500" />
+                  <button onClick={regenerateBackupCodes} disabled={mfaLoading || regenCode.length < 6} className="px-3 py-2 bg-blue-600 text-white rounded-lg text-xs font-medium hover:bg-blue-700 disabled:opacity-50">
+                    {mfaLoading ? '...' : 'Regenerate'}
+                  </button>
+                  <button onClick={() => { setShowRegen(false); setRegenCode(''); setMfaError(''); }} className="px-3 py-2 text-gray-500 text-xs">Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <button onClick={() => { setShowRegen(true); setShowDisable(false); setMfaError(''); }} className="text-sm text-blue-600 hover:text-blue-700 font-medium">
+                Regenerate Backup Codes
+              </button>
+            )}
+
+            {/* Disable 2FA */}
+            {showDisable ? (
+              <div className="bg-red-50 rounded-lg p-3">
+                <p className="text-xs text-red-700 mb-2">Enter your current TOTP code or a backup code to disable 2FA:</p>
+                <div className="flex gap-2">
+                  <input type="text" placeholder="000000" value={disableCode} onChange={(e) => setDisableCode(e.target.value.replace(/[^A-Za-z0-9-]/g, '').slice(0, 9))} className="flex-1 px-3 py-2 border border-red-300 rounded-lg text-center font-mono tracking-widest text-sm focus:ring-2 focus:ring-red-500" />
+                  <button onClick={disableMfa} disabled={mfaLoading || disableCode.length < 6} className="px-3 py-2 bg-red-600 text-white rounded-lg text-xs font-medium hover:bg-red-700 disabled:opacity-50">
+                    {mfaLoading ? '...' : 'Disable'}
+                  </button>
+                  <button onClick={() => { setShowDisable(false); setDisableCode(''); setMfaError(''); }} className="px-3 py-2 text-gray-500 text-xs">Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <button onClick={() => { setShowDisable(true); setShowRegen(false); setMfaError(''); }} className="text-sm text-red-500 hover:text-red-600 font-medium">
+                Disable Two-Factor Authentication
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Frameworks */}

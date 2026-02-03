@@ -7,6 +7,7 @@ interface OrgUser {
   name: string;
   email: string;
   role: string;
+  mfa_enabled: number;
   last_login_at: string | null;
   created_at: string;
 }
@@ -87,6 +88,7 @@ export function UsersPage() {
                 <th className="text-left px-4 py-3 font-medium text-gray-500">Name</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-500">Email</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-500">Role</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-500">2FA</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-500">Last Login</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-500">Joined</th>
               </tr>
@@ -133,6 +135,16 @@ export function UsersPage() {
                             <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
                           )}
                         </div>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      {u.mfa_enabled ? (
+                        <span className="inline-flex items-center gap-1 text-xs font-medium text-green-700 bg-green-100 px-2 py-0.5 rounded-full">
+                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
+                          Enabled
+                        </span>
+                      ) : (
+                        <span className="text-xs text-gray-400">Off</span>
                       )}
                     </td>
                     <td className="px-4 py-3 text-gray-500">{formatDate(u.last_login_at)}</td>

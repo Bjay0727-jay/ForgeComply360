@@ -7,6 +7,7 @@ interface User {
   name: string;
   role: string;
   onboarding_completed: number;
+  mfa_enabled: number;
 }
 
 interface Org {
@@ -18,11 +19,17 @@ interface Org {
   subscription_status: string;
 }
 
+interface MFAResponse {
+  mfa_required?: boolean;
+  mfa_token?: string;
+}
+
 interface AuthContextType {
   user: User | null;
   org: Org | null;
   loading: boolean;
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string) => Promise<MFAResponse>;
+  verifyMFA: (mfaToken: string, code: string) => Promise<void>;
   register: (data: RegisterData) => Promise<void>;
   logout: () => void;
   refreshUser: () => Promise<void>;
@@ -68,10 +75,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [refreshUser]);
 
-  const login = async (email: string, password: string) => {
+  const login = async (email: string, password: string): Promise<MFAResponse> => {
     const data = await api('/api/v1/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
+    });
+    if (data.mfa_required) {
+      return { mfa_required: true, mfa_token: data.mfa_token };
+    }
+    setTokens(data.access_token, data.refresh_token);
+    setUser(data.user);
+    setOrg(data.org);
+    return {};
+  };
+
+  const verifyMFA = async (mfaToken: string, code: string) => {
+    const data = await api('/api/v1/auth/mfa/verify', {
+      method: 'POST',
+      body: JSON.stringify({ mfa_token: mfaToken, code }),
     });
     setTokens(data.access_token, data.refresh_token);
     setUser(data.user);
@@ -100,7 +121,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const isAdmin = ['admin', 'owner'].includes(user?.role || '');
 
   return (
-    <AuthContext.Provider value={{ user, org, loading, login, register, logout, refreshUser, canEdit, canManage, isAdmin }}>
+    <AuthContext.Provider value={{ user, org, loading, login, verifyMFA, register, logout, refreshUser, canEdit, canManage, isAdmin }}>
       {children}
     </AuthContext.Provider>
   );
