@@ -224,6 +224,23 @@ async function handleRequest(request, env, url) {
   if (path === '/api/v1/compliance/score-config' && method === 'PUT') return handleUpdateScoreConfig(request, env, org, user);
   if (path === '/api/v1/calendar/events' && method === 'GET') return handleCalendarEvents(env, url, org, user);
 
+  // Policies
+  if (path === '/api/v1/policies' && method === 'GET') return handleListPolicies(env, url, org);
+  if (path === '/api/v1/policies' && method === 'POST') return handleCreatePolicy(request, env, org, user);
+  if (path === '/api/v1/policies/stats' && method === 'GET') return handlePolicyStats(env, org);
+  if (path === '/api/v1/policies/link-control' && method === 'POST') return handleLinkPolicyControl(request, env, org, user);
+  if (path === '/api/v1/policies/unlink-control' && method === 'POST') return handleUnlinkPolicyControl(request, env, org, user);
+  if (path === '/api/v1/attestations/my' && method === 'GET') return handleMyAttestations(env, org, user);
+  if (path.match(/^\/api\/v1\/policies\/[\w-]+\/attestations\/request$/) && method === 'POST') return handleRequestAttestations(request, env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/policies\/[\w-]+\/attestations$/) && method === 'GET') return handleGetPolicyAttestations(env, org, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/policies\/[\w-]+\/attest$/) && method === 'POST') return handleAttestPolicy(request, env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/policies\/[\w-]+\/controls$/) && method === 'GET') return handleGetPolicyControls(env, org, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/policies\/[\w-]+\/versions$/) && method === 'POST') return handleCreatePolicyVersion(request, env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/policies\/[\w-]+\/status$/) && method === 'PUT') return handleUpdatePolicyStatus(request, env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/policies\/[\w-]+$/) && method === 'GET') return handleGetPolicy(env, org, path.split('/').pop());
+  if (path.match(/^\/api\/v1\/policies\/[\w-]+$/) && method === 'PUT') return handleUpdatePolicy(request, env, org, user, path.split('/').pop());
+  if (path.match(/^\/api\/v1\/policies\/[\w-]+$/) && method === 'DELETE') return handleDeletePolicy(env, org, user, path.split('/').pop());
+
   // Audit log
   if (path === '/api/v1/audit-log' && method === 'GET') return handleGetAuditLog(env, url, org, user);
   if (path.match(/^\/api\/v1\/activity\/[\w_-]+\/[\w-]+$/) && method === 'GET') return handleGetResourceActivity(env, url, org, user, path.split('/')[4], path.split('/')[5]);
@@ -596,6 +613,7 @@ const NOTIFICATION_TYPE_LABELS = {
   control_change: 'Control Changes', role_change: 'Role Changes', compliance_alert: 'Compliance Alerts',
   evidence_upload: 'Evidence Uploads', approval_request: 'Approval Requests', approval_decision: 'Approval Decisions',
   evidence_reminder: 'Evidence Reminders', evidence_expiry: 'Evidence Expiry',
+  policy_update: 'Policy Updates', attestation_request: 'Attestation Requests',
 };
 
 async function sendEmail(env, to, subject, html) {
@@ -2313,7 +2331,7 @@ async function handleGetSubscription(env, org) {
 // ============================================================================
 
 async function handleDashboardStats(env, org) {
-  const [systems, implementations, poams, evidence, risks] = await Promise.all([
+  const [systems, implementations, poams, evidence, risks, policyTotal, policyReviewDue, policyPendingAttestations] = await Promise.all([
     env.DB.prepare('SELECT COUNT(*) as count FROM systems WHERE org_id = ?').bind(org.id).first(),
     env.DB.prepare(
       `SELECT status, COUNT(*) as count FROM control_implementations WHERE org_id = ? GROUP BY status`
@@ -2325,6 +2343,9 @@ async function handleDashboardStats(env, org) {
     env.DB.prepare(
       `SELECT risk_level, COUNT(*) as count FROM risks WHERE org_id = ? AND status != 'closed' GROUP BY risk_level`
     ).bind(org.id).all(),
+    env.DB.prepare('SELECT COUNT(*) as count FROM policies WHERE org_id = ?').bind(org.id).first().catch(() => ({ count: 0 })),
+    env.DB.prepare("SELECT COUNT(*) as count FROM policies WHERE org_id = ? AND review_date <= date('now', '+30 days') AND status = 'published'").bind(org.id).first().catch(() => ({ count: 0 })),
+    env.DB.prepare("SELECT COUNT(*) as count FROM policy_attestations pa JOIN policies p ON p.id = pa.policy_id WHERE p.org_id = ? AND pa.status = 'pending'").bind(org.id).first().catch(() => ({ count: 0 })),
   ]);
 
   const implStats = { implemented: 0, partially_implemented: 0, planned: 0, not_implemented: 0, not_applicable: 0, alternative: 0, total: 0 };
@@ -2344,6 +2365,7 @@ async function handleDashboardStats(env, org) {
       poams: poamStats,
       evidence_count: evidence.count,
       risks: riskStats,
+      policies: { total: policyTotal?.count || 0, due_for_review: policyReviewDue?.count || 0, pending_attestations: policyPendingAttestations?.count || 0 },
     },
   });
 }
@@ -2646,14 +2668,14 @@ async function handleMarkAllRead(env, user) {
 async function handleGetNotificationPrefs(env, user) {
   let prefs = await env.DB.prepare('SELECT * FROM notification_preferences WHERE user_id = ?').bind(user.id).first();
   if (!prefs) {
-    prefs = { poam_update: 1, risk_alert: 1, monitoring_fail: 1, control_change: 1, role_change: 1, compliance_alert: 1, evidence_upload: 1, approval_request: 1, approval_decision: 1, evidence_reminder: 1, evidence_expiry: 1, email_digest: 1 };
+    prefs = { poam_update: 1, risk_alert: 1, monitoring_fail: 1, control_change: 1, role_change: 1, compliance_alert: 1, evidence_upload: 1, approval_request: 1, approval_decision: 1, evidence_reminder: 1, evidence_expiry: 1, policy_update: 1, attestation_request: 1, email_digest: 1 };
   }
   return jsonResponse({ preferences: prefs });
 }
 
 async function handleUpdateNotificationPrefs(request, env, user) {
   const body = await request.json();
-  const types = ['poam_update', 'risk_alert', 'monitoring_fail', 'control_change', 'role_change', 'compliance_alert', 'evidence_upload', 'approval_request', 'approval_decision', 'evidence_reminder', 'evidence_expiry', 'email_digest'];
+  const types = ['poam_update', 'risk_alert', 'monitoring_fail', 'control_change', 'role_change', 'compliance_alert', 'evidence_upload', 'approval_request', 'approval_decision', 'evidence_reminder', 'evidence_expiry', 'policy_update', 'attestation_request', 'email_digest'];
   const values = types.map(t => body[t] !== undefined ? (body[t] ? 1 : 0) : 1);
 
   await env.DB.prepare(
@@ -3717,6 +3739,17 @@ async function handleCalendarEvents(env, url, org, user) {
       meta: { risk_level: r.risk_level, status: r.status } });
   }
 
+  // Policy review dates
+  try {
+    const policyReviews = await env.DB.prepare(
+      "SELECT id, title, review_date, category FROM policies WHERE org_id = ? AND status = 'published' AND review_date BETWEEN ? AND ?"
+    ).bind(org.id, start, end).all();
+    for (const r of policyReviews.results) {
+      events.push({ id: `policy-${r.id}`, type: 'policy_review', name: r.title, date: r.review_date,
+        meta: { category: r.category } });
+    }
+  } catch (e) { /* policies table may not exist yet */ }
+
   events.sort((a, b) => a.date.localeCompare(b.date));
 
   return jsonResponse({ events });
@@ -4264,6 +4297,7 @@ async function handleCreateApproval(request, env, org, user) {
     poam_closure:    { resource_type: 'poam', minRequester: 'analyst', minApprover: 'manager', targetStatuses: ['completed', 'accepted'] },
     risk_acceptance: { resource_type: 'risk', minRequester: 'manager', minApprover: 'admin',  targetStatuses: ['accepted'] },
     ssp_publication: { resource_type: 'ssp',  minRequester: 'manager', minApprover: 'admin',  targetStatuses: ['published'] },
+    policy_publication: { resource_type: 'policy', minRequester: 'manager', minApprover: 'admin', targetStatuses: ['published'] },
   };
 
   const config = typeConfig[request_type];
@@ -4290,6 +4324,12 @@ async function handleCreateApproval(request, env, org, user) {
     if (!resource) return jsonResponse({ error: 'SSP not found' }, 404);
     if (resource.status !== 'approved') return jsonResponse({ error: 'SSP must be in approved status to request publication' }, 400);
     snapshot = { title: resource.title, version: resource.version, system_name: resource.system_name, current_status: resource.status };
+    target_status = 'published';
+  } else if (request_type === 'policy_publication') {
+    const resource = await env.DB.prepare('SELECT * FROM policies WHERE id = ? AND org_id = ?').bind(resource_id, org.id).first();
+    if (!resource) return jsonResponse({ error: 'Policy not found' }, 404);
+    if (resource.status !== 'approved') return jsonResponse({ error: 'Policy must be in approved status to request publication' }, 400);
+    snapshot = { title: resource.title, category: resource.category, version: resource.version, current_status: resource.status };
     target_status = 'published';
   }
 
@@ -4367,7 +4407,7 @@ async function handleApproveRequest(request, env, org, user, approvalId) {
   if (approval.status !== 'pending') return jsonResponse({ error: 'Request is no longer pending' }, 400);
   if (approval.requested_by === user.id) return jsonResponse({ error: 'Cannot approve your own request' }, 403);
 
-  const approverRole = { poam_closure: 'manager', risk_acceptance: 'admin', ssp_publication: 'admin' };
+  const approverRole = { poam_closure: 'manager', risk_acceptance: 'admin', ssp_publication: 'admin', policy_publication: 'admin' };
   if (!requireRole(user, approverRole[approval.request_type])) return jsonResponse({ error: 'Insufficient role to approve' }, 403);
 
   const { comment } = await request.json();
@@ -4385,6 +4425,10 @@ async function handleApproveRequest(request, env, org, user, approvalId) {
     await env.DB.prepare("UPDATE ssp_documents SET status = 'published', published_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND org_id = ?")
       .bind(approval.resource_id, org.id).run();
     await auditLog(env, org.id, user.id, 'status_change', 'ssp', approval.resource_id, { from: 'approved', to: 'published', approval_id: approvalId });
+  } else if (approval.request_type === 'policy_publication') {
+    await env.DB.prepare("UPDATE policies SET status = 'published', effective_date = date('now'), updated_at = datetime('now') WHERE id = ? AND org_id = ?")
+      .bind(approval.resource_id, org.id).run();
+    await auditLog(env, org.id, user.id, 'status_change', 'policy', approval.resource_id, { from: 'approved', to: 'published', approval_id: approvalId });
   }
 
   await env.DB.prepare(
@@ -4409,7 +4453,7 @@ async function handleRejectRequest(request, env, org, user, approvalId) {
   if (!approval) return jsonResponse({ error: 'Approval request not found' }, 404);
   if (approval.status !== 'pending') return jsonResponse({ error: 'Request is no longer pending' }, 400);
 
-  const approverRole = { poam_closure: 'manager', risk_acceptance: 'admin', ssp_publication: 'admin' };
+  const approverRole = { poam_closure: 'manager', risk_acceptance: 'admin', ssp_publication: 'admin', policy_publication: 'admin' };
   if (!requireRole(user, approverRole[approval.request_type])) return jsonResponse({ error: 'Insufficient role to reject' }, 403);
 
   const { comment } = await request.json();
@@ -4969,4 +5013,278 @@ async function handleDeleteAuditItem(env, org, user, itemId) {
   await env.DB.prepare('DELETE FROM audit_checklist_items WHERE id = ?').bind(itemId).run();
   await auditLog(env, org.id, user.id, 'delete', 'audit_checklist_item', itemId, { title: item.title });
   return jsonResponse({ message: 'Item deleted' });
+}
+
+// ============================================================================
+// POLICY & PROCEDURE LIBRARY
+// ============================================================================
+
+async function handleListPolicies(env, url, org) {
+  const status = url.searchParams.get('status');
+  const category = url.searchParams.get('category');
+  const search = url.searchParams.get('search');
+  const page = parseInt(url.searchParams.get('page') || '1');
+  const limit = Math.min(parseInt(url.searchParams.get('limit') || '50'), 100);
+  const offset = (page - 1) * limit;
+
+  let where = 'WHERE p.org_id = ?';
+  const params = [org.id];
+  if (status) { where += ' AND p.status = ?'; params.push(status); }
+  if (category) { where += ' AND p.category = ?'; params.push(category); }
+  if (search) { where += ' AND (p.title LIKE ? OR p.description LIKE ?)'; params.push(`%${search}%`, `%${search}%`); }
+
+  const countResult = await env.DB.prepare(`SELECT COUNT(*) as total FROM policies p ${where}`).bind(...params).first();
+
+  const { results } = await env.DB.prepare(
+    `SELECT p.*, u.name as owner_name, cu.name as created_by_name FROM policies p LEFT JOIN users u ON u.id = p.owner_id LEFT JOIN users cu ON cu.id = p.created_by ${where} ORDER BY p.updated_at DESC LIMIT ? OFFSET ?`
+  ).bind(...params, limit, offset).all();
+
+  return jsonResponse({ policies: results, total: countResult.total, page, limit });
+}
+
+async function handleCreatePolicy(request, env, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const { title, category, description, content, owner_id, review_date } = await request.json();
+  if (!title || !title.trim()) return jsonResponse({ error: 'Title is required' }, 400);
+  const validCategories = ['security', 'privacy', 'acceptable_use', 'incident_response', 'access_control', 'business_continuity', 'data_management', 'custom'];
+  if (!category || !validCategories.includes(category)) return jsonResponse({ error: 'Valid category is required' }, 400);
+
+  const id = generateId();
+  const metadata = JSON.stringify({ versions: [{ version: '1.0', created_at: new Date().toISOString(), created_by: user.id, summary: 'Initial version' }] });
+
+  await env.DB.prepare(
+    `INSERT INTO policies (id, org_id, title, category, description, content, status, version, review_date, owner_id, metadata, created_by) VALUES (?, ?, ?, ?, ?, ?, 'draft', '1.0', ?, ?, ?, ?)`
+  ).bind(id, org.id, title.trim(), category, description || null, content || null, review_date || null, owner_id || user.id, metadata, user.id).run();
+
+  await auditLog(env, org.id, user.id, 'create', 'policy', id, { title: title.trim(), category }, request);
+  const policy = await env.DB.prepare('SELECT p.*, u.name as owner_name FROM policies p LEFT JOIN users u ON u.id = p.owner_id WHERE p.id = ?').bind(id).first();
+  return jsonResponse({ policy }, 201);
+}
+
+async function handleGetPolicy(env, org, policyId) {
+  const policy = await env.DB.prepare(
+    'SELECT p.*, u.name as owner_name, cu.name as created_by_name FROM policies p LEFT JOIN users u ON u.id = p.owner_id LEFT JOIN users cu ON cu.id = p.created_by WHERE p.id = ? AND p.org_id = ?'
+  ).bind(policyId, org.id).first();
+  if (!policy) return jsonResponse({ error: 'Policy not found' }, 404);
+  policy.metadata = JSON.parse(policy.metadata || '{}');
+  return jsonResponse({ policy });
+}
+
+async function handleUpdatePolicy(request, env, org, user, policyId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const policy = await env.DB.prepare('SELECT * FROM policies WHERE id = ? AND org_id = ?').bind(policyId, org.id).first();
+  if (!policy) return jsonResponse({ error: 'Policy not found' }, 404);
+  if (policy.status === 'published') return jsonResponse({ error: 'Published policies cannot be edited. Create a new version first.' }, 400);
+
+  const body = await request.json();
+  const trackedFields = ['title', 'category', 'description', 'content', 'owner_id', 'review_date'];
+  const changes = computeDiff(policy, body, trackedFields);
+
+  const updates = [];
+  const values = [];
+  for (const field of trackedFields) {
+    if (body[field] !== undefined) { updates.push(`${field} = ?`); values.push(body[field]); }
+  }
+  if (updates.length === 0) return jsonResponse({ error: 'No fields to update' }, 400);
+  updates.push("updated_at = datetime('now')");
+  values.push(policyId, org.id);
+
+  await env.DB.prepare(`UPDATE policies SET ${updates.join(', ')} WHERE id = ? AND org_id = ?`).bind(...values).run();
+  await auditLog(env, org.id, user.id, 'update', 'policy', policyId, { ...body, _changes: changes }, request);
+
+  const updated = await env.DB.prepare('SELECT p.*, u.name as owner_name FROM policies p LEFT JOIN users u ON u.id = p.owner_id WHERE p.id = ?').bind(policyId).first();
+  updated.metadata = JSON.parse(updated.metadata || '{}');
+  return jsonResponse({ policy: updated });
+}
+
+async function handleDeletePolicy(env, org, user, policyId) {
+  if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const policy = await env.DB.prepare('SELECT * FROM policies WHERE id = ? AND org_id = ?').bind(policyId, org.id).first();
+  if (!policy) return jsonResponse({ error: 'Policy not found' }, 404);
+  if (!['draft', 'archived'].includes(policy.status)) return jsonResponse({ error: 'Only draft or archived policies can be deleted' }, 400);
+
+  await env.DB.prepare('DELETE FROM policies WHERE id = ?').bind(policyId).run();
+  await auditLog(env, org.id, user.id, 'delete', 'policy', policyId, { title: policy.title });
+  return jsonResponse({ message: 'Policy deleted' });
+}
+
+async function handleUpdatePolicyStatus(request, env, org, user, policyId) {
+  const policy = await env.DB.prepare('SELECT * FROM policies WHERE id = ? AND org_id = ?').bind(policyId, org.id).first();
+  if (!policy) return jsonResponse({ error: 'Policy not found' }, 404);
+
+  const { status } = await request.json();
+  const validTransitions = {
+    draft: ['in_review'],
+    in_review: ['approved', 'draft'],
+    approved: ['archived'],
+    published: ['archived', 'expired'],
+    archived: [],
+    expired: [],
+  };
+
+  if (!validTransitions[policy.status]?.includes(status)) {
+    return jsonResponse({ error: `Cannot transition from ${policy.status} to ${status}` }, 400);
+  }
+
+  if (['in_review'].includes(status) && !requireRole(user, 'manager')) return jsonResponse({ error: 'Forbidden' }, 403);
+  if (['approved'].includes(status) && !requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
+  if (['archived', 'expired'].includes(status) && !requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  await env.DB.prepare("UPDATE policies SET status = ?, updated_at = datetime('now') WHERE id = ?").bind(status, policyId).run();
+  await auditLog(env, org.id, user.id, 'status_change', 'policy', policyId, { from: policy.status, to: status }, request);
+
+  if (status === 'published') {
+    await notifyOrgRole(env, org.id, user.id, 'viewer', 'policy_update', 'Policy Published', `"${policy.title}" (v${policy.version}) has been published.`, 'policy', policyId, {});
+  }
+
+  const updated = await env.DB.prepare('SELECT p.*, u.name as owner_name FROM policies p LEFT JOIN users u ON u.id = p.owner_id WHERE p.id = ?').bind(policyId).first();
+  updated.metadata = JSON.parse(updated.metadata || '{}');
+  return jsonResponse({ policy: updated });
+}
+
+async function handleCreatePolicyVersion(request, env, org, user, policyId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const policy = await env.DB.prepare('SELECT * FROM policies WHERE id = ? AND org_id = ?').bind(policyId, org.id).first();
+  if (!policy) return jsonResponse({ error: 'Policy not found' }, 404);
+  if (!['published', 'archived', 'expired'].includes(policy.status)) return jsonResponse({ error: 'Can only create new versions from published/archived/expired policies' }, 400);
+
+  const { summary } = await request.json();
+  let meta; try { meta = JSON.parse(policy.metadata || '{}'); } catch { meta = {}; }
+  if (!meta.versions) meta.versions = [];
+
+  const current = parseFloat(policy.version || '1.0');
+  const newVersion = (current + 0.1).toFixed(1);
+
+  meta.versions.push({ version: newVersion, created_at: new Date().toISOString(), created_by: user.id, summary: summary || `Version ${newVersion}` });
+
+  await env.DB.prepare("UPDATE policies SET version = ?, status = 'draft', metadata = ?, updated_at = datetime('now') WHERE id = ?")
+    .bind(newVersion, JSON.stringify(meta), policyId).run();
+  await auditLog(env, org.id, user.id, 'version', 'policy', policyId, { version: newVersion });
+
+  const updated = await env.DB.prepare('SELECT p.*, u.name as owner_name FROM policies p LEFT JOIN users u ON u.id = p.owner_id WHERE p.id = ?').bind(policyId).first();
+  updated.metadata = JSON.parse(updated.metadata || '{}');
+  return jsonResponse({ policy: updated });
+}
+
+async function handleGetPolicyControls(env, org, policyId) {
+  const policy = await env.DB.prepare('SELECT id FROM policies WHERE id = ? AND org_id = ?').bind(policyId, org.id).first();
+  if (!policy) return jsonResponse({ error: 'Policy not found' }, 404);
+
+  const { results } = await env.DB.prepare(
+    `SELECT pcl.id as link_id, pcl.created_at as linked_at, ci.id as implementation_id, ci.status,
+            c.control_id, c.title as control_title, c.family, f.name as framework_name, s.name as system_name
+     FROM policy_control_links pcl
+     JOIN control_implementations ci ON ci.id = pcl.implementation_id
+     JOIN controls c ON c.id = ci.control_id
+     JOIN compliance_frameworks f ON f.id = ci.framework_id
+     JOIN systems s ON s.id = ci.system_id
+     WHERE pcl.policy_id = ?`
+  ).bind(policyId).all();
+
+  return jsonResponse({ controls: results });
+}
+
+async function handleLinkPolicyControl(request, env, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const { policy_id, implementation_id } = await request.json();
+  if (!policy_id || !implementation_id) return jsonResponse({ error: 'policy_id and implementation_id required' }, 400);
+
+  const policy = await env.DB.prepare('SELECT id FROM policies WHERE id = ? AND org_id = ?').bind(policy_id, org.id).first();
+  if (!policy) return jsonResponse({ error: 'Policy not found' }, 404);
+
+  const id = generateId();
+  await env.DB.prepare('INSERT OR IGNORE INTO policy_control_links (id, policy_id, implementation_id, linked_by) VALUES (?, ?, ?, ?)').bind(id, policy_id, implementation_id, user.id).run();
+  await auditLog(env, org.id, user.id, 'link', 'policy', policy_id, { implementation_id });
+  return jsonResponse({ success: true });
+}
+
+async function handleUnlinkPolicyControl(request, env, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const { policy_id, implementation_id } = await request.json();
+  if (!policy_id || !implementation_id) return jsonResponse({ error: 'policy_id and implementation_id required' }, 400);
+
+  await env.DB.prepare('DELETE FROM policy_control_links WHERE policy_id = ? AND implementation_id = ?').bind(policy_id, implementation_id).run();
+  await auditLog(env, org.id, user.id, 'unlink', 'policy', policy_id, { implementation_id });
+  return jsonResponse({ success: true });
+}
+
+async function handleGetPolicyAttestations(env, org, policyId) {
+  const policy = await env.DB.prepare('SELECT id FROM policies WHERE id = ? AND org_id = ?').bind(policyId, org.id).first();
+  if (!policy) return jsonResponse({ error: 'Policy not found' }, 404);
+
+  const { results } = await env.DB.prepare(
+    `SELECT pa.*, u.name as user_name, u.email as user_email, u.role as user_role, ru.name as requested_by_name
+     FROM policy_attestations pa JOIN users u ON u.id = pa.user_id LEFT JOIN users ru ON ru.id = pa.requested_by
+     WHERE pa.policy_id = ? ORDER BY pa.status ASC, pa.requested_at DESC`
+  ).bind(policyId).all();
+
+  const total = results.length;
+  const attested = results.filter(r => r.status === 'attested').length;
+  return jsonResponse({ attestations: results, total, attested });
+}
+
+async function handleRequestAttestations(request, env, org, user, policyId) {
+  if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const policy = await env.DB.prepare('SELECT * FROM policies WHERE id = ? AND org_id = ?').bind(policyId, org.id).first();
+  if (!policy) return jsonResponse({ error: 'Policy not found' }, 404);
+  if (policy.status !== 'published') return jsonResponse({ error: 'Policy must be published' }, 400);
+
+  const { role, due_date } = await request.json();
+  const minLevel = ROLE_HIERARCHY[role] ?? 0;
+  const { results: users } = await env.DB.prepare('SELECT id, name, role FROM users WHERE org_id = ?').bind(org.id).all();
+  const targets = users.filter(u => (ROLE_HIERARCHY[u.role] ?? 0) >= minLevel);
+
+  let count = 0;
+  for (const target of targets) {
+    try {
+      await env.DB.prepare(
+        'INSERT INTO policy_attestations (id, policy_id, user_id, policy_version, status, due_date, requested_by) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      ).bind(generateId(), policyId, target.id, policy.version, 'pending', due_date || null, user.id).run();
+      count++;
+      await createNotification(env, org.id, target.id, 'attestation_request',
+        'Policy Attestation Required',
+        `You are required to review and acknowledge "${policy.title}" (v${policy.version})${due_date ? ` by ${due_date}` : ''}.`,
+        'policy', policyId, { policy_version: policy.version, due_date }
+      );
+    } catch { /* UNIQUE conflict = already requested */ }
+  }
+
+  await auditLog(env, org.id, user.id, 'request_attestation', 'policy', policyId, { role, due_date, count });
+  return jsonResponse({ success: true, attestations_created: count });
+}
+
+async function handleAttestPolicy(request, env, org, user, policyId) {
+  const policy = await env.DB.prepare('SELECT * FROM policies WHERE id = ? AND org_id = ?').bind(policyId, org.id).first();
+  if (!policy) return jsonResponse({ error: 'Policy not found' }, 404);
+
+  const attestation = await env.DB.prepare(
+    "SELECT * FROM policy_attestations WHERE policy_id = ? AND user_id = ? AND policy_version = ? AND status = 'pending'"
+  ).bind(policyId, user.id, policy.version).first();
+  if (!attestation) return jsonResponse({ error: 'No pending attestation found for this policy version' }, 404);
+
+  await env.DB.prepare(
+    "UPDATE policy_attestations SET status = 'attested', attested_at = datetime('now') WHERE id = ?"
+  ).bind(attestation.id).run();
+
+  await auditLog(env, org.id, user.id, 'attest', 'policy', policyId, { version: policy.version });
+  return jsonResponse({ success: true });
+}
+
+async function handleMyAttestations(env, org, user) {
+  const { results } = await env.DB.prepare(
+    `SELECT pa.*, p.title as policy_title, p.category, p.status as policy_status
+     FROM policy_attestations pa JOIN policies p ON p.id = pa.policy_id
+     WHERE pa.user_id = ? AND p.org_id = ? ORDER BY pa.status ASC, pa.due_date ASC`
+  ).bind(user.id, org.id).all();
+  return jsonResponse({ attestations: results });
+}
+
+async function handlePolicyStats(env, org) {
+  const [total, byStatus, dueForReview, pendingAttestations] = await Promise.all([
+    env.DB.prepare('SELECT COUNT(*) as count FROM policies WHERE org_id = ?').bind(org.id).first(),
+    env.DB.prepare('SELECT status, COUNT(*) as count FROM policies WHERE org_id = ? GROUP BY status').bind(org.id).all(),
+    env.DB.prepare("SELECT COUNT(*) as count FROM policies WHERE org_id = ? AND review_date <= date('now', '+30 days') AND status = 'published'").bind(org.id).first(),
+    env.DB.prepare("SELECT COUNT(*) as count FROM policy_attestations pa JOIN policies p ON p.id = pa.policy_id WHERE p.org_id = ? AND pa.status = 'pending'").bind(org.id).first(),
+  ]);
+  return jsonResponse({ total: total.count, by_status: byStatus.results, due_for_review: dueForReview.count, pending_attestations: pendingAttestations.count });
 }

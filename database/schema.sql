@@ -672,3 +672,59 @@ CREATE TABLE IF NOT EXISTS audit_checklist_items (
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_checklist_org ON audit_checklist_items(org_id);
+
+-- ============================================================================
+-- POLICY & PROCEDURE LIBRARY
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS policies (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  category TEXT NOT NULL CHECK (category IN ('security', 'privacy', 'acceptable_use', 'incident_response', 'access_control', 'business_continuity', 'data_management', 'custom')),
+  description TEXT,
+  content TEXT,
+  status TEXT DEFAULT 'draft' CHECK (status IN ('draft', 'in_review', 'approved', 'published', 'archived', 'expired')),
+  version TEXT DEFAULT '1.0',
+  effective_date TEXT,
+  review_date TEXT,
+  owner_id TEXT REFERENCES users(id),
+  metadata TEXT DEFAULT '{}',
+  created_by TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_policies_org ON policies(org_id);
+CREATE INDEX IF NOT EXISTS idx_policies_status ON policies(org_id, status);
+CREATE INDEX IF NOT EXISTS idx_policies_category ON policies(org_id, category);
+CREATE INDEX IF NOT EXISTS idx_policies_review_date ON policies(review_date);
+
+CREATE TABLE IF NOT EXISTS policy_attestations (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  policy_id TEXT NOT NULL REFERENCES policies(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  policy_version TEXT NOT NULL,
+  status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'attested', 'overdue')),
+  attested_at TEXT,
+  requested_at TEXT DEFAULT (datetime('now')),
+  due_date TEXT,
+  requested_by TEXT REFERENCES users(id),
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(policy_id, user_id, policy_version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_attestations_policy ON policy_attestations(policy_id);
+CREATE INDEX IF NOT EXISTS idx_attestations_user ON policy_attestations(user_id, status);
+
+CREATE TABLE IF NOT EXISTS policy_control_links (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  policy_id TEXT NOT NULL REFERENCES policies(id) ON DELETE CASCADE,
+  implementation_id TEXT NOT NULL REFERENCES control_implementations(id) ON DELETE CASCADE,
+  linked_by TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(policy_id, implementation_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_policy_control_links_policy ON policy_control_links(policy_id);
+CREATE INDEX IF NOT EXISTS idx_policy_control_links_impl ON policy_control_links(implementation_id);
