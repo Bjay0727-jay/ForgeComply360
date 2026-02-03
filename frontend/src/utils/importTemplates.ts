@@ -4,6 +4,7 @@ export interface ImportColumn {
   csvName: string;
   fieldName: string;
   required: boolean;
+  aliases?: string[]; // Alternative CSV header names for fuzzy matching
 }
 
 export interface ImportEntityConfig {
@@ -160,7 +161,78 @@ export const IMPORT_CONFIGS: Record<string, ImportEntityConfig> = {
       status: enumValidator(['implemented', 'partially_implemented', 'planned', 'alternative', 'not_applicable', 'not_implemented'], 'Status'),
     },
   },
+  nist_controls: {
+    key: 'nist_controls',
+    label: 'NIST 800-53 Controls',
+    description: 'Import control baselines from NIST SP 800-53 exports (eMASS, CSAM, spreadsheets).',
+    endpoint: '/api/v1/import/controls',
+    pageLink: '/controls',
+    icon: 'M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z',
+    color: 'teal',
+    needsContext: true,
+    columns: [
+      { csvName: 'Control ID', fieldName: 'control_id', required: true, aliases: ['Control Identifier', 'CTRL ID', 'Number', 'Control Number'] },
+      { csvName: 'Family', fieldName: 'family', required: false, aliases: ['Control Family', 'Family Name'] },
+      { csvName: 'Title', fieldName: 'title', required: true, aliases: ['Control Title', 'Control Name'] },
+      { csvName: 'Description', fieldName: 'description', required: false, aliases: ['Control Description', 'Statement'] },
+      { csvName: 'Baseline', fieldName: 'baseline', required: false, aliases: ['Baseline Impact', 'Baseline Level', 'Impact Level'] },
+      { csvName: 'Status', fieldName: 'status', required: false, aliases: ['Implementation Status', 'Control Status', 'Impl Status'] },
+      { csvName: 'Implementation Details', fieldName: 'implementation_description', required: false, aliases: ['Implementation Description', 'Impl Details', 'Implementation Narrative'] },
+      { csvName: 'Priority', fieldName: 'priority', required: false, aliases: ['Control Priority'] },
+    ],
+    validators: {
+      control_id: requiredValidator('Control ID'),
+      title: requiredValidator('Title'),
+      priority: enumValidator(['p0', 'p1', 'p2', 'p3'], 'Priority'),
+      status: enumValidator(['implemented', 'partially_implemented', 'planned', 'alternative', 'not_applicable', 'not_implemented'], 'Status'),
+    },
+  },
+  poams_fedramp: {
+    key: 'poams_fedramp',
+    label: 'POA&M (FedRAMP/DoD)',
+    description: 'Import POA&Ms in FedRAMP or DoD eMASS format with milestones and risk ratings.',
+    endpoint: '/api/v1/import/poams-enhanced',
+    pageLink: '/poams',
+    icon: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4',
+    color: 'rose',
+    columns: [
+      { csvName: 'POA&M ID', fieldName: 'poam_id', required: false, aliases: ['POAM ID', 'ID'] },
+      { csvName: 'Weakness Name', fieldName: 'weakness_name', required: true, aliases: ['Weakness', 'Finding', 'Vulnerability'] },
+      { csvName: 'Weakness Description', fieldName: 'weakness_description', required: false, aliases: ['Description', 'Finding Description'] },
+      { csvName: 'System', fieldName: 'system', required: true, aliases: ['System Name', 'Information System'] },
+      { csvName: 'Control ID', fieldName: 'control_id', required: false, aliases: ['Control', 'Associated Control'] },
+      { csvName: 'Original Risk Rating', fieldName: 'original_risk_rating', required: false, aliases: ['Original Risk', 'Initial Risk'] },
+      { csvName: 'Residual Risk Rating', fieldName: 'residual_risk_rating', required: false, aliases: ['Residual Risk', 'Adjusted Risk'] },
+      { csvName: 'Risk Level', fieldName: 'risk_level', required: false, aliases: ['Severity', 'Risk'] },
+      { csvName: 'Status', fieldName: 'status', required: false, aliases: ['POA&M Status', 'POAM Status'] },
+      { csvName: 'Scheduled Completion', fieldName: 'scheduled_completion', required: false, aliases: ['Due Date', 'Completion Date', 'Target Date'] },
+      { csvName: 'Milestone 1', fieldName: 'milestone_1', required: false },
+      { csvName: 'Milestone 1 Due Date', fieldName: 'milestone_1_date', required: false },
+      { csvName: 'Milestone 2', fieldName: 'milestone_2', required: false },
+      { csvName: 'Milestone 2 Due Date', fieldName: 'milestone_2_date', required: false },
+      { csvName: 'Milestone 3', fieldName: 'milestone_3', required: false },
+      { csvName: 'Milestone 3 Due Date', fieldName: 'milestone_3_date', required: false },
+      { csvName: 'Responsible Party', fieldName: 'responsible_party', required: false },
+      { csvName: 'Resources Required', fieldName: 'resources_required', required: false },
+      { csvName: 'Vendor Dependency', fieldName: 'vendor_dependency', required: false },
+      { csvName: 'Cost Estimate', fieldName: 'cost_estimate', required: false },
+      { csvName: 'Comments', fieldName: 'comments', required: false },
+    ],
+    validators: {
+      weakness_name: requiredValidator('Weakness Name'),
+      system: requiredValidator('System'),
+      risk_level: enumValidator(['low', 'moderate', 'high', 'critical'], 'Risk Level'),
+      original_risk_rating: enumValidator(['low', 'moderate', 'high', 'critical', 'very high'], 'Original Risk Rating'),
+      residual_risk_rating: enumValidator(['low', 'moderate', 'high', 'critical', 'very high'], 'Residual Risk Rating'),
+      status: enumValidator(['draft', 'open', 'in_progress', 'verification', 'completed', 'accepted', 'deferred'], 'Status'),
+    },
+  },
 };
+
+// Configs that are "specialized" (shown in separate section on import page)
+export const SPECIALIZED_IMPORT_KEYS = ['nist_controls', 'poams_fedramp'];
+// OSCAL formats are handled separately (not in IMPORT_CONFIGS since they're JSON, not CSV)
+export const OSCAL_FORMATS = ['oscal_ssp', 'oscal_catalog'] as const;
 
 /**
  * Download an empty CSV template for an entity type.

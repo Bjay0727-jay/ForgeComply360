@@ -115,15 +115,25 @@ export interface ColumnMatchResult {
  */
 export function matchColumns(
   csvHeaders: string[],
-  expectedColumns: { csvName: string; fieldName: string; required: boolean }[],
+  expectedColumns: { csvName: string; fieldName: string; required: boolean; aliases?: string[] }[],
 ): ColumnMatchResult {
   const matched: ColumnMapping[] = [];
   const usedCsvHeaders = new Set<string>();
 
   for (const col of expectedColumns) {
-    const found = csvHeaders.find(
+    // Try primary name first
+    let found = csvHeaders.find(
       h => h.toLowerCase().trim() === col.csvName.toLowerCase().trim() && !usedCsvHeaders.has(h),
     );
+    // Try aliases if primary didn't match
+    if (!found && col.aliases) {
+      for (const alias of col.aliases) {
+        found = csvHeaders.find(
+          h => h.toLowerCase().trim() === alias.toLowerCase().trim() && !usedCsvHeaders.has(h),
+        );
+        if (found) break;
+      }
+    }
     if (found) {
       matched.push({ csvName: found, fieldName: col.fieldName, required: col.required });
       usedCsvHeaders.add(found);

@@ -250,6 +250,10 @@ async function handleRequest(request, env, url) {
   if (path === '/api/v1/import/vendors' && method === 'POST') return handleBulkImportVendors(request, env, org, user);
   if (path === '/api/v1/import/poams' && method === 'POST') return handleBulkImportPoams(request, env, org, user);
   if (path === '/api/v1/import/implementations' && method === 'POST') return handleBulkImportImplementations(request, env, org, user);
+  if (path === '/api/v1/import/oscal-ssp' && method === 'POST') return handleBulkImportOscalSSP(request, env, org, user);
+  if (path === '/api/v1/import/oscal-catalog' && method === 'POST') return handleBulkImportOscalCatalog(request, env, org, user);
+  if (path === '/api/v1/import/controls' && method === 'POST') return handleBulkImportControls(request, env, org, user);
+  if (path === '/api/v1/import/poams-enhanced' && method === 'POST') return handleBulkImportPoamsEnhanced(request, env, org, user);
 
   return jsonResponse({ error: 'Not found' }, 404);
 }
@@ -3195,6 +3199,323 @@ async function handleBulkImportImplementations(request, env, org, user) {
   }
 
   await auditLog(env, org.id, user.id, 'bulk_import', 'implementation', null, { system_id, framework_id, count: results.success, failed: results.failed });
+  return jsonResponse(results, 201);
+}
+
+// ============================================================================
+// OSCAL SSP IMPORT
+// ============================================================================
+
+async function handleBulkImportOscalSSP(request, env, org, user) {
+  if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const { system, implementations, framework_id, import_options } = await request.json();
+  if (!framework_id) return jsonResponse({ error: 'framework_id is required' }, 400);
+  if (!implementations || !Array.isArray(implementations)) return jsonResponse({ error: 'implementations array is required' }, 400);
+  if (implementations.length > 1000) return jsonResponse({ error: 'Maximum 1000 implementations per import' }, 400);
+
+  let systemId;
+  let systemCreated = false;
+
+  if (import_options?.create_system && system) {
+    // Create new system from OSCAL data
+    const serviceModelMap = { iaas: 'IaaS', paas: 'PaaS', saas: 'SaaS', other: 'other' };
+    systemId = generateId();
+    await env.DB.prepare(
+      'INSERT INTO systems (id, org_id, name, acronym, description, impact_level, deployment_model, service_model, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).bind(
+      systemId, org.id,
+      system.name || 'Imported System',
+      system.acronym || null,
+      system.description || null,
+      system.impact_level || 'moderate',
+      system.deployment_model || 'cloud',
+      serviceModelMap[(system.service_model || 'saas').toLowerCase()] || 'SaaS',
+      'active'
+    ).run();
+    systemCreated = true;
+  } else if (import_options?.existing_system_id) {
+    const sys = await env.DB.prepare('SELECT id FROM systems WHERE id = ? AND org_id = ?').bind(import_options.existing_system_id, org.id).first();
+    if (!sys) return jsonResponse({ error: 'System not found' }, 404);
+    systemId = sys.id;
+  } else {
+    return jsonResponse({ error: 'Either create_system with system data or existing_system_id is required' }, 400);
+  }
+
+  const validStatus = ['implemented', 'partially_implemented', 'planned', 'alternative', 'not_applicable', 'not_implemented'];
+  const results = { success: 0, failed: 0, errors: [] };
+
+  for (let i = 0; i < implementations.length; i++) {
+    const r = implementations[i];
+    try {
+      if (!r.control_id || !r.control_id.trim()) throw new Error('Control ID is required');
+      const status = r.status ? r.status.toLowerCase() : 'not_implemented';
+      if (!validStatus.includes(status)) throw new Error(`Invalid status: ${r.status}`);
+
+      const id = generateId();
+      await env.DB.prepare(
+        `INSERT INTO control_implementations (id, org_id, system_id, framework_id, control_id, status, implementation_description, responsible_role)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(system_id, framework_id, control_id) DO UPDATE SET
+           status = ?, implementation_description = COALESCE(?, implementation_description),
+           responsible_role = COALESCE(?, responsible_role), updated_at = datetime('now')`
+      ).bind(
+        id, org.id, systemId, framework_id, r.control_id.trim(), status,
+        r.implementation_description || null, r.responsible_role || null,
+        status, r.implementation_description || null, r.responsible_role || null
+      ).run();
+      results.success++;
+    } catch (err) {
+      results.failed++;
+      results.errors.push({ row: i + 1, error: err.message });
+    }
+  }
+
+  await auditLog(env, org.id, user.id, 'bulk_import', 'oscal_ssp', null, { system_id: systemId, system_created: systemCreated, framework_id, count: results.success, failed: results.failed });
+  return jsonResponse({ system_created: systemCreated, system_id: systemId, implementations: results }, 201);
+}
+
+// ============================================================================
+// OSCAL CATALOG IMPORT
+// ============================================================================
+
+async function handleBulkImportOscalCatalog(request, env, org, user) {
+  if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const { framework, controls, import_options } = await request.json();
+  if (!controls || !Array.isArray(controls)) return jsonResponse({ error: 'controls array is required' }, 400);
+  if (controls.length > 2000) return jsonResponse({ error: 'Maximum 2000 controls per import' }, 400);
+
+  let frameworkId;
+  let frameworkCreated = false;
+
+  if (import_options?.create_framework && framework) {
+    // Create new framework
+    const category = import_options.category || 'federal';
+    frameworkId = (framework.name || 'imported').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 50);
+    // Check if ID already exists
+    const existing = await env.DB.prepare('SELECT id FROM compliance_frameworks WHERE id = ?').bind(frameworkId).first();
+    if (existing) {
+      frameworkId = frameworkId + '-' + Date.now().toString(36);
+    }
+    await env.DB.prepare(
+      'INSERT INTO compliance_frameworks (id, name, version, category, description, control_count) VALUES (?, ?, ?, ?, ?, ?)'
+    ).bind(frameworkId, framework.name || 'Imported Catalog', framework.version || '1.0', category, `Imported from OSCAL Catalog`, controls.length).run();
+
+    // Enable for org
+    await env.DB.prepare(
+      'INSERT OR IGNORE INTO organization_frameworks (id, org_id, framework_id, enabled) VALUES (?, ?, ?, 1)'
+    ).bind(generateId(), org.id, frameworkId).run();
+    frameworkCreated = true;
+  } else if (import_options?.existing_framework_id) {
+    const fw = await env.DB.prepare('SELECT id FROM compliance_frameworks WHERE id = ?').bind(import_options.existing_framework_id).first();
+    if (!fw) return jsonResponse({ error: 'Framework not found' }, 404);
+    frameworkId = fw.id;
+  } else {
+    return jsonResponse({ error: 'Either create_framework with framework data or existing_framework_id is required' }, 400);
+  }
+
+  const results = { success: 0, failed: 0, errors: [] };
+
+  for (let i = 0; i < controls.length; i++) {
+    const c = controls[i];
+    try {
+      if (!c.control_id || !c.control_id.trim()) throw new Error('control_id is required');
+      if (!c.title || !c.title.trim()) throw new Error('title is required');
+
+      const id = generateId();
+      await env.DB.prepare(
+        `INSERT INTO security_controls (id, framework_id, control_id, family, title, description, priority, baseline_low, baseline_moderate, baseline_high, is_enhancement, parent_control_id, sort_order)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(framework_id, control_id) DO UPDATE SET
+           family = ?, title = ?, description = COALESCE(?, description),
+           priority = COALESCE(?, priority), is_enhancement = ?, parent_control_id = ?, sort_order = ?`
+      ).bind(
+        id, frameworkId, c.control_id.trim(),
+        c.family || c.control_id.replace(/-\d+.*$/, ''),
+        c.title.trim(), c.description || null,
+        c.priority || 'P1',
+        c.baseline_low || 0, c.baseline_moderate || 0, c.baseline_high || 0,
+        c.is_enhancement || 0, c.parent_control_id || null, c.sort_order || i + 1,
+        // ON CONFLICT values
+        c.family || c.control_id.replace(/-\d+.*$/, ''),
+        c.title.trim(), c.description || null,
+        c.priority || 'P1', c.is_enhancement || 0, c.parent_control_id || null, c.sort_order || i + 1
+      ).run();
+      results.success++;
+    } catch (err) {
+      results.failed++;
+      results.errors.push({ row: i + 1, error: err.message });
+    }
+  }
+
+  // Update control_count
+  if (results.success > 0) {
+    const { count } = await env.DB.prepare('SELECT COUNT(*) as count FROM security_controls WHERE framework_id = ?').bind(frameworkId).first();
+    await env.DB.prepare('UPDATE compliance_frameworks SET control_count = ?, updated_at = datetime(\'now\') WHERE id = ?').bind(count, frameworkId).run();
+  }
+
+  await auditLog(env, org.id, user.id, 'bulk_import', 'oscal_catalog', null, { framework_id: frameworkId, framework_created: frameworkCreated, count: results.success, failed: results.failed });
+  return jsonResponse({ framework_id: frameworkId, framework_created: frameworkCreated, controls: results }, 201);
+}
+
+// ============================================================================
+// NIST 800-53 CONTROLS CSV IMPORT
+// ============================================================================
+
+async function handleBulkImportControls(request, env, org, user) {
+  if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const { rows, framework_id, system_id, conflict_strategy } = await request.json();
+  if (!framework_id) return jsonResponse({ error: 'framework_id is required' }, 400);
+  if (!Array.isArray(rows) || rows.length === 0) return jsonResponse({ error: 'rows array is required' }, 400);
+  if (rows.length > 500) return jsonResponse({ error: 'Maximum 500 rows per import' }, 400);
+
+  // Verify framework exists
+  const fw = await env.DB.prepare('SELECT id FROM compliance_frameworks WHERE id = ?').bind(framework_id).first();
+  if (!fw) return jsonResponse({ error: 'Framework not found' }, 404);
+
+  // Optionally verify system
+  if (system_id) {
+    const sys = await env.DB.prepare('SELECT id FROM systems WHERE id = ? AND org_id = ?').bind(system_id, org.id).first();
+    if (!sys) return jsonResponse({ error: 'System not found' }, 404);
+  }
+
+  const validStatus = ['implemented', 'partially_implemented', 'planned', 'alternative', 'not_applicable', 'not_implemented'];
+  const validPriority = ['p0', 'p1', 'p2', 'p3'];
+  const controlResults = { success: 0, failed: 0, errors: [] };
+  const implResults = { success: 0, failed: 0, errors: [] };
+
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    try {
+      if (!r.control_id || !r.control_id.trim()) throw new Error('Control ID is required');
+      if (!r.title || !r.title.trim()) throw new Error('Title is required');
+      const priority = r.priority ? r.priority.toUpperCase() : 'P1';
+      if (r.priority && !validPriority.includes(r.priority.toLowerCase())) throw new Error(`Invalid priority: ${r.priority}`);
+
+      const controlId = r.control_id.trim().toUpperCase();
+      const family = r.family || controlId.replace(/-\d+.*$/, '');
+      const isEnhancement = controlId.includes('(') ? 1 : 0;
+      const parentId = isEnhancement ? controlId.replace(/\(.*\)/, '').trim() : null;
+
+      const id = generateId();
+      await env.DB.prepare(
+        `INSERT INTO security_controls (id, framework_id, control_id, family, title, description, priority, is_enhancement, parent_control_id, sort_order)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(framework_id, control_id) DO UPDATE SET
+           family = ?, title = ?, description = COALESCE(?, description), priority = ?, is_enhancement = ?, parent_control_id = ?`
+      ).bind(
+        id, framework_id, controlId, family, r.title.trim(), r.description || null, priority, isEnhancement, parentId, i + 1,
+        family, r.title.trim(), r.description || null, priority, isEnhancement, parentId
+      ).run();
+      controlResults.success++;
+
+      // If system_id and status provided, also upsert implementation
+      if (system_id && r.status) {
+        const status = r.status.toLowerCase();
+        if (!validStatus.includes(status)) {
+          implResults.failed++;
+          implResults.errors.push({ row: i + 1, error: `Invalid implementation status: ${r.status}` });
+        } else {
+          try {
+            const implId = generateId();
+            await env.DB.prepare(
+              `INSERT INTO control_implementations (id, org_id, system_id, framework_id, control_id, status, implementation_description, responsible_role)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(system_id, framework_id, control_id) DO UPDATE SET
+                 status = ?, implementation_description = COALESCE(?, implementation_description),
+                 responsible_role = COALESCE(?, responsible_role), updated_at = datetime('now')`
+            ).bind(
+              implId, org.id, system_id, framework_id, controlId, status,
+              r.implementation_description || null, r.responsible_role || null,
+              status, r.implementation_description || null, r.responsible_role || null
+            ).run();
+            implResults.success++;
+          } catch (implErr) {
+            implResults.failed++;
+            implResults.errors.push({ row: i + 1, error: implErr.message });
+          }
+        }
+      }
+    } catch (err) {
+      controlResults.failed++;
+      controlResults.errors.push({ row: i + 1, error: err.message });
+    }
+  }
+
+  // Update control_count
+  if (controlResults.success > 0) {
+    const { count } = await env.DB.prepare('SELECT COUNT(*) as count FROM security_controls WHERE framework_id = ?').bind(framework_id).first();
+    await env.DB.prepare('UPDATE compliance_frameworks SET control_count = ?, updated_at = datetime(\'now\') WHERE id = ?').bind(count, framework_id).run();
+  }
+
+  await auditLog(env, org.id, user.id, 'bulk_import', 'controls', null, { framework_id, controls: controlResults.success, implementations: implResults.success });
+  const response = { controls: controlResults };
+  if (system_id) response.implementations = implResults;
+  return jsonResponse(response, 201);
+}
+
+// ============================================================================
+// FEDRAMP / DOD ENHANCED POA&M IMPORT
+// ============================================================================
+
+async function handleBulkImportPoamsEnhanced(request, env, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const { rows } = await request.json();
+  if (!Array.isArray(rows) || rows.length === 0) return jsonResponse({ error: 'rows array is required' }, 400);
+  if (rows.length > 200) return jsonResponse({ error: 'Maximum 200 rows per import' }, 400);
+
+  const { results: allSystems } = await env.DB.prepare('SELECT id, name FROM systems WHERE org_id = ?').bind(org.id).all();
+  const systemMap = new Map(allSystems.map(s => [s.name.toLowerCase(), s.id]));
+
+  const validRisk = ['low', 'moderate', 'high', 'critical', 'very high'];
+  const validStatus = ['draft', 'open', 'in_progress', 'verification', 'completed', 'accepted', 'deferred'];
+  const results = { success: 0, failed: 0, errors: [] };
+  const baseTime = Date.now();
+
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    try {
+      if (!r.weakness_name || !r.weakness_name.trim()) throw new Error('Weakness Name is required');
+      if (!r.system || !r.system.trim()) throw new Error('System is required');
+      const systemId = systemMap.get(r.system.trim().toLowerCase());
+      if (!systemId) throw new Error(`System not found: "${r.system}"`);
+      if (r.risk_level && !['low', 'moderate', 'high', 'critical'].includes(r.risk_level.toLowerCase())) throw new Error(`Invalid risk_level: ${r.risk_level}`);
+      if (r.original_risk_rating && !validRisk.includes(r.original_risk_rating.toLowerCase())) throw new Error(`Invalid original_risk_rating: ${r.original_risk_rating}`);
+      if (r.status && !validStatus.includes(r.status.toLowerCase())) throw new Error(`Invalid status: ${r.status}`);
+
+      const poamId = r.poam_id || ('POAM-' + (baseTime + i).toString(36).toUpperCase());
+      const id = generateId();
+      await env.DB.prepare(
+        'INSERT INTO poams (id, org_id, system_id, poam_id, weakness_name, weakness_description, risk_level, status, scheduled_completion, responsible_party, cost_estimate, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      ).bind(
+        id, org.id, systemId, poamId,
+        r.weakness_name.trim(),
+        r.weakness_description || null,
+        r.risk_level ? r.risk_level.toLowerCase() : 'moderate',
+        r.status ? r.status.toLowerCase() : 'draft',
+        r.scheduled_completion || null,
+        r.responsible_party || null,
+        r.cost_estimate ? parseFloat(r.cost_estimate) || null : null,
+        user.id
+      ).run();
+
+      // Insert milestones
+      const milestones = r.milestones || [];
+      for (const ms of milestones) {
+        if (ms.title && ms.title.trim()) {
+          await env.DB.prepare(
+            'INSERT INTO poam_milestones (id, poam_id, title, target_date) VALUES (?, ?, ?, ?)'
+          ).bind(generateId(), id, ms.title.trim(), ms.target_date || null).run();
+        }
+      }
+
+      results.success++;
+    } catch (err) {
+      results.failed++;
+      results.errors.push({ row: i + 1, error: err.message });
+    }
+  }
+
+  await auditLog(env, org.id, user.id, 'bulk_import', 'poam_enhanced', null, { count: results.success, failed: results.failed });
   return jsonResponse(results, 201);
 }
 
