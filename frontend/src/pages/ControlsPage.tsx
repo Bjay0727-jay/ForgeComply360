@@ -4,6 +4,7 @@ import { useExperience } from '../hooks/useExperience';
 import { useAuth } from '../hooks/useAuth';
 import { api, getAccessToken } from '../utils/api';
 import { exportControlsCSV } from '../utils/exportHelpers';
+import { ActivityTimeline } from '../components/ActivityTimeline';
 
 export function ControlsPage() {
   const { t, nav } = useExperience();
@@ -744,6 +745,13 @@ export function ControlsPage() {
                       </div>
                     )}
                   </div>
+
+                  {/* Activity Timeline */}
+                  {impl?.id && (
+                    <div className="mt-4 pt-3 border-t border-gray-200">
+                      <ActivityTimeline resourceType="control_implementation" resourceId={impl.id} />
+                    </div>
+                  )}
 
                   {/* Save Bar */}
                   {canEdit && (

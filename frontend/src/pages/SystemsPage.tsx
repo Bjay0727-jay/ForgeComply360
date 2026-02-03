@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useExperience } from '../hooks/useExperience';
 import { useAuth } from '../hooks/useAuth';
 import { api } from '../utils/api';
+import { ActivityTimeline } from '../components/ActivityTimeline';
 
 export function SystemsPage() {
   const { t, nav } = useExperience();
@@ -9,6 +10,7 @@ export function SystemsPage() {
   const [systems, setSystems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [form, setForm] = useState({ name: '', acronym: '', description: '', impact_level: 'moderate', deployment_model: '', service_model: '' });
   const [saving, setSaving] = useState(false);
 
@@ -90,22 +92,94 @@ export function SystemsPage() {
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {systems.map((sys) => (
-            <div key={sys.id} className="bg-white rounded-xl border border-gray-200 p-5 hover:border-blue-200 transition-colors">
-              <div className="flex items-start justify-between mb-3">
-                <div>
-                  <h3 className="font-semibold text-gray-900">{sys.name}</h3>
-                  {sys.acronym && <p className="text-xs text-gray-500">{sys.acronym}</p>}
+          {systems.map((sys) => {
+            const isExpanded = expandedId === sys.id;
+            return (
+              <React.Fragment key={sys.id}>
+                <div
+                  className={`bg-white rounded-xl border ${isExpanded ? 'border-blue-300 ring-1 ring-blue-100' : 'border-gray-200'} p-5 hover:border-blue-200 transition-colors cursor-pointer`}
+                  onClick={() => setExpandedId(isExpanded ? null : sys.id)}
+                >
+                  <div className="flex items-start justify-between mb-3">
+                    <div>
+                      <h3 className="font-semibold text-gray-900">{sys.name}</h3>
+                      {sys.acronym && <p className="text-xs text-gray-500">{sys.acronym}</p>}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${statusColor(sys.status)}`}>{sys.status}</span>
+                      <svg className={`w-4 h-4 text-gray-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                      </svg>
+                    </div>
+                  </div>
+                  {sys.description && <p className="text-sm text-gray-600 mb-3 line-clamp-2">{sys.description}</p>}
+                  <div className="flex gap-2">
+                    <span className={`text-xs px-2 py-0.5 rounded font-medium ${impactColor(sys.impact_level)}`}>{sys.impact_level}</span>
+                    {sys.deployment_model && <span className="text-xs px-2 py-0.5 rounded bg-gray-100 text-gray-600">{sys.deployment_model}</span>}
+                  </div>
                 </div>
-                <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${statusColor(sys.status)}`}>{sys.status}</span>
-              </div>
-              {sys.description && <p className="text-sm text-gray-600 mb-3 line-clamp-2">{sys.description}</p>}
-              <div className="flex gap-2">
-                <span className={`text-xs px-2 py-0.5 rounded font-medium ${impactColor(sys.impact_level)}`}>{sys.impact_level}</span>
-                {sys.deployment_model && <span className="text-xs px-2 py-0.5 rounded bg-gray-100 text-gray-600">{sys.deployment_model}</span>}
-              </div>
-            </div>
-          ))}
+
+                {isExpanded && (
+                  <div className="col-span-full bg-white rounded-xl border border-blue-300 ring-1 ring-blue-100 p-5 -mt-2">
+                    <div className="flex items-start justify-between mb-4">
+                      <div>
+                        <h3 className="font-semibold text-gray-900">{sys.name}</h3>
+                        {sys.description && <p className="text-sm text-gray-600 mt-1">{sys.description}</p>}
+                      </div>
+                      <button onClick={(e) => { e.stopPropagation(); setExpandedId(null); }} className="text-gray-400 hover:text-gray-600">
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4 text-sm">
+                      <div>
+                        <span className="text-xs font-medium text-gray-500 block">Impact Level</span>
+                        <span className={`text-xs px-2 py-0.5 rounded font-medium mt-1 inline-block ${impactColor(sys.impact_level)}`}>{sys.impact_level}</span>
+                      </div>
+                      <div>
+                        <span className="text-xs font-medium text-gray-500 block">Status</span>
+                        <span className={`text-xs px-2 py-0.5 rounded font-medium mt-1 inline-block ${statusColor(sys.status)}`}>{sys.status}</span>
+                      </div>
+                      {sys.deployment_model && (
+                        <div>
+                          <span className="text-xs font-medium text-gray-500 block">Deployment</span>
+                          <span className="text-sm text-gray-700 mt-1 block capitalize">{sys.deployment_model.replace(/_/g, ' ')}</span>
+                        </div>
+                      )}
+                      {sys.service_model && (
+                        <div>
+                          <span className="text-xs font-medium text-gray-500 block">Service Model</span>
+                          <span className="text-sm text-gray-700 mt-1 block">{sys.service_model}</span>
+                        </div>
+                      )}
+                      {sys.system_owner && (
+                        <div>
+                          <span className="text-xs font-medium text-gray-500 block">System Owner</span>
+                          <span className="text-sm text-gray-700 mt-1 block">{sys.system_owner}</span>
+                        </div>
+                      )}
+                      {sys.authorizing_official && (
+                        <div>
+                          <span className="text-xs font-medium text-gray-500 block">Authorizing Official</span>
+                          <span className="text-sm text-gray-700 mt-1 block">{sys.authorizing_official}</span>
+                        </div>
+                      )}
+                      {sys.security_officer && (
+                        <div>
+                          <span className="text-xs font-medium text-gray-500 block">Security Officer</span>
+                          <span className="text-sm text-gray-700 mt-1 block">{sys.security_officer}</span>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="border-t border-gray-200 pt-4">
+                      <ActivityTimeline resourceType="system" resourceId={sys.id} />
+                    </div>
+                  </div>
+                )}
+              </React.Fragment>
+            );
+          })}
         </div>
       )}
     </div>

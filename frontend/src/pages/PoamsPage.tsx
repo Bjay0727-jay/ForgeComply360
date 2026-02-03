@@ -3,6 +3,7 @@ import { useExperience } from '../hooks/useExperience';
 import { useAuth } from '../hooks/useAuth';
 import { api } from '../utils/api';
 import { exportPoamsCSV } from '../utils/exportHelpers';
+import { ActivityTimeline } from '../components/ActivityTimeline';
 
 const STATUS_LABELS: Record<string, string> = {
   draft: 'Draft', open: 'Open', in_progress: 'In Progress',
@@ -453,6 +454,9 @@ export function PoamsPage() {
                             </div>
                           )}
                         </div>
+
+                        {/* Activity Timeline */}
+                        <ActivityTimeline resourceType="poam" resourceId={p.id} />
                       </div>
                     </div>
                   </div>

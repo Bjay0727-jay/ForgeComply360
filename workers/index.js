@@ -217,6 +217,7 @@ async function handleRequest(request, env, url) {
 
   // Audit log
   if (path === '/api/v1/audit-log' && method === 'GET') return handleGetAuditLog(env, url, org, user);
+  if (path.match(/^\/api\/v1\/activity\/[\w_-]+\/[\w-]+$/) && method === 'GET') return handleGetResourceActivity(env, url, org, user, path.split('/')[4], path.split('/')[5]);
 
   // Notifications
   if (path === '/api/v1/notifications' && method === 'GET') return handleGetNotifications(env, url, user);
@@ -412,6 +413,22 @@ async function auditLog(env, orgId, userId, action, resourceType, resourceId, de
   } catch (e) {
     console.error('Audit log error:', e);
   }
+}
+
+function computeDiff(oldRecord, newBody, trackedFields) {
+  const changes = {};
+  for (const field of trackedFields) {
+    if (newBody[field] !== undefined) {
+      const oldVal = oldRecord?.[field] ?? null;
+      const newVal = newBody[field] ?? null;
+      const oldStr = oldVal === null ? '' : String(oldVal);
+      const newStr = newVal === null ? '' : String(newVal);
+      if (oldStr !== newStr) {
+        changes[field] = { from: oldVal, to: newVal };
+      }
+    }
+  }
+  return Object.keys(changes).length > 0 ? changes : null;
 }
 
 // ============================================================================
@@ -932,7 +949,8 @@ async function handleUpdateSystem(request, env, org, user, systemId) {
   values.push(systemId);
 
   await env.DB.prepare(`UPDATE systems SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run();
-  await auditLog(env, org.id, user.id, 'update', 'system', systemId, body);
+  const changes = computeDiff(system, body, ['name', 'acronym', 'description', 'impact_level', 'status', 'system_owner', 'authorizing_official', 'security_officer', 'boundary_description', 'deployment_model', 'service_model']);
+  await auditLog(env, org.id, user.id, 'update', 'system', systemId, { ...body, _changes: changes });
 
   const updated = await env.DB.prepare('SELECT * FROM systems WHERE id = ?').bind(systemId).first();
   return jsonResponse({ system: updated });
@@ -985,6 +1003,10 @@ async function handleUpsertImplementation(request, env, org, user) {
     return jsonResponse({ error: 'system_id, framework_id, and control_id are required' }, 400);
   }
 
+  const oldImpl = await env.DB.prepare(
+    'SELECT * FROM control_implementations WHERE system_id = ? AND framework_id = ? AND control_id = ?'
+  ).bind(system_id, framework_id, control_id).first();
+
   const id = generateId();
   await env.DB.prepare(
     `INSERT INTO control_implementations (id, org_id, system_id, framework_id, control_id, status, implementation_description, responsible_role, ai_narrative)
@@ -1006,7 +1028,9 @@ async function handleUpsertImplementation(request, env, org, user) {
     'SELECT * FROM control_implementations WHERE system_id = ? AND framework_id = ? AND control_id = ?'
   ).bind(system_id, framework_id, control_id).first();
 
-  await auditLog(env, org.id, user.id, 'upsert', 'control_implementation', control_id, { system_id, framework_id, status });
+  const implChanges = oldImpl ? computeDiff(oldImpl, body, ['status', 'implementation_description', 'responsible_role', 'ai_narrative']) : null;
+  const implAction = oldImpl ? 'update' : 'create';
+  await auditLog(env, org.id, user.id, implAction, 'control_implementation', impl.id, { system_id, framework_id, control_id, status, _changes: implChanges });
   if (status === 'not_implemented') await notifyOrgRole(env, org.id, user.id, 'manager', 'control_change', 'Control Set to Not Implemented', 'A control was marked as not implemented', 'control_implementation', control_id, { framework_id, system_id });
   return jsonResponse({ message: 'Implementation saved', implementation: impl }, 201);
 }
@@ -1147,7 +1171,8 @@ async function handleUpdatePoam(request, env, org, user, poamId) {
   values.push(poamId);
 
   await env.DB.prepare(`UPDATE poams SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run();
-  await auditLog(env, org.id, user.id, 'update', 'poam', poamId, body);
+  const changes = computeDiff(poam, body, ['weakness_name', 'weakness_description', 'risk_level', 'status', 'scheduled_completion', 'actual_completion', 'responsible_party', 'resources_required', 'cost_estimate', 'assigned_to', 'vendor_dependency']);
+  await auditLog(env, org.id, user.id, 'update', 'poam', poamId, { ...body, _changes: changes });
   if (body.status) {
     await notifyOrgRole(env, org.id, user.id, 'manager', 'poam_update', 'POA&M Status Changed', 'POA&M "' + poam.weakness_name + '" status changed to ' + body.status, 'poam', poamId, { status: body.status });
     if (poam.assigned_to && poam.assigned_to !== user.id) {
@@ -1757,7 +1782,8 @@ async function handleUpdateRisk(request, env, org, user, riskId) {
   values.push(riskId);
 
   await env.DB.prepare(`UPDATE risks SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run();
-  await auditLog(env, org.id, user.id, 'update', 'risk', riskId, body);
+  const riskChanges = computeDiff(risk, body, ['title', 'description', 'category', 'likelihood', 'impact', 'risk_level', 'treatment', 'treatment_plan', 'treatment_due_date', 'owner', 'status', 'related_controls']);
+  await auditLog(env, org.id, user.id, 'update', 'risk', riskId, { ...body, _changes: riskChanges });
   if (body.risk_level && ['high', 'critical'].includes(body.risk_level)) await notifyOrgRole(env, org.id, user.id, 'manager', 'risk_alert', 'Risk Escalated', 'Risk escalated to ' + body.risk_level, 'risk', riskId, { risk_level: body.risk_level });
 
   const updated = await env.DB.prepare('SELECT r.*, s.name as system_name FROM risks r LEFT JOIN systems s ON s.id = r.system_id WHERE r.id = ?').bind(riskId).first();
@@ -2246,6 +2272,29 @@ async function handleGetAuditLog(env, url, org, user) {
   ).bind(...countParams).first();
 
   return jsonResponse({ logs: results, total, page, limit });
+}
+
+async function handleGetResourceActivity(env, url, org, user, resourceType, resourceId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  const limit = Math.min(parseInt(url.searchParams.get('limit') || '50'), 100);
+  const page = parseInt(url.searchParams.get('page') || '1');
+  const offset = (page - 1) * limit;
+
+  const { results } = await env.DB.prepare(
+    `SELECT al.*, u.name as user_name, u.email as user_email
+     FROM audit_logs al
+     LEFT JOIN users u ON u.id = al.user_id
+     WHERE al.org_id = ? AND al.resource_type = ? AND al.resource_id = ?
+     ORDER BY al.created_at DESC
+     LIMIT ? OFFSET ?`
+  ).bind(org.id, resourceType, resourceId, limit, offset).all();
+
+  const { total } = await env.DB.prepare(
+    'SELECT COUNT(*) as total FROM audit_logs WHERE org_id = ? AND resource_type = ? AND resource_id = ?'
+  ).bind(org.id, resourceType, resourceId).first();
+
+  return jsonResponse({ activities: results, total, page, limit });
 }
 
 // ============================================================================

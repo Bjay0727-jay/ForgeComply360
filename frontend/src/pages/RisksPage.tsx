@@ -4,6 +4,7 @@ import { useAuth } from '../hooks/useAuth';
 import { api } from '../utils/api';
 import { exportRisksCSV, exportRiskRegisterDoc } from '../utils/exportHelpers';
 import { exportRiskRegisterPdf } from '../utils/pdfExportHelpers';
+import { ActivityTimeline } from '../components/ActivityTimeline';
 
 interface Risk {
   id: string;
@@ -595,6 +596,11 @@ export function RisksPage() {
                           <div className="flex justify-between"><span>System</span><span className="font-medium text-gray-700">{r.system_name || 'None'}</span></div>
                           <div className="flex justify-between"><span>Created</span><span className="font-medium text-gray-700">{new Date(r.created_at).toLocaleDateString()}</span></div>
                           <div className="flex justify-between"><span>Updated</span><span className="font-medium text-gray-700">{new Date(r.updated_at).toLocaleDateString()}</span></div>
+                        </div>
+
+                        {/* Activity Timeline */}
+                        <div className="mt-4 pt-3 border-t border-gray-200">
+                          <ActivityTimeline resourceType="risk" resourceId={r.id} />
                         </div>
                       </div>
                     </div>
