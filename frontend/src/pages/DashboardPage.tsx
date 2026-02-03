@@ -51,13 +51,20 @@ interface TrendPoint {
   compliance_percentage: number;
 }
 
+interface MyWorkData {
+  my_poams: { id: string; title: string; status: string; scheduled_completion: string }[];
+  my_evidence_schedules: { id: string; title: string; next_due_date: string; cadence: string }[];
+  my_audit_tasks: { id: string; title: string; completed: number; due_date: string }[];
+  counts: { poams: number; overdue_poams: number; evidence_due: number; audit_tasks: number };
+}
+
 // ---------------------------------------------------------------------------
 // Main Dashboard
 // ---------------------------------------------------------------------------
 
 export function DashboardPage() {
   const { t, nav, isFederal, isHealthcare } = useExperience();
-  const { canManage } = useAuth();
+  const { user, canEdit, canManage } = useAuth();
 
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -71,6 +78,8 @@ export function DashboardPage() {
   const [snapshotMsg, setSnapshotMsg] = useState('');
   const [scheduleStats, setScheduleStats] = useState<{ total: number; overdue: number; due_this_week: number; due_this_month: number } | null>(null);
   const [auditScore, setAuditScore] = useState<{ score: number; passed_checks: number; total_checks: number } | null>(null);
+  const [myWork, setMyWork] = useState<MyWorkData | null>(null);
+  const [pendingApprovalCount, setPendingApprovalCount] = useState<number | null>(null);
 
   useEffect(() => {
     // Core dashboard stats (always loaded)
@@ -79,7 +88,7 @@ export function DashboardPage() {
       .catch(() => {})
       .finally(() => setLoading(false));
 
-    // Framework-level compliance stats
+    // Framework-level compliance stats (always loaded)
     api<{ frameworks: FrameworkStat[]; gap_analysis: GapItem[] }>('/api/v1/dashboard/framework-stats')
       .then((d) => {
         setFrameworkStats(d.frameworks || []);
@@ -87,26 +96,38 @@ export function DashboardPage() {
       })
       .catch(() => {});
 
-    // Monitoring health
-    api<MonitoringDashboard>('/api/v1/monitoring/dashboard')
-      .then((d) => setMonitoring(d))
-      .catch(() => {});
+    // Analyst+ data
+    if (canEdit) {
+      // Compliance trends
+      api<{ trends: TrendPoint[] }>('/api/v1/compliance/trends?days=30')
+        .then((d) => setTrends(d.trends || []))
+        .catch(() => {});
 
-    // Compliance trends
-    api<{ trends: TrendPoint[] }>('/api/v1/compliance/trends?days=30')
-      .then((d) => setTrends(d.trends || []))
-      .catch(() => {});
+      // My Work (personal items)
+      api<MyWorkData>('/api/v1/dashboard/my-work')
+        .then((d) => setMyWork(d))
+        .catch(() => {});
+    }
 
-    // Evidence schedule stats
-    api<{ stats: { total: number; overdue: number; due_this_week: number; due_this_month: number } }>('/api/v1/evidence/schedules/stats')
-      .then((d) => setScheduleStats(d.stats))
-      .catch(() => {});
+    // Manager+ data
+    if (canManage) {
+      api<MonitoringDashboard>('/api/v1/monitoring/dashboard')
+        .then((d) => setMonitoring(d))
+        .catch(() => {});
 
-    // Audit readiness score
-    api<{ readiness: { score: number; passed_checks: number; total_checks: number } }>('/api/v1/audit-prep/readiness')
-      .then((d) => setAuditScore(d.readiness))
-      .catch(() => {});
-  }, []);
+      api<{ stats: { total: number; overdue: number; due_this_week: number; due_this_month: number } }>('/api/v1/evidence/schedules/stats')
+        .then((d) => setScheduleStats(d.stats))
+        .catch(() => {});
+
+      api<{ readiness: { score: number; passed_checks: number; total_checks: number } }>('/api/v1/audit-prep/readiness')
+        .then((d) => setAuditScore(d.readiness))
+        .catch(() => {});
+
+      api<{ count: number }>('/api/v1/approvals/pending/count')
+        .then((d) => setPendingApprovalCount(d.count))
+        .catch(() => {});
+    }
+  }, [canEdit, canManage]);
 
   const handleSnapshot = async () => {
     setSnapshotLoading(true);
@@ -114,7 +135,6 @@ export function DashboardPage() {
     try {
       await api('/api/v1/compliance/snapshot', { method: 'POST' });
       setSnapshotMsg('Snapshot saved successfully.');
-      // Refresh trends
       api<{ trends: TrendPoint[] }>('/api/v1/compliance/trends?days=30')
         .then((d) => setTrends(d.trends || []))
         .catch(() => {});
@@ -138,6 +158,8 @@ export function DashboardPage() {
   const compColor =
     compPct >= 80 ? 'text-green-600' : compPct >= 50 ? 'text-yellow-600' : 'text-red-600';
 
+  const today = new Date().toISOString().split('T')[0];
+
   return (
     <div>
       {/* Header */}
@@ -148,7 +170,7 @@ export function DashboardPage() {
         </p>
       </div>
 
-      {/* Key Metrics */}
+      {/* Key Metrics — all roles */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         <MetricCard
           title={`${t('compliance')} Score`}
@@ -176,7 +198,7 @@ export function DashboardPage() {
         />
       </div>
 
-      {/* Per-Framework Compliance Donuts */}
+      {/* Per-Framework Compliance Donuts — all roles */}
       {frameworkStats.length > 0 && (
         <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
           <h2 className="font-semibold text-gray-900 mb-4">
@@ -198,181 +220,234 @@ export function DashboardPage() {
         </div>
       )}
 
-      {/* Two-column: Gap Analysis + Monitoring Health */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
-        {/* Gap Analysis Panel (2 cols) */}
-        <div className="lg:col-span-2 bg-white rounded-xl border border-gray-200 p-6">
-          <h2 className="font-semibold text-gray-900 mb-4">Gap Analysis</h2>
-          {gapAnalysis.length > 0 ? (
-            <GapAnalysisPanel gaps={gapAnalysis} />
-          ) : (
-            <p className="text-gray-500 text-sm">
-              No gap data available yet. Implement controls to see gap analysis.
-            </p>
-          )}
-        </div>
+      {/* ================================================================ */}
+      {/* MY WORK — analyst+ (personal items assigned to current user)     */}
+      {/* ================================================================ */}
+      {canEdit && myWork && (myWork.counts.poams > 0 || myWork.counts.evidence_due > 0 || myWork.counts.audit_tasks > 0) && (
+        <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
+          <div className="flex items-center gap-2 mb-4">
+            <div className="w-8 h-8 rounded-lg bg-indigo-100 flex items-center justify-center">
+              <svg className="w-4 h-4 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+              </svg>
+            </div>
+            <h2 className="font-semibold text-gray-900">My Work</h2>
+            {(myWork.counts.overdue_poams > 0 || myWork.counts.evidence_due > 0) && (
+              <span className="ml-auto px-2 py-0.5 bg-red-100 text-red-700 text-xs font-medium rounded-full">
+                {myWork.counts.overdue_poams + myWork.counts.evidence_due} overdue
+              </span>
+            )}
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* My POA&Ms */}
+            <div className="border border-gray-100 rounded-lg p-4">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-medium text-gray-700">{isFederal ? 'My POA&Ms' : `My ${t('milestone')}s`}</h3>
+                <span className="px-2 py-0.5 bg-orange-100 text-orange-700 text-xs font-semibold rounded-full">{myWork.counts.poams}</span>
+              </div>
+              {myWork.my_poams.length > 0 ? (
+                <div className="space-y-2">
+                  {myWork.my_poams.map((p) => (
+                    <div key={p.id} className="flex items-start justify-between text-xs">
+                      <span className="text-gray-700 truncate flex-1 mr-2">{p.title}</span>
+                      <span className={`whitespace-nowrap ${p.scheduled_completion && p.scheduled_completion < today ? 'text-red-600 font-semibold' : 'text-gray-400'}`}>
+                        {p.scheduled_completion ? new Date(p.scheduled_completion).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-gray-400">No assigned items</p>
+              )}
+              <a href="/poams" className="block mt-3 text-xs text-blue-600 hover:text-blue-800 font-medium">View All &rarr;</a>
+            </div>
 
-        {/* Monitoring Health Widget (1 col) */}
-        <div className="bg-white rounded-xl border border-gray-200 p-6 flex flex-col">
-          <h2 className="font-semibold text-gray-900 mb-4">Monitoring Health</h2>
-          {monitoring ? (
-            <MonitoringHealthWidget data={monitoring} />
-          ) : (
-            <p className="text-gray-500 text-sm">
-              Monitoring data unavailable.{' '}
-              <a href="/monitoring" className="text-blue-600 hover:underline">
-                Configure monitoring
-              </a>
-            </p>
-          )}
-        </div>
-      </div>
+            {/* My Evidence Schedules */}
+            <div className="border border-gray-100 rounded-lg p-4">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-medium text-gray-700">My Evidence</h3>
+                {myWork.counts.evidence_due > 0 ? (
+                  <span className="px-2 py-0.5 bg-red-100 text-red-700 text-xs font-semibold rounded-full">{myWork.counts.evidence_due} due</span>
+                ) : (
+                  <span className="px-2 py-0.5 bg-green-100 text-green-700 text-xs font-semibold rounded-full">On track</span>
+                )}
+              </div>
+              {myWork.my_evidence_schedules.length > 0 ? (
+                <div className="space-y-2">
+                  {myWork.my_evidence_schedules.map((e) => (
+                    <div key={e.id} className="flex items-start justify-between text-xs">
+                      <span className="text-gray-700 truncate flex-1 mr-2">{e.title}</span>
+                      <span className={`whitespace-nowrap ${e.next_due_date && e.next_due_date <= today ? 'text-red-600 font-semibold' : 'text-gray-400'}`}>
+                        {e.next_due_date ? new Date(e.next_due_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-gray-400">No evidence schedules</p>
+              )}
+              <a href="/evidence/schedules" className="block mt-3 text-xs text-blue-600 hover:text-blue-800 font-medium">View All &rarr;</a>
+            </div>
 
-      {/* Compliance Trend Chart */}
-      <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="font-semibold text-gray-900">Compliance Trend (30 Days)</h2>
-          {canManage && (
-            <button
-              onClick={handleSnapshot}
-              disabled={snapshotLoading}
-              className="px-3 py-1.5 text-xs font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
+            {/* My Audit Tasks */}
+            <div className="border border-gray-100 rounded-lg p-4">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-medium text-gray-700">My Audit Tasks</h3>
+                <span className="px-2 py-0.5 bg-purple-100 text-purple-700 text-xs font-semibold rounded-full">{myWork.counts.audit_tasks}</span>
+              </div>
+              {myWork.my_audit_tasks.length > 0 ? (
+                <div className="space-y-2">
+                  {myWork.my_audit_tasks.map((t) => (
+                    <div key={t.id} className="flex items-start justify-between text-xs">
+                      <span className="text-gray-700 truncate flex-1 mr-2">{t.title}</span>
+                      <span className={`whitespace-nowrap ${t.due_date && t.due_date < today ? 'text-red-600 font-semibold' : 'text-gray-400'}`}>
+                        {t.due_date ? new Date(t.due_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-gray-400">No assigned tasks</p>
+              )}
+              <a href="/audit-prep" className="block mt-3 text-xs text-blue-600 hover:text-blue-800 font-medium">View All &rarr;</a>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ================================================================ */}
+      {/* COMPLIANCE TREND — analyst+ */}
+      {/* ================================================================ */}
+      {canEdit && (
+        <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="font-semibold text-gray-900">Compliance Trend (30 Days)</h2>
+            {canManage && (
+              <button
+                onClick={handleSnapshot}
+                disabled={snapshotLoading}
+                className="px-3 py-1.5 text-xs font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
+              >
+                {snapshotLoading ? 'Saving...' : 'Take Snapshot'}
+              </button>
+            )}
+          </div>
+          {snapshotMsg && (
+            <p
+              className={`text-xs mb-3 ${snapshotMsg.includes('success') ? 'text-green-600' : 'text-red-600'}`}
             >
-              {snapshotLoading ? 'Saving...' : 'Take Snapshot'}
-            </button>
+              {snapshotMsg}
+            </p>
+          )}
+          {trends.length >= 2 ? (
+            <TrendChart data={trends} />
+          ) : (
+            <p className="text-gray-500 text-sm">
+              Take a snapshot to start tracking compliance trends over time.
+            </p>
           )}
         </div>
-        {snapshotMsg && (
-          <p
-            className={`text-xs mb-3 ${snapshotMsg.includes('success') ? 'text-green-600' : 'text-red-600'}`}
-          >
-            {snapshotMsg}
-          </p>
-        )}
-        {trends.length >= 2 ? (
-          <TrendChart data={trends} />
-        ) : (
-          <p className="text-gray-500 text-sm">
-            Take a snapshot to start tracking compliance trends over time.
-          </p>
-        )}
-      </div>
+      )}
 
-      {/* Original two-column grid */}
+      {/* ================================================================ */}
+      {/* GAP ANALYSIS + MONITORING — manager+ */}
+      {/* ================================================================ */}
+      {canManage && (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+          <div className="lg:col-span-2 bg-white rounded-xl border border-gray-200 p-6">
+            <h2 className="font-semibold text-gray-900 mb-4">Gap Analysis</h2>
+            {gapAnalysis.length > 0 ? (
+              <GapAnalysisPanel gaps={gapAnalysis} />
+            ) : (
+              <p className="text-gray-500 text-sm">
+                No gap data available yet. Implement controls to see gap analysis.
+              </p>
+            )}
+          </div>
+
+          <div className="bg-white rounded-xl border border-gray-200 p-6 flex flex-col">
+            <h2 className="font-semibold text-gray-900 mb-4">Monitoring Health</h2>
+            {monitoring ? (
+              <MonitoringHealthWidget data={monitoring} />
+            ) : (
+              <p className="text-gray-500 text-sm">
+                Monitoring data unavailable.{' '}
+                <a href="/monitoring" className="text-blue-600 hover:underline">
+                  Configure monitoring
+                </a>
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ================================================================ */}
+      {/* TWO-COLUMN GRID — role-filtered widgets */}
+      {/* ================================================================ */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Control Implementation Status */}
-        <div className="bg-white rounded-xl border border-gray-200 p-6">
-          <h2 className="font-semibold text-gray-900 mb-4">
-            {t('control')} Implementation Status
-          </h2>
-          {s && s.controls.total > 0 ? (
-            <div className="space-y-3">
-              <StatusBar
-                label="Implemented"
-                count={s.controls.implemented}
-                total={s.controls.total}
-                color="bg-green-500"
-              />
-              <StatusBar
-                label="Partially Implemented"
-                count={s.controls.partially_implemented}
-                total={s.controls.total}
-                color="bg-yellow-500"
-              />
-              <StatusBar
-                label="Planned"
-                count={s.controls.planned}
-                total={s.controls.total}
-                color="bg-blue-500"
-              />
-              <StatusBar
-                label="Not Implemented"
-                count={s.controls.not_implemented}
-                total={s.controls.total}
-                color="bg-red-500"
-              />
-              <StatusBar
-                label="Not Applicable"
-                count={s.controls.not_applicable}
-                total={s.controls.total}
-                color="bg-gray-400"
-              />
-            </div>
-          ) : (
-            <p className="text-gray-500 text-sm">
-              No controls initialized yet. Select a system and framework to begin.
-            </p>
-          )}
-        </div>
+        {/* Control Implementation Status — analyst+ */}
+        {canEdit && (
+          <div className="bg-white rounded-xl border border-gray-200 p-6">
+            <h2 className="font-semibold text-gray-900 mb-4">
+              {t('control')} Implementation Status
+            </h2>
+            {s && s.controls.total > 0 ? (
+              <div className="space-y-3">
+                <StatusBar label="Implemented" count={s.controls.implemented} total={s.controls.total} color="bg-green-500" />
+                <StatusBar label="Partially Implemented" count={s.controls.partially_implemented} total={s.controls.total} color="bg-yellow-500" />
+                <StatusBar label="Planned" count={s.controls.planned} total={s.controls.total} color="bg-blue-500" />
+                <StatusBar label="Not Implemented" count={s.controls.not_implemented} total={s.controls.total} color="bg-red-500" />
+                <StatusBar label="Not Applicable" count={s.controls.not_applicable} total={s.controls.total} color="bg-gray-400" />
+              </div>
+            ) : (
+              <p className="text-gray-500 text-sm">
+                No controls initialized yet. Select a system and framework to begin.
+              </p>
+            )}
+          </div>
+        )}
 
-        {/* Risk Overview */}
-        <div className="bg-white rounded-xl border border-gray-200 p-6">
-          <h2 className="font-semibold text-gray-900 mb-4">{t('risk')} Overview</h2>
-          {s && s.risks.critical + s.risks.high + s.risks.moderate + s.risks.low > 0 ? (
-            <div className="grid grid-cols-2 gap-4">
-              <RiskBadge
-                level="Critical"
-                count={s.risks.critical}
-                color="bg-red-100 text-red-800 border-red-200"
-              />
-              <RiskBadge
-                level="High"
-                count={s.risks.high}
-                color="bg-orange-100 text-orange-800 border-orange-200"
-              />
-              <RiskBadge
-                level="Moderate"
-                count={s.risks.moderate}
-                color="bg-yellow-100 text-yellow-800 border-yellow-200"
-              />
-              <RiskBadge
-                level="Low"
-                count={s.risks.low}
-                color="bg-green-100 text-green-800 border-green-200"
-              />
-            </div>
-          ) : (
-            <p className="text-gray-500 text-sm">
-              No risks recorded yet. Use the {t('risk')} module to track organizational risks.
-            </p>
-          )}
-        </div>
+        {/* Risk Overview — manager+ */}
+        {canManage && (
+          <div className="bg-white rounded-xl border border-gray-200 p-6">
+            <h2 className="font-semibold text-gray-900 mb-4">{t('risk')} Overview</h2>
+            {s && s.risks.critical + s.risks.high + s.risks.moderate + s.risks.low > 0 ? (
+              <div className="grid grid-cols-2 gap-4">
+                <RiskBadge level="Critical" count={s.risks.critical} color="bg-red-100 text-red-800 border-red-200" />
+                <RiskBadge level="High" count={s.risks.high} color="bg-orange-100 text-orange-800 border-orange-200" />
+                <RiskBadge level="Moderate" count={s.risks.moderate} color="bg-yellow-100 text-yellow-800 border-yellow-200" />
+                <RiskBadge level="Low" count={s.risks.low} color="bg-green-100 text-green-800 border-green-200" />
+              </div>
+            ) : (
+              <p className="text-gray-500 text-sm">
+                No risks recorded yet. Use the {t('risk')} module to track organizational risks.
+              </p>
+            )}
+          </div>
+        )}
 
-        {/* POA&M / Action Items Summary */}
-        <div className="bg-white rounded-xl border border-gray-200 p-6">
-          <h2 className="font-semibold text-gray-900 mb-4">
-            {isFederal ? 'POA&M' : t('milestone')} Summary
-          </h2>
-          {s && s.poams.total > 0 ? (
-            <div className="space-y-3">
-              <StatusBar
-                label="Open"
-                count={s.poams.open}
-                total={s.poams.total}
-                color="bg-red-500"
-              />
-              <StatusBar
-                label="In Progress"
-                count={s.poams.in_progress}
-                total={s.poams.total}
-                color="bg-yellow-500"
-              />
-              <StatusBar
-                label="Completed"
-                count={s.poams.completed}
-                total={s.poams.total}
-                color="bg-green-500"
-              />
-            </div>
-          ) : (
-            <p className="text-gray-500 text-sm">
-              No {t('milestone').toLowerCase()}s created yet.
-            </p>
-          )}
-        </div>
+        {/* POA&M Summary — manager+ */}
+        {canManage && (
+          <div className="bg-white rounded-xl border border-gray-200 p-6">
+            <h2 className="font-semibold text-gray-900 mb-4">
+              {isFederal ? 'POA&M' : t('milestone')} Summary
+            </h2>
+            {s && s.poams.total > 0 ? (
+              <div className="space-y-3">
+                <StatusBar label="Open" count={s.poams.open} total={s.poams.total} color="bg-red-500" />
+                <StatusBar label="In Progress" count={s.poams.in_progress} total={s.poams.total} color="bg-yellow-500" />
+                <StatusBar label="Completed" count={s.poams.completed} total={s.poams.total} color="bg-green-500" />
+              </div>
+            ) : (
+              <p className="text-gray-500 text-sm">
+                No {t('milestone').toLowerCase()}s created yet.
+              </p>
+            )}
+          </div>
+        )}
 
-        {/* Audit Readiness */}
-        {auditScore && (
+        {/* Audit Readiness — manager+ */}
+        {canManage && auditScore && (
           <div className={`bg-white rounded-xl border p-6 ${auditScore.score >= 90 ? 'border-green-200' : auditScore.score >= 70 ? 'border-amber-200' : 'border-red-200'}`}>
             <div className="flex items-center justify-between mb-3">
               <h2 className="font-semibold text-gray-900">Audit Readiness</h2>
@@ -393,8 +468,8 @@ export function DashboardPage() {
           </div>
         )}
 
-        {/* Evidence Schedules */}
-        {scheduleStats && (scheduleStats.total > 0 || scheduleStats.overdue > 0) && (
+        {/* Evidence Schedules — manager+ */}
+        {canManage && scheduleStats && (scheduleStats.total > 0 || scheduleStats.overdue > 0) && (
           <div className="bg-white rounded-xl border border-gray-200 p-6">
             <div className="flex items-center justify-between mb-4">
               <h2 className="font-semibold text-gray-900">Evidence Schedules</h2>
@@ -423,30 +498,66 @@ export function DashboardPage() {
           </div>
         )}
 
-        {/* Quick Actions */}
+        {/* Pending Approvals — manager+ */}
+        {canManage && pendingApprovalCount !== null && pendingApprovalCount > 0 && (
+          <div className="bg-white rounded-xl border border-amber-200 p-6">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="font-semibold text-gray-900">Pending Approvals</h2>
+              <a href="/approvals" className="text-sm text-blue-600 hover:text-blue-800">Review &rarr;</a>
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 rounded-lg bg-amber-100 flex items-center justify-center">
+                <span className="text-xl font-bold text-amber-700">{pendingApprovalCount}</span>
+              </div>
+              <p className="text-sm text-gray-600">
+                {pendingApprovalCount === 1 ? '1 request awaiting' : `${pendingApprovalCount} requests awaiting`} your review
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Quick Actions — all roles (filtered) */}
         <div className="bg-white rounded-xl border border-gray-200 p-6">
           <h2 className="font-semibold text-gray-900 mb-4">Quick Actions</h2>
           <div className="space-y-2">
             <QuickAction
               href="/controls"
               label={`Review ${t('control')}s`}
-              description={`Browse and implement ${t('control').toLowerCase()}s`}
-            />
-            <QuickAction
-              href="/evidence"
-              label={`Upload ${t('evidence')}`}
-              description="Add supporting documentation"
-            />
-            <QuickAction
-              href="/ssp"
-              label={`Generate ${t('documentShort')}`}
-              description={`Create ${t('document').toLowerCase()} package`}
+              description={`Browse and assess ${t('control').toLowerCase()}s`}
             />
             <QuickAction
               href="/crosswalks"
               label="View Crosswalks"
               description="Map controls across frameworks"
             />
+            {canEdit && (
+              <>
+                <QuickAction
+                  href="/evidence"
+                  label={`Upload ${t('evidence')}`}
+                  description="Add supporting documentation"
+                />
+                <QuickAction
+                  href="/poams"
+                  label={isFederal ? 'View POA&Ms' : `View ${t('milestone')}s`}
+                  description="Track remediation items"
+                />
+              </>
+            )}
+            {canManage && (
+              <>
+                <QuickAction
+                  href="/ssp"
+                  label={`Generate ${t('documentShort')}`}
+                  description={`Create ${t('document').toLowerCase()} package`}
+                />
+                <QuickAction
+                  href="/reports"
+                  label="Generate Reports"
+                  description="Export compliance reports"
+                />
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -546,7 +657,7 @@ function QuickAction({
 }
 
 // ---------------------------------------------------------------------------
-// NEW: Donut Chart for per-framework compliance
+// Donut Chart for per-framework compliance
 // ---------------------------------------------------------------------------
 
 function DonutChart({ label, percentage }: { label: string; percentage: number }) {
@@ -562,7 +673,6 @@ function DonutChart({ label, percentage }: { label: string; percentage: number }
   return (
     <div className="flex flex-col items-center">
       <svg width={size} height={size} className="transform -rotate-90">
-        {/* Background circle */}
         <circle
           cx={size / 2}
           cy={size / 2}
@@ -571,7 +681,6 @@ function DonutChart({ label, percentage }: { label: string; percentage: number }
           stroke="#e5e7eb"
           strokeWidth={strokeWidth}
         />
-        {/* Progress arc */}
         <circle
           cx={size / 2}
           cy={size / 2}
@@ -585,7 +694,6 @@ function DonutChart({ label, percentage }: { label: string; percentage: number }
           className="transition-all duration-700"
         />
       </svg>
-      {/* Percentage text overlay */}
       <span
         className="text-lg font-bold -mt-16 mb-8"
         style={{ color: strokeColor }}
@@ -600,11 +708,10 @@ function DonutChart({ label, percentage }: { label: string; percentage: number }
 }
 
 // ---------------------------------------------------------------------------
-// NEW: Gap Analysis Panel
+// Gap Analysis Panel
 // ---------------------------------------------------------------------------
 
 function GapAnalysisPanel({ gaps }: { gaps: GapItem[] }) {
-  // Sort by count descending, take top 10
   const sorted = [...gaps].sort((a, b) => b.count - a.count).slice(0, 10);
   const maxCount = sorted.length > 0 ? sorted[0].count : 1;
 
@@ -640,7 +747,7 @@ function GapAnalysisPanel({ gaps }: { gaps: GapItem[] }) {
 }
 
 // ---------------------------------------------------------------------------
-// NEW: Monitoring Health Widget
+// Monitoring Health Widget
 // ---------------------------------------------------------------------------
 
 function MonitoringHealthWidget({ data }: { data: MonitoringDashboard }) {
@@ -671,7 +778,7 @@ function MonitoringHealthWidget({ data }: { data: MonitoringDashboard }) {
 }
 
 // ---------------------------------------------------------------------------
-// NEW: Compliance Trend Chart (simple SVG line chart)
+// Compliance Trend Chart (simple SVG line chart)
 // ---------------------------------------------------------------------------
 
 function TrendChart({ data }: { data: TrendPoint[] }) {
@@ -694,7 +801,6 @@ function TrendChart({ data }: { data: TrendPoint[] }) {
 
   const pathD = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
 
-  // Gradient fill area
   const areaD =
     pathD +
     ` L ${points[points.length - 1].x} ${paddingY + chartH} L ${points[0].x} ${paddingY + chartH} Z`;
@@ -713,7 +819,6 @@ function TrendChart({ data }: { data: TrendPoint[] }) {
           </linearGradient>
         </defs>
 
-        {/* Y-axis labels */}
         <text x={paddingX - 4} y={paddingY + 4} fontSize="9" fill="#9ca3af" textAnchor="end">
           {maxVal}%
         </text>
@@ -727,7 +832,6 @@ function TrendChart({ data }: { data: TrendPoint[] }) {
           {minVal}%
         </text>
 
-        {/* Grid lines */}
         <line
           x1={paddingX}
           y1={paddingY}
@@ -745,18 +849,13 @@ function TrendChart({ data }: { data: TrendPoint[] }) {
           strokeDasharray="4 2"
         />
 
-        {/* Area fill */}
         <path d={areaD} fill="url(#trendGrad)" />
-
-        {/* Line */}
         <path d={pathD} fill="none" stroke="#3b82f6" strokeWidth="2" strokeLinecap="round" />
 
-        {/* Data points */}
         {points.map((p, i) => (
           <circle key={i} cx={p.x} cy={p.y} r="3" fill="#3b82f6" />
         ))}
 
-        {/* X-axis start/end labels */}
         {points.length > 0 && (
           <>
             <text

@@ -32,7 +32,9 @@ export default {
   },
 
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(handleScheduledEvidenceChecks(env));
+    ctx.waitUntil(
+      handleScheduledEvidenceChecks(env).then(() => handleEmailDigest(env))
+    );
   },
 };
 
@@ -208,6 +210,8 @@ async function handleRequest(request, env, url) {
   // Dashboard stats
   if (path === '/api/v1/dashboard/stats' && method === 'GET') return handleDashboardStats(env, org);
   if (path === '/api/v1/dashboard/framework-stats' && method === 'GET') return handleFrameworkStats(env, org);
+  if (path === '/api/v1/dashboard/my-work' && method === 'GET') return handleMyWork(env, org, user);
+  if (path === '/api/v1/dashboard/system-comparison' && method === 'GET') return handleSystemComparison(env, org, user);
   if (path === '/api/v1/compliance/snapshot' && method === 'POST') return handleCreateComplianceSnapshot(request, env, org, user);
   if (path === '/api/v1/compliance/trends' && method === 'GET') return handleGetComplianceTrends(env, url, org);
 
@@ -410,13 +414,100 @@ async function auditLog(env, orgId, userId, action, resourceType, resourceId, de
 // NOTIFICATION HELPERS
 // ============================================================================
 
+const INSTANT_EMAIL_TYPES = ['monitoring_fail', 'approval_request', 'evidence_expiry'];
+
+const NOTIFICATION_TYPE_LABELS = {
+  poam_update: 'POA&M Updates', risk_alert: 'Risk Alerts', monitoring_fail: 'Monitoring Failures',
+  control_change: 'Control Changes', role_change: 'Role Changes', compliance_alert: 'Compliance Alerts',
+  evidence_upload: 'Evidence Uploads', approval_request: 'Approval Requests', approval_decision: 'Approval Decisions',
+  evidence_reminder: 'Evidence Reminders', evidence_expiry: 'Evidence Expiry',
+};
+
+async function sendEmail(env, to, subject, html) {
+  if (!env.RESEND_API_KEY) { console.warn('[EMAIL] RESEND_API_KEY not configured, skipping email'); return null; }
+  try {
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: 'ForgeComply 360 <notifications@forgecomply360.com>', to: [to], subject, html }),
+    });
+    if (!res.ok) { const err = await res.text(); console.error('[EMAIL] Resend error:', res.status, err); return null; }
+    const data = await res.json();
+    console.log('[EMAIL] Sent to', to, 'id:', data.id);
+    return data;
+  } catch (e) { console.error('[EMAIL] Send error:', e); return null; }
+}
+
+function buildInstantEmailHtml(userName, type, title, message) {
+  const typeLabel = NOTIFICATION_TYPE_LABELS[type] || type;
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f4f5f7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f5f7;padding:24px 0"><tr><td align="center">
+<table width="600" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.1)">
+<tr><td style="background:#1e40af;padding:24px 32px"><h1 style="margin:0;color:#fff;font-size:20px;font-weight:600">ForgeComply 360</h1></td></tr>
+<tr><td style="padding:32px">
+<p style="margin:0 0 16px;color:#374151;font-size:15px">Hi ${userName || 'there'},</p>
+<div style="background:#fef3c7;border-left:4px solid #f59e0b;padding:16px;border-radius:0 8px 8px 0;margin:0 0 16px">
+<p style="margin:0 0 4px;font-weight:600;color:#92400e;font-size:13px">${typeLabel}</p>
+<p style="margin:0 0 4px;font-weight:600;color:#1f2937;font-size:15px">${title}</p>
+<p style="margin:0;color:#4b5563;font-size:14px">${message}</p>
+</div>
+<a href="https://forgecomply360.pages.dev/notifications" style="display:inline-block;background:#1e40af;color:#fff;padding:10px 24px;border-radius:8px;text-decoration:none;font-size:14px;font-weight:500">View in ForgeComply 360</a>
+</td></tr>
+<tr><td style="padding:16px 32px;background:#f9fafb;border-top:1px solid #e5e7eb">
+<p style="margin:0;color:#9ca3af;font-size:12px">Critical alert from ForgeComply 360. Manage emails in <a href="https://forgecomply360.pages.dev/settings" style="color:#3b82f6">Settings</a>.</p>
+</td></tr></table></td></tr></table></body></html>`;
+}
+
+function buildDigestEmailHtml(userName, notifications) {
+  const grouped = {};
+  for (const n of notifications) { if (!grouped[n.type]) grouped[n.type] = []; grouped[n.type].push(n); }
+  let sectionsHtml = '';
+  for (const [type, items] of Object.entries(grouped)) {
+    const label = NOTIFICATION_TYPE_LABELS[type] || type;
+    let itemsHtml = '';
+    for (const item of items) {
+      const time = new Date(item.created_at + 'Z').toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+      itemsHtml += `<tr><td style="padding:8px 12px;border-bottom:1px solid #f3f4f6"><p style="margin:0;font-weight:500;color:#1f2937;font-size:14px">${item.title}</p><p style="margin:2px 0 0;color:#6b7280;font-size:13px">${item.message}</p></td><td style="padding:8px 12px;border-bottom:1px solid #f3f4f6;white-space:nowrap;vertical-align:top"><p style="margin:0;color:#9ca3af;font-size:12px">${time}</p></td></tr>`;
+    }
+    sectionsHtml += `<div style="margin:0 0 24px"><p style="margin:0 0 8px;font-weight:600;color:#1e40af;font-size:14px">${label} (${items.length})</p><table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e5e7eb;border-radius:8px;overflow:hidden">${itemsHtml}</table></div>`;
+  }
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f4f5f7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f5f7;padding:24px 0"><tr><td align="center">
+<table width="600" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.1)">
+<tr><td style="background:#1e40af;padding:24px 32px"><h1 style="margin:0;color:#fff;font-size:20px;font-weight:600">ForgeComply 360</h1><p style="margin:4px 0 0;color:#93c5fd;font-size:13px">Daily Notification Digest</p></td></tr>
+<tr><td style="padding:32px">
+<p style="margin:0 0 8px;color:#374151;font-size:15px">Hi ${userName || 'there'},</p>
+<p style="margin:0 0 24px;color:#6b7280;font-size:14px">You have <strong>${notifications.length}</strong> notification${notifications.length !== 1 ? 's' : ''} from the past 24 hours:</p>
+${sectionsHtml}
+<a href="https://forgecomply360.pages.dev/notifications" style="display:inline-block;background:#1e40af;color:#fff;padding:10px 24px;border-radius:8px;text-decoration:none;font-size:14px;font-weight:500">View All in ForgeComply 360</a>
+</td></tr>
+<tr><td style="padding:16px 32px;background:#f9fafb;border-top:1px solid #e5e7eb">
+<p style="margin:0;color:#9ca3af;font-size:12px">Email digests are enabled. Opt out in <a href="https://forgecomply360.pages.dev/settings" style="color:#3b82f6">Settings</a>.</p>
+</td></tr></table></td></tr></table></body></html>`;
+}
+
 async function createNotification(env, orgId, recipientUserId, type, title, message, resourceType, resourceId, details = {}) {
   try {
     const pref = await env.DB.prepare('SELECT * FROM notification_preferences WHERE user_id = ?').bind(recipientUserId).first();
     if (pref && pref[type] === 0) return;
+
+    const isInstantType = INSTANT_EMAIL_TYPES.includes(type);
     await env.DB.prepare(
-      'INSERT INTO notifications (id, org_id, recipient_user_id, type, title, message, resource_type, resource_id, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).bind(generateId(), orgId, recipientUserId, type, title, message, resourceType || null, resourceId || null, JSON.stringify(details)).run();
+      'INSERT INTO notifications (id, org_id, recipient_user_id, type, title, message, resource_type, resource_id, details, email_sent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).bind(generateId(), orgId, recipientUserId, type, title, message, resourceType || null, resourceId || null, JSON.stringify(details), isInstantType ? 1 : 0).run();
+
+    // Send instant email for critical notification types
+    if (isInstantType) {
+      const emailEnabled = !pref || pref.email_digest !== 0;
+      if (emailEnabled) {
+        const user = await env.DB.prepare('SELECT email, name FROM users WHERE id = ?').bind(recipientUserId).first();
+        if (user && user.email) {
+          await sendEmail(env, user.email, `[ForgeComply 360] ${title}`, buildInstantEmailHtml(user.name, type, title, message));
+        }
+      }
+    }
   } catch (e) {
     console.error('Notification error:', e);
   }
@@ -1938,6 +2029,173 @@ async function handleDashboardStats(env, org) {
 }
 
 // ============================================================================
+// MY WORK (role-based personal dashboard data)
+// ============================================================================
+
+async function handleMyWork(env, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  const today = new Date().toISOString().split('T')[0];
+
+  const [myPoams, myPoamCount, overduePoams, mySchedules, mySchedulesDue, myTasks, myTaskCount] = await Promise.all([
+    env.DB.prepare(
+      `SELECT id, title, status, scheduled_completion FROM poams
+       WHERE org_id = ? AND assigned_to = ? AND status NOT IN ('completed','accepted')
+       ORDER BY scheduled_completion ASC LIMIT 5`
+    ).bind(org.id, user.id).all(),
+    env.DB.prepare(
+      `SELECT COUNT(*) as count FROM poams
+       WHERE org_id = ? AND assigned_to = ? AND status NOT IN ('completed','accepted')`
+    ).bind(org.id, user.id).first(),
+    env.DB.prepare(
+      `SELECT COUNT(*) as count FROM poams
+       WHERE org_id = ? AND assigned_to = ? AND status NOT IN ('completed','accepted','deferred')
+       AND scheduled_completion < ?`
+    ).bind(org.id, user.id, today).first(),
+    env.DB.prepare(
+      `SELECT id, title, next_due_date, cadence FROM evidence_schedules
+       WHERE org_id = ? AND owner_user_id = ? AND is_active = 1
+       ORDER BY next_due_date ASC LIMIT 5`
+    ).bind(org.id, user.id).all(),
+    env.DB.prepare(
+      `SELECT COUNT(*) as count FROM evidence_schedules
+       WHERE org_id = ? AND owner_user_id = ? AND is_active = 1 AND next_due_date <= ?`
+    ).bind(org.id, user.id, today).first(),
+    env.DB.prepare(
+      `SELECT id, title, completed, due_date FROM audit_checklist_items
+       WHERE org_id = ? AND assigned_to = ? AND completed = 0
+       ORDER BY due_date ASC LIMIT 5`
+    ).bind(org.id, user.id).all(),
+    env.DB.prepare(
+      `SELECT COUNT(*) as count FROM audit_checklist_items
+       WHERE org_id = ? AND assigned_to = ? AND completed = 0`
+    ).bind(org.id, user.id).first(),
+  ]);
+
+  return jsonResponse({
+    my_poams: myPoams.results || [],
+    my_evidence_schedules: mySchedules.results || [],
+    my_audit_tasks: myTasks.results || [],
+    counts: {
+      poams: myPoamCount?.count || 0,
+      overdue_poams: overduePoams?.count || 0,
+      evidence_due: mySchedulesDue?.count || 0,
+      audit_tasks: myTaskCount?.count || 0,
+    },
+  });
+}
+
+// ============================================================================
+// SYSTEM COMPARISON (cross-system compliance view)
+// ============================================================================
+
+async function handleSystemComparison(env, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  const today = new Date().toISOString().split('T')[0];
+
+  const [systemsRes, controlsRes, poamsRes, overduePoamsRes, risksRes, evidenceRes, monitoringRes] = await Promise.all([
+    env.DB.prepare(
+      'SELECT id, name, acronym, impact_level, status, authorization_expiry, deployment_model FROM systems WHERE org_id = ? ORDER BY name'
+    ).bind(org.id).all(),
+    env.DB.prepare(
+      'SELECT system_id, status, COUNT(*) as count FROM control_implementations WHERE org_id = ? GROUP BY system_id, status'
+    ).bind(org.id).all(),
+    env.DB.prepare(
+      'SELECT system_id, status, COUNT(*) as count FROM poams WHERE org_id = ? GROUP BY system_id, status'
+    ).bind(org.id).all(),
+    env.DB.prepare(
+      `SELECT system_id, COUNT(*) as count FROM poams WHERE org_id = ? AND status NOT IN ('completed','accepted','deferred') AND scheduled_completion < ? GROUP BY system_id`
+    ).bind(org.id, today).all(),
+    env.DB.prepare(
+      `SELECT system_id, risk_level, COUNT(*) as count FROM risks WHERE org_id = ? AND status != 'closed' AND system_id IS NOT NULL GROUP BY system_id, risk_level`
+    ).bind(org.id).all(),
+    env.DB.prepare(
+      `SELECT ci.system_id, COUNT(DISTINCT ecl.evidence_id) as count FROM evidence_control_links ecl JOIN control_implementations ci ON ci.id = ecl.implementation_id WHERE ci.org_id = ? GROUP BY ci.system_id`
+    ).bind(org.id).all(),
+    env.DB.prepare(
+      `SELECT system_id, last_result, COUNT(*) as count FROM monitoring_checks WHERE org_id = ? AND is_active = 1 GROUP BY system_id, last_result`
+    ).bind(org.id).all(),
+  ]);
+
+  // Index results by system_id for O(1) lookup
+  const controlsBySystem = {};
+  for (const r of controlsRes.results) {
+    if (!controlsBySystem[r.system_id]) controlsBySystem[r.system_id] = {};
+    controlsBySystem[r.system_id][r.status] = r.count;
+  }
+
+  const poamsBySystem = {};
+  for (const r of poamsRes.results) {
+    if (!poamsBySystem[r.system_id]) poamsBySystem[r.system_id] = {};
+    poamsBySystem[r.system_id][r.status] = (poamsBySystem[r.system_id][r.status] || 0) + r.count;
+  }
+
+  const overdueBySystem = {};
+  for (const r of overduePoamsRes.results) {
+    overdueBySystem[r.system_id] = r.count;
+  }
+
+  const risksBySystem = {};
+  for (const r of risksRes.results) {
+    if (!risksBySystem[r.system_id]) risksBySystem[r.system_id] = { low: 0, moderate: 0, high: 0, critical: 0 };
+    risksBySystem[r.system_id][r.risk_level] = r.count;
+  }
+
+  const evidenceBySystem = {};
+  for (const r of evidenceRes.results) {
+    evidenceBySystem[r.system_id] = r.count;
+  }
+
+  const monitoringBySystem = {};
+  for (const r of monitoringRes.results) {
+    if (!monitoringBySystem[r.system_id]) monitoringBySystem[r.system_id] = { pass: 0, fail: 0, warning: 0, error: 0, not_run: 0, total: 0 };
+    monitoringBySystem[r.system_id][r.last_result] = (monitoringBySystem[r.system_id][r.last_result] || 0) + r.count;
+    monitoringBySystem[r.system_id].total += r.count;
+  }
+
+  const systems = systemsRes.results.map((sys) => {
+    const ctrl = controlsBySystem[sys.id] || {};
+    const implemented = ctrl.implemented || 0;
+    const partially = ctrl.partially_implemented || 0;
+    const planned = ctrl.planned || 0;
+    const notImpl = ctrl.not_implemented || 0;
+    const na = ctrl.not_applicable || 0;
+    const total = implemented + partially + planned + notImpl + na;
+
+    const poam = poamsBySystem[sys.id] || {};
+    const poamOpen = poam.open || 0;
+    const poamInProgress = poam.in_progress || 0;
+    const poamCompleted = poam.completed || 0;
+    const poamTotal = poamOpen + poamInProgress + poamCompleted;
+
+    const risks = risksBySystem[sys.id] || { low: 0, moderate: 0, high: 0, critical: 0 };
+    const riskTotal = risks.low + risks.moderate + risks.high + risks.critical;
+
+    const mon = monitoringBySystem[sys.id] || { pass: 0, fail: 0, warning: 0, total: 0 };
+    const healthScore = mon.total > 0 ? Math.round((mon.pass / mon.total) * 100) : null;
+
+    return {
+      id: sys.id,
+      name: sys.name,
+      acronym: sys.acronym,
+      impact_level: sys.impact_level,
+      status: sys.status,
+      authorization_expiry: sys.authorization_expiry,
+      deployment_model: sys.deployment_model,
+      controls: { implemented, partially_implemented: partially, planned, not_implemented: notImpl, not_applicable: na, total },
+      compliance_percentage: total > 0 ? Math.round(((implemented + na) / total) * 100) : 0,
+      poams: { open: poamOpen, in_progress: poamInProgress, completed: poamCompleted, overdue: overdueBySystem[sys.id] || 0, total: poamTotal },
+      risks: { ...risks, total: riskTotal },
+      evidence_count: evidenceBySystem[sys.id] || 0,
+      monitoring: { pass: mon.pass, fail: mon.fail, warning: mon.warning, total: mon.total, health_score: healthScore },
+    };
+  });
+
+  return jsonResponse({ systems });
+}
+
+// ============================================================================
 // AUDIT LOG
 // ============================================================================
 
@@ -2045,14 +2303,14 @@ async function handleMarkAllRead(env, user) {
 async function handleGetNotificationPrefs(env, user) {
   let prefs = await env.DB.prepare('SELECT * FROM notification_preferences WHERE user_id = ?').bind(user.id).first();
   if (!prefs) {
-    prefs = { poam_update: 1, risk_alert: 1, monitoring_fail: 1, control_change: 1, role_change: 1, compliance_alert: 1, evidence_upload: 1, approval_request: 1, approval_decision: 1 };
+    prefs = { poam_update: 1, risk_alert: 1, monitoring_fail: 1, control_change: 1, role_change: 1, compliance_alert: 1, evidence_upload: 1, approval_request: 1, approval_decision: 1, evidence_reminder: 1, evidence_expiry: 1, email_digest: 1 };
   }
   return jsonResponse({ preferences: prefs });
 }
 
 async function handleUpdateNotificationPrefs(request, env, user) {
   const body = await request.json();
-  const types = ['poam_update', 'risk_alert', 'monitoring_fail', 'control_change', 'role_change', 'compliance_alert', 'evidence_upload', 'approval_request', 'approval_decision', 'evidence_reminder', 'evidence_expiry'];
+  const types = ['poam_update', 'risk_alert', 'monitoring_fail', 'control_change', 'role_change', 'compliance_alert', 'evidence_upload', 'approval_request', 'approval_decision', 'evidence_reminder', 'evidence_expiry', 'email_digest'];
   const values = types.map(t => body[t] !== undefined ? (body[t] ? 1 : 0) : 1);
 
   await env.DB.prepare(
@@ -3347,6 +3605,65 @@ async function handleScheduledEvidenceChecks(env) {
     console.log('[CRON] Evidence checks completed');
   } catch (error) {
     console.error('[CRON] Evidence check error:', error);
+  }
+}
+
+// ============================================================================
+// SCHEDULED WORKER - DAILY EMAIL DIGEST
+// ============================================================================
+
+async function handleEmailDigest(env) {
+  try {
+    console.log('[CRON] Starting email digest...');
+
+    const { results: users } = await env.DB.prepare(
+      `SELECT u.id, u.email, u.name
+       FROM users u
+       LEFT JOIN notification_preferences np ON np.user_id = u.id
+       WHERE np.email_digest = 1 OR np.email_digest IS NULL`
+    ).all();
+
+    console.log(`[CRON] ${users.length} users eligible for email digest`);
+
+    let sentCount = 0;
+    for (const user of users) {
+      if (!user.email) continue;
+
+      const { results: notifications } = await env.DB.prepare(
+        `SELECT id, type, title, message, created_at
+         FROM notifications
+         WHERE recipient_user_id = ? AND email_sent = 0 AND created_at >= datetime('now', '-24 hours')
+         ORDER BY created_at DESC`
+      ).bind(user.id).all();
+
+      if (notifications.length === 0) continue;
+
+      const html = buildDigestEmailHtml(user.name, notifications);
+      const result = await sendEmail(
+        env, user.email,
+        `[ForgeComply 360] ${notifications.length} notification${notifications.length !== 1 ? 's' : ''} - Daily Digest`,
+        html
+      );
+
+      if (result) {
+        const ids = notifications.map(n => n.id);
+        const placeholders = ids.map(() => '?').join(',');
+        await env.DB.prepare(
+          `UPDATE notifications SET email_sent = 1 WHERE id IN (${placeholders})`
+        ).bind(...ids).run();
+
+        await env.DB.prepare(
+          `INSERT INTO notification_preferences (id, user_id, last_digest_sent_at) VALUES (?, ?, datetime('now'))
+           ON CONFLICT(user_id) DO UPDATE SET last_digest_sent_at = datetime('now')`
+        ).bind(generateId(), user.id).run();
+
+        sentCount++;
+      }
+    }
+
+    console.log(`[CRON] Email digest complete. Sent ${sentCount} digests.`);
+  } catch (error) {
+    console.error('[CRON] Email digest error:', error);
   }
 }
 

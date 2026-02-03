@@ -53,7 +53,16 @@ ENVIRONMENT = "production"
 CORS_ORIGIN = "https://forgecomply360.pages.dev"
 
 # ============================================================================
-# CRON TRIGGERS - Evidence Scheduling & Reminders
+# SECRETS (set via: wrangler secret put <NAME>)
+# ============================================================================
+# RESEND_API_KEY - Email delivery via Resend (https://resend.com)
+#   Used for daily notification digests and instant critical alerts.
+#   If not configured, email sending is silently skipped.
+#   Set with: wrangler secret put RESEND_API_KEY
+#   Production: wrangler secret put RESEND_API_KEY --env production
+
+# ============================================================================
+# CRON TRIGGERS - Evidence Scheduling, Reminders & Email Digests
 # ============================================================================
 [triggers]
 crons = ["0 6 * * *"]

@@ -464,11 +464,13 @@ CREATE TABLE IF NOT EXISTS notifications (
   details TEXT DEFAULT '{}',
   is_read INTEGER DEFAULT 0,
   read_at TEXT,
+  email_sent INTEGER DEFAULT 0,
   created_at TEXT DEFAULT (datetime('now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_notif_recipient ON notifications(recipient_user_id, is_read, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_notif_org ON notifications(org_id);
+CREATE INDEX IF NOT EXISTS idx_notif_email_digest ON notifications(recipient_user_id, email_sent, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS notification_preferences (
   id TEXT PRIMARY KEY,
@@ -484,6 +486,8 @@ CREATE TABLE IF NOT EXISTS notification_preferences (
   approval_decision INTEGER DEFAULT 1,
   evidence_reminder INTEGER DEFAULT 1,
   evidence_expiry INTEGER DEFAULT 1,
+  email_digest INTEGER DEFAULT 1,
+  last_digest_sent_at TEXT,
   updated_at TEXT DEFAULT (datetime('now'))
 );
 

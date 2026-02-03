@@ -27,6 +27,7 @@ import { ApprovalsPage } from './pages/ApprovalsPage';
 import { AssessmentWizardPage } from './pages/AssessmentWizardPage';
 import { EvidenceSchedulesPage } from './pages/EvidenceSchedulesPage';
 import { AuditPrepPage } from './pages/AuditPrepPage';
+import { SystemComparisonPage } from './pages/SystemComparisonPage';
 
 function AppRoutes() {
   const { user, org, loading } = useAuth();
@@ -67,6 +68,7 @@ function AppRoutes() {
         <Routes>
           <Route path="/" element={<DashboardPage />} />
           <Route path="/systems" element={<SystemsPage />} />
+          <Route path="/system-comparison" element={<SystemComparisonPage />} />
           <Route path="/controls" element={<ControlsPage />} />
           <Route path="/poams" element={<PoamsPage />} />
           <Route path="/evidence" element={<EvidencePage />} />

@@ -16,6 +16,7 @@ export function SettingsPage() {
     role_change: 1, compliance_alert: 1, evidence_upload: 1,
     approval_request: 1, approval_decision: 1,
     evidence_reminder: 1, evidence_expiry: 1,
+    email_digest: 1,
   });
 
   const load = () => {
@@ -149,6 +150,24 @@ export function SettingsPage() {
               </button>
             </div>
           ))}
+        </div>
+
+        {/* Email Digest */}
+        <div className="border-t border-gray-200 mt-5 pt-5">
+          <h3 className="text-sm font-semibold text-gray-900 mb-1">Email Digest</h3>
+          <p className="text-xs text-gray-500 mb-3">Receive a daily email summary of your notifications at 6 AM UTC. Critical alerts (monitoring failures, approval requests, evidence expiry) are sent immediately.</p>
+          <div className="flex items-center justify-between py-2">
+            <div>
+              <p className="text-sm font-medium text-gray-900">Daily Email Digest</p>
+              <p className="text-xs text-gray-500">Batched summary of all non-critical notifications</p>
+            </div>
+            <button
+              onClick={() => toggleNotifPref('email_digest')}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${notifPrefs.email_digest ? 'bg-blue-600' : 'bg-gray-300'}`}
+            >
+              <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${notifPrefs.email_digest ? 'translate-x-6' : 'translate-x-1'}`} />
+            </button>
+          </div>
         </div>
       </div>
 
