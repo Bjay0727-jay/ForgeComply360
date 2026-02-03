@@ -25,6 +25,7 @@ CREATE INDEX IF NOT EXISTS idx_evidence_schedules_owner ON evidence_schedules(ow
 CREATE INDEX IF NOT EXISTS idx_evidence_schedules_next_due ON evidence_schedules(next_due_date);
 CREATE INDEX IF NOT EXISTS idx_evidence_schedules_active ON evidence_schedules(is_active);
 
--- Add new notification preference columns
-ALTER TABLE notification_preferences ADD COLUMN evidence_reminder INTEGER DEFAULT 1;
-ALTER TABLE notification_preferences ADD COLUMN evidence_expiry INTEGER DEFAULT 1;
+-- Notification preference columns (evidence_reminder, evidence_expiry)
+-- Added via schema.sql on fresh installs. For existing DBs, these were applied
+-- on first migration run. Using INSERT OR IGNORE pattern for idempotency.
+-- No ALTER TABLE needed — columns already exist in production.
