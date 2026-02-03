@@ -7,6 +7,12 @@ import {
   exportRiskSummaryReport,
   exportAuditReadyPackage,
 } from '../utils/exportHelpers';
+import {
+  exportExecutiveSummaryReportPdf,
+  exportCompliancePostureReportPdf,
+  exportRiskSummaryReportPdf,
+  exportAuditReadyPackagePdf,
+} from '../utils/pdfExportHelpers';
 
 const REPORT_TYPES = [
   {
@@ -60,6 +66,7 @@ export function ReportsPage() {
   const [generating, setGenerating] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lastGenerated, setLastGenerated] = useState<string | null>(null);
+  const [formatPref, setFormatPref] = useState<Record<string, 'docx' | 'pdf'>>({});
 
   if (!canManage) {
     return (
@@ -100,19 +107,37 @@ export function ReportsPage() {
         trends: trendsRes?.trends || [],
       };
 
-      switch (reportKey) {
-        case 'executive-summary':
-          await exportExecutiveSummaryReport(data, orgName);
-          break;
-        case 'compliance-posture':
-          await exportCompliancePostureReport(data, orgName);
-          break;
-        case 'risk-summary':
-          await exportRiskSummaryReport(data, orgName);
-          break;
-        case 'audit-ready':
-          await exportAuditReadyPackage(data, orgName);
-          break;
+      const format = formatPref[reportKey] || 'docx';
+      if (format === 'pdf') {
+        switch (reportKey) {
+          case 'executive-summary':
+            await exportExecutiveSummaryReportPdf(data, orgName);
+            break;
+          case 'compliance-posture':
+            await exportCompliancePostureReportPdf(data, orgName);
+            break;
+          case 'risk-summary':
+            await exportRiskSummaryReportPdf(data, orgName);
+            break;
+          case 'audit-ready':
+            await exportAuditReadyPackagePdf(data, orgName);
+            break;
+        }
+      } else {
+        switch (reportKey) {
+          case 'executive-summary':
+            await exportExecutiveSummaryReport(data, orgName);
+            break;
+          case 'compliance-posture':
+            await exportCompliancePostureReport(data, orgName);
+            break;
+          case 'risk-summary':
+            await exportRiskSummaryReport(data, orgName);
+            break;
+          case 'audit-ready':
+            await exportAuditReadyPackage(data, orgName);
+            break;
+        }
       }
       setLastGenerated(reportKey);
     } catch (err: any) {
@@ -128,7 +153,7 @@ export function ReportsPage() {
       {/* Header */}
       <div className="mb-8">
         <h1 className="text-2xl font-bold text-gray-900 mb-2">Reports</h1>
-        <p className="text-gray-500">Generate professional compliance reports for leadership, auditors, and stakeholders. Reports are exported as Word documents (.doc).</p>
+        <p className="text-gray-500">Generate professional compliance reports for leadership, auditors, and stakeholders. Export as Word (.doc) or PDF format.</p>
       </div>
 
       {/* Error banner */}
@@ -169,13 +194,30 @@ export function ReportsPage() {
                 <div>
                   <h3 className="text-lg font-semibold text-gray-900">{report.title}</h3>
                   {report.key === 'audit-ready' && (
-                    <span className="inline-block mt-1 px-2 py-0.5 bg-purple-100 text-purple-700 text-xs font-medium rounded-full">3 Reports</span>
+                    <span className="inline-block mt-1 px-2 py-0.5 bg-purple-100 text-purple-700 text-xs font-medium rounded-full">
+                      {(formatPref[report.key] || 'docx') === 'pdf' ? '1 Combined PDF' : '3 Reports'}
+                    </span>
                   )}
                 </div>
               </div>
 
               {/* Description */}
               <p className="text-sm text-gray-600 mb-6 leading-relaxed">{report.description}</p>
+
+              {/* Format Toggle */}
+              <div className="flex items-center gap-2 mb-3">
+                <span className="text-xs text-gray-500">Format:</span>
+                <div className="flex">
+                  <button
+                    onClick={() => setFormatPref(p => ({ ...p, [report.key]: 'docx' }))}
+                    className={`px-2.5 py-1 text-xs font-medium rounded-l-md border ${(formatPref[report.key] || 'docx') === 'docx' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}
+                  >DOCX</button>
+                  <button
+                    onClick={() => setFormatPref(p => ({ ...p, [report.key]: 'pdf' }))}
+                    className={`px-2.5 py-1 text-xs font-medium rounded-r-md border border-l-0 ${formatPref[report.key] === 'pdf' ? 'bg-red-600 text-white border-red-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}
+                  >PDF</button>
+                </div>
+              </div>
 
               {/* Generate Button */}
               <button

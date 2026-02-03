@@ -750,7 +750,7 @@ export async function exportVendorAssessmentDoc(vendor: any, orgName: string): P
 // COMPLIANCE REPORTS (Reporting & Export Engine)
 // ============================================================================
 
-interface ReportData {
+export interface ReportData {
   dashboard: {
     systems: number;
     controls: { implemented: number; partially_implemented: number; planned: number; not_implemented: number; not_applicable: number; total: number };
@@ -791,7 +791,7 @@ function reportCoverPage(title: string, subtitle: string, orgName: string): stri
   <div class="page-break"></div>`;
 }
 
-function aggregateFrameworkStats(rawStats: any[]): { name: string; implemented: number; partially_implemented: number; planned: number; not_implemented: number; not_applicable: number; total: number }[] {
+export function aggregateFrameworkStats(rawStats: any[]): { name: string; implemented: number; partially_implemented: number; planned: number; not_implemented: number; not_applicable: number; total: number }[] {
   if (!rawStats || rawStats.length === 0) return [];
   // If already aggregated (has 'implemented' key), return as-is
   if (rawStats[0]?.implemented !== undefined) return rawStats;

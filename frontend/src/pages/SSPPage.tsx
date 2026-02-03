@@ -3,6 +3,7 @@ import { useExperience } from '../hooks/useExperience';
 import { useAuth } from '../hooks/useAuth';
 import { api } from '../utils/api';
 import { exportSSPPackageDoc, exportFullSSPDoc, exportSSPSectionDoc } from '../utils/exportHelpers';
+import { exportFullSSPPdf, exportSSPSectionPdf } from '../utils/pdfExportHelpers';
 
 // --- Constants ---
 const SECTIONS = [
@@ -268,6 +269,29 @@ export function SSPPage() {
     await exportSSPSectionDoc(label, sec?.content || '', activeDoc.system_name || 'System', activeDoc.framework_name || 'Framework', 'Organization');
   };
 
+  const handleExportFullPdf = async () => {
+    if (!activeDoc) return;
+    const sections = getSections();
+    const isDraft = activeDoc.status === 'draft';
+    try {
+      const impls = await api(`/api/v1/implementations?system_id=${activeDoc.system_id}&framework_id=${activeDoc.framework_id}`);
+      await exportFullSSPPdf(
+        activeDoc.system_name || 'System', activeDoc.framework_name || 'Framework',
+        activeDoc.approved_by_name ? activeDoc.approved_by_name : 'Organization',
+        sections, impls.implementations, isDraft,
+      );
+    } catch {
+      await exportFullSSPPdf(activeDoc.system_name || 'System', activeDoc.framework_name || 'Framework', 'Organization', sections, undefined, isDraft);
+    }
+  };
+
+  const handleExportSectionPdf = async () => {
+    if (!activeDoc) return;
+    const sec = getSections()[activeSection];
+    const label = SECTIONS.find(s => s.key === activeSection)?.label || activeSection;
+    await exportSSPSectionPdf(label, sec?.content || '', activeDoc.system_name || 'System', activeDoc.framework_name || 'Framework', 'Organization');
+  };
+
   // --- Completion stats for document list ---
   const getDocCompletion = (doc: any): number => {
     try {
@@ -378,10 +402,16 @@ export function SSPPage() {
                   <><svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg> Auto-populate All</>
                 )}
               </button>
-              <button onClick={handleExportFullDocx} className="w-full px-3 py-2 bg-blue-600 text-white rounded-lg text-xs font-medium hover:bg-blue-700 flex items-center justify-center gap-1.5">
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
-                Export Full DOCX
-              </button>
+              <div className="flex gap-1 w-full">
+                <button onClick={handleExportFullDocx} className="flex-1 px-3 py-2 bg-blue-600 text-white rounded-l-lg text-xs font-medium hover:bg-blue-700 flex items-center justify-center gap-1">
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                  DOCX
+                </button>
+                <button onClick={handleExportFullPdf} className="flex-1 px-3 py-2 bg-red-600 text-white rounded-r-lg text-xs font-medium hover:bg-red-700 flex items-center justify-center gap-1">
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                  PDF
+                </button>
+              </div>
               <button onClick={downloadOscalJson} className="w-full px-3 py-2 bg-green-600 text-white rounded-lg text-xs font-medium hover:bg-green-700 flex items-center justify-center gap-1.5">
                 Download OSCAL JSON
               </button>
@@ -415,7 +445,10 @@ export function SSPPage() {
                       Refine with ForgeML
                     </button>
                     <button onClick={handleExportSectionDocx} className="px-3 py-1.5 bg-gray-100 text-gray-600 rounded-lg text-xs font-medium hover:bg-gray-200">
-                      Export Section
+                      DOCX
+                    </button>
+                    <button onClick={handleExportSectionPdf} className="px-3 py-1.5 bg-red-50 text-red-700 rounded-lg text-xs font-medium hover:bg-red-100">
+                      PDF
                     </button>
                   </>
                 )}
