@@ -28,6 +28,7 @@ import { AssessmentWizardPage } from './pages/AssessmentWizardPage';
 import { EvidenceSchedulesPage } from './pages/EvidenceSchedulesPage';
 import { AuditPrepPage } from './pages/AuditPrepPage';
 import { SystemComparisonPage } from './pages/SystemComparisonPage';
+import { CalendarPage } from './pages/CalendarPage';
 
 function AppRoutes() {
   const { user, org, loading } = useAuth();
@@ -87,6 +88,7 @@ function AppRoutes() {
           <Route path="/import" element={<ImportPage />} />
           <Route path="/approvals" element={<ApprovalsPage />} />
           <Route path="/assessment" element={<AssessmentWizardPage />} />
+          <Route path="/calendar" element={<CalendarPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

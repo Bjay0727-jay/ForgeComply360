@@ -222,6 +222,7 @@ async function handleRequest(request, env, url) {
   if (path === '/api/v1/compliance/scores' && method === 'GET') return handleComplianceScores(env, url, org, user);
   if (path === '/api/v1/compliance/score-config' && method === 'GET') return handleGetScoreConfig(env, org, user);
   if (path === '/api/v1/compliance/score-config' && method === 'PUT') return handleUpdateScoreConfig(request, env, org, user);
+  if (path === '/api/v1/calendar/events' && method === 'GET') return handleCalendarEvents(env, url, org, user);
 
   // Audit log
   if (path === '/api/v1/audit-log' && method === 'GET') return handleGetAuditLog(env, url, org, user);
@@ -3630,6 +3631,95 @@ async function handleUpdateScoreConfig(request, env, org, user) {
   await auditLog(env, org.id, user.id, 'update_score_config', 'organization', org.id, { weights: normalized });
 
   return jsonResponse({ weights: normalized, message: 'Scoring weights updated' });
+}
+
+// ============================================================================
+// COMPLIANCE CALENDAR
+// ============================================================================
+
+async function handleCalendarEvents(env, url, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  const today = new Date();
+  const defaultStart = new Date(today.getFullYear(), today.getMonth(), 1);
+  defaultStart.setDate(defaultStart.getDate() - 7);
+  const defaultEnd = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+  defaultEnd.setDate(defaultEnd.getDate() + 14);
+
+  const start = url.searchParams.get('start') || defaultStart.toISOString().split('T')[0];
+  const end = url.searchParams.get('end') || defaultEnd.toISOString().split('T')[0];
+
+  const [poams, evidenceSchedules, auditTasks, systems, vendorAssessments, vendorContracts, risks] = await Promise.all([
+    env.DB.prepare(
+      `SELECT id, title, scheduled_completion, status, risk_level, system_id
+       FROM poams WHERE org_id = ? AND scheduled_completion BETWEEN ? AND ?
+       AND status NOT IN ('completed','accepted')`
+    ).bind(org.id, start, end).all(),
+    env.DB.prepare(
+      `SELECT id, title, next_due_date, cadence, owner_user_id
+       FROM evidence_schedules WHERE org_id = ? AND next_due_date BETWEEN ? AND ?
+       AND is_active = 1`
+    ).bind(org.id, start, end).all(),
+    env.DB.prepare(
+      `SELECT id, title, due_date, category
+       FROM audit_checklist_items WHERE org_id = ? AND due_date BETWEEN ? AND ?
+       AND completed = 0`
+    ).bind(org.id, start, end).all(),
+    env.DB.prepare(
+      `SELECT id, name, authorization_expiry, status, acronym
+       FROM systems WHERE org_id = ? AND authorization_expiry BETWEEN ? AND ?`
+    ).bind(org.id, start, end).all(),
+    env.DB.prepare(
+      `SELECT id, name, next_assessment_date, criticality, risk_tier
+       FROM vendors WHERE org_id = ? AND next_assessment_date BETWEEN ? AND ?
+       AND status = 'active'`
+    ).bind(org.id, start, end).all(),
+    env.DB.prepare(
+      `SELECT id, name, contract_end, criticality
+       FROM vendors WHERE org_id = ? AND contract_end BETWEEN ? AND ?
+       AND status = 'active'`
+    ).bind(org.id, start, end).all(),
+    env.DB.prepare(
+      `SELECT id, title, treatment_due_date, risk_level, status
+       FROM risks WHERE org_id = ? AND treatment_due_date BETWEEN ? AND ?
+       AND status NOT IN ('closed','accepted')`
+    ).bind(org.id, start, end).all(),
+  ]);
+
+  const events = [];
+
+  for (const r of poams.results) {
+    events.push({ id: r.id, type: 'poam', name: r.title, date: r.scheduled_completion,
+      meta: { status: r.status, risk_level: r.risk_level, system_id: r.system_id } });
+  }
+  for (const r of evidenceSchedules.results) {
+    events.push({ id: r.id, type: 'evidence_schedule', name: r.title, date: r.next_due_date,
+      meta: { cadence: r.cadence, owner_user_id: r.owner_user_id } });
+  }
+  for (const r of auditTasks.results) {
+    events.push({ id: r.id, type: 'audit_task', name: r.title, date: r.due_date,
+      meta: { category: r.category } });
+  }
+  for (const r of systems.results) {
+    events.push({ id: r.id, type: 'ato_expiry', name: r.acronym ? `${r.name} (${r.acronym})` : r.name, date: r.authorization_expiry,
+      meta: { status: r.status } });
+  }
+  for (const r of vendorAssessments.results) {
+    events.push({ id: r.id, type: 'vendor_assessment', name: r.name, date: r.next_assessment_date,
+      meta: { criticality: r.criticality, risk_tier: r.risk_tier } });
+  }
+  for (const r of vendorContracts.results) {
+    events.push({ id: `${r.id}_contract`, type: 'vendor_contract', name: r.name, date: r.contract_end,
+      meta: { criticality: r.criticality } });
+  }
+  for (const r of risks.results) {
+    events.push({ id: r.id, type: 'risk_treatment', name: r.title, date: r.treatment_due_date,
+      meta: { risk_level: r.risk_level, status: r.status } });
+  }
+
+  events.sort((a, b) => a.date.localeCompare(b.date));
+
+  return jsonResponse({ events });
 }
 
 // ============================================================================
