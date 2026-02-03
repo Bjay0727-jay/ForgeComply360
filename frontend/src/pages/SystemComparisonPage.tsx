@@ -30,7 +30,21 @@ interface SystemData {
   monitoring: { pass: number; fail: number; warning: number; total: number; health_score: number | null };
 }
 
-type SortField = 'name' | 'compliance_percentage' | 'poams' | 'risks' | 'evidence_count' | 'monitoring';
+interface SystemScoreInfo {
+  score: number;
+  grade: string;
+  previous_score: number | null;
+}
+
+type SortField = 'name' | 'compliance_percentage' | 'score' | 'poams' | 'risks' | 'evidence_count' | 'monitoring';
+
+const GRADE_COLORS: Record<string, { text: string; bg: string }> = {
+  A: { text: 'text-green-700', bg: 'bg-green-100' },
+  B: { text: 'text-blue-700', bg: 'bg-blue-100' },
+  C: { text: 'text-yellow-700', bg: 'bg-yellow-100' },
+  D: { text: 'text-orange-700', bg: 'bg-orange-100' },
+  F: { text: 'text-red-700', bg: 'bg-red-100' },
+};
 
 // ---------------------------------------------------------------------------
 // Main Page
@@ -43,12 +57,32 @@ export function SystemComparisonPage() {
   const [loading, setLoading] = useState(true);
   const [sortField, setSortField] = useState<SortField>('compliance_percentage');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+  const [scoreMap, setScoreMap] = useState<Record<string, SystemScoreInfo>>({});
 
   useEffect(() => {
     api<{ systems: SystemData[] }>('/api/v1/dashboard/system-comparison')
       .then((d) => setSystems(d.systems || []))
       .catch(() => {})
       .finally(() => setLoading(false));
+
+    // Fetch compliance scores for grade column
+    api<{ scores: { system_id: string; score: number; grade: string; previous_score: number | null }[] }>('/api/v1/compliance/scores')
+      .then((d) => {
+        const map: Record<string, SystemScoreInfo> = {};
+        for (const s of d.scores || []) {
+          // Aggregate per system (average across frameworks)
+          if (!map[s.system_id]) {
+            map[s.system_id] = { score: s.score, grade: s.grade, previous_score: s.previous_score };
+          } else {
+            const existing = map[s.system_id];
+            const avg = Math.round((existing.score + s.score) / 2);
+            existing.score = avg;
+            existing.grade = avg >= 90 ? 'A' : avg >= 80 ? 'B' : avg >= 70 ? 'C' : avg >= 60 ? 'D' : 'F';
+          }
+        }
+        setScoreMap(map);
+      })
+      .catch(() => {});
   }, []);
 
   const toggleSort = (field: SortField) => {
@@ -66,6 +100,7 @@ export function SystemComparisonPage() {
     switch (sortField) {
       case 'name': av = a.name.toLowerCase(); bv = b.name.toLowerCase(); break;
       case 'compliance_percentage': av = a.compliance_percentage; bv = b.compliance_percentage; break;
+      case 'score': av = scoreMap[a.id]?.score ?? -1; bv = scoreMap[b.id]?.score ?? -1; break;
       case 'poams': av = a.poams.open; bv = b.poams.open; break;
       case 'risks': av = a.risks.total; bv = b.risks.total; break;
       case 'evidence_count': av = a.evidence_count; bv = b.evidence_count; break;
@@ -203,6 +238,9 @@ export function SystemComparisonPage() {
                 <th className="text-left px-4 py-3 font-medium text-gray-500 cursor-pointer select-none" onClick={() => toggleSort('name')}>
                   {t('system')} <SortIcon field="name" />
                 </th>
+                <th className="text-center px-3 py-3 font-medium text-gray-500 cursor-pointer select-none" onClick={() => toggleSort('score')}>
+                  Grade <SortIcon field="score" />
+                </th>
                 <th className="text-center px-3 py-3 font-medium text-gray-500 cursor-pointer select-none" onClick={() => toggleSort('compliance_percentage')}>
                   {t('compliance')} <SortIcon field="compliance_percentage" />
                 </th>
@@ -234,6 +272,18 @@ export function SystemComparisonPage() {
                         {sys.impact_level}
                       </span>
                     </div>
+                  </td>
+                  <td className="px-3 py-3 text-center">
+                    {scoreMap[sys.id] ? (
+                      <div className="flex flex-col items-center gap-0.5">
+                        <span className={`inline-flex items-center justify-center w-8 h-8 rounded-lg text-sm font-black ${GRADE_COLORS[scoreMap[sys.id].grade]?.bg || 'bg-gray-100'} ${GRADE_COLORS[scoreMap[sys.id].grade]?.text || 'text-gray-600'}`}>
+                          {scoreMap[sys.id].grade}
+                        </span>
+                        <span className="text-xs text-gray-400">{scoreMap[sys.id].score}/100</span>
+                      </div>
+                    ) : (
+                      <span className="text-gray-300">—</span>
+                    )}
                   </td>
                   <td className="px-3 py-3 text-center">
                     <span className={`text-lg font-bold ${compColor(sys.compliance_percentage)}`}>

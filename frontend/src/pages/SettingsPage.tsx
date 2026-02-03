@@ -20,6 +20,11 @@ export function SettingsPage() {
     email_digest: 1,
   });
 
+  // Scoring weights state (admin+)
+  const [scoreWeights, setScoreWeights] = useState<Record<string, number>>({ control: 40, poam: 20, evidence: 15, risk: 15, monitoring: 10 });
+  const [scoreWeightsLoading, setScoreWeightsLoading] = useState(false);
+  const [scoreWeightsMsg, setScoreWeightsMsg] = useState('');
+
   // 2FA state
   const [mfaSetup, setMfaSetup] = useState<{ secret: string; uri: string } | null>(null);
   const [setupCode, setSetupCode] = useState('');
@@ -89,7 +94,50 @@ export function SettingsPage() {
     api('/api/v1/notification-preferences')
       .then((d) => { if (d.preferences) setNotifPrefs(d.preferences); })
       .catch(() => {});
-  }, []);
+    // Load scoring weights for admin+
+    if (isAdmin) {
+      api<{ weights: Record<string, number> }>('/api/v1/compliance/score-config')
+        .then((d) => {
+          if (d.weights) {
+            setScoreWeights({
+              control: Math.round((d.weights.control || 0.4) * 100),
+              poam: Math.round((d.weights.poam || 0.2) * 100),
+              evidence: Math.round((d.weights.evidence || 0.15) * 100),
+              risk: Math.round((d.weights.risk || 0.15) * 100),
+              monitoring: Math.round((d.weights.monitoring || 0.1) * 100),
+            });
+          }
+        })
+        .catch(() => {});
+    }
+  }, [isAdmin]);
+
+  const scoreWeightsSum = Object.values(scoreWeights).reduce((s, v) => s + v, 0);
+  const scoreWeightsValid = Math.abs(scoreWeightsSum - 100) <= 2;
+
+  const saveScoreWeights = async () => {
+    if (!scoreWeightsValid) return;
+    setScoreWeightsLoading(true);
+    setScoreWeightsMsg('');
+    try {
+      const normalized: Record<string, number> = {};
+      for (const [k, v] of Object.entries(scoreWeights)) normalized[k] = v / 100;
+      await api('/api/v1/compliance/score-config', {
+        method: 'PUT',
+        body: JSON.stringify({ weights: normalized }),
+      });
+      setScoreWeightsMsg('Scoring weights saved successfully.');
+    } catch (err: any) {
+      setScoreWeightsMsg(err.message || 'Failed to save weights.');
+    } finally {
+      setScoreWeightsLoading(false);
+    }
+  };
+
+  const resetScoreWeights = () => {
+    setScoreWeights({ control: 40, poam: 20, evidence: 15, risk: 15, monitoring: 10 });
+    setScoreWeightsMsg('');
+  };
 
   const toggleNotifPref = async (key: string) => {
     const newVal = notifPrefs[key] ? 0 : 1;
@@ -223,6 +271,81 @@ export function SettingsPage() {
           </div>
         </div>
       </div>
+
+      {/* Compliance Scoring Weights — admin+ */}
+      {isAdmin && (
+        <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
+          <div className="flex items-center gap-3 mb-2">
+            <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center">
+              <svg className="w-4 h-4 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+              </svg>
+            </div>
+            <div>
+              <h2 className="font-semibold text-gray-900">Compliance Scoring Weights</h2>
+              <p className="text-xs text-gray-500">Customize how your organization's compliance score is calculated</p>
+            </div>
+          </div>
+
+          <div className="mt-4 space-y-4">
+            {[
+              { key: 'control', label: 'Control Implementation', desc: 'Weight of control status in the overall score' },
+              { key: 'poam', label: 'POA&M Health', desc: 'Penalty for open and overdue remediation items' },
+              { key: 'evidence', label: 'Evidence Coverage', desc: 'Percentage of controls backed by evidence' },
+              { key: 'risk', label: 'Risk Posture', desc: 'Impact of open risks on the compliance score' },
+              { key: 'monitoring', label: 'Monitoring Health', desc: 'Contribution of continuous monitoring checks' },
+            ].map(({ key, label, desc }) => (
+              <div key={key}>
+                <div className="flex items-center justify-between mb-1">
+                  <div>
+                    <span className="text-sm font-medium text-gray-700">{label}</span>
+                    <p className="text-xs text-gray-400">{desc}</p>
+                  </div>
+                  <span className="text-sm font-bold text-gray-900 w-12 text-right">{scoreWeights[key]}%</span>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="5"
+                  value={scoreWeights[key]}
+                  onChange={(e) => setScoreWeights((prev) => ({ ...prev, [key]: parseInt(e.target.value) }))}
+                  className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                />
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-4 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className={`text-sm font-medium ${scoreWeightsValid ? 'text-green-600' : 'text-red-600'}`}>
+                Total: {scoreWeightsSum}%
+              </span>
+              {!scoreWeightsValid && <span className="text-xs text-red-500">(must equal 100%)</span>}
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={resetScoreWeights}
+                className="px-3 py-1.5 text-xs font-medium text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50"
+              >
+                Reset Defaults
+              </button>
+              <button
+                onClick={saveScoreWeights}
+                disabled={!scoreWeightsValid || scoreWeightsLoading}
+                className="px-4 py-1.5 text-xs font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 disabled:opacity-50"
+              >
+                {scoreWeightsLoading ? 'Saving...' : 'Save Weights'}
+              </button>
+            </div>
+          </div>
+          {scoreWeightsMsg && (
+            <p className={`text-xs mt-2 ${scoreWeightsMsg.includes('success') ? 'text-green-600' : 'text-red-600'}`}>
+              {scoreWeightsMsg}
+            </p>
+          )}
+        </div>
+      )}
 
       {/* Two-Factor Authentication */}
       <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">

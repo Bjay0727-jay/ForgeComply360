@@ -219,6 +219,9 @@ async function handleRequest(request, env, url) {
   if (path === '/api/v1/dashboard/system-comparison' && method === 'GET') return handleSystemComparison(env, org, user);
   if (path === '/api/v1/compliance/snapshot' && method === 'POST') return handleCreateComplianceSnapshot(request, env, org, user);
   if (path === '/api/v1/compliance/trends' && method === 'GET') return handleGetComplianceTrends(env, url, org);
+  if (path === '/api/v1/compliance/scores' && method === 'GET') return handleComplianceScores(env, url, org, user);
+  if (path === '/api/v1/compliance/score-config' && method === 'GET') return handleGetScoreConfig(env, org, user);
+  if (path === '/api/v1/compliance/score-config' && method === 'PUT') return handleUpdateScoreConfig(request, env, org, user);
 
   // Audit log
   if (path === '/api/v1/audit-log' && method === 'GET') return handleGetAuditLog(env, url, org, user);
@@ -516,6 +519,69 @@ function computeDiff(oldRecord, newBody, trackedFields) {
     }
   }
   return Object.keys(changes).length > 0 ? changes : null;
+}
+
+// ============================================================================
+// COMPLIANCE SCORING ENGINE
+// ============================================================================
+
+const DEFAULT_SCORE_WEIGHTS = { control: 0.40, poam: 0.20, evidence: 0.15, risk: 0.15, monitoring: 0.10 };
+
+function computeComplianceScore(data, weights) {
+  const w = weights && typeof weights === 'object' ? { ...DEFAULT_SCORE_WEIGHTS, ...weights } : DEFAULT_SCORE_WEIGHTS;
+
+  // 1. Control Implementation (0-1): full credit for implemented+NA, partial for partially/planned
+  const ctrlTotal = data.controls.total || 1;
+  const ctrlScore = Math.min(1, (data.controls.implemented * 1.0 + data.controls.partially * 0.5 +
+    data.controls.planned * 0.2 + data.controls.na * 1.0) / ctrlTotal);
+
+  // 2. POA&M Health (0-1): penalize open/overdue items
+  const poamTotal = Math.max(data.poams.open + data.poams.in_progress + data.poams.completed, 1);
+  const poamPenalty = (data.poams.open * 0.5 + data.poams.overdue * 1.0) / poamTotal;
+  const poamScore = Math.max(0, Math.min(1, 1.0 - poamPenalty));
+
+  // 3. Evidence Coverage (0-1): ratio of controls with evidence
+  const evidenceScore = data.evidence.applicable > 0
+    ? Math.min(1, data.evidence.covered / data.evidence.applicable)
+    : 1.0;
+
+  // 4. Risk Posture (0-1): weighted penalty by severity
+  const riskTotal = data.risks.critical + data.risks.high + data.risks.moderate + data.risks.low;
+  const riskPenalty = riskTotal > 0
+    ? (data.risks.critical * 1.0 + data.risks.high * 0.6 + data.risks.moderate * 0.3 + data.risks.low * 0.1) / riskTotal
+    : 0;
+  const riskScore = Math.max(0, Math.min(1, 1.0 - riskPenalty));
+
+  // 5. Monitoring Health (0-1): passing checks ratio
+  const monitoringScore = data.monitoring.total > 0
+    ? Math.min(1, data.monitoring.pass / data.monitoring.total)
+    : 1.0;
+
+  // Composite weighted score
+  const composite = ctrlScore * w.control + poamScore * w.poam + evidenceScore * w.evidence +
+    riskScore * w.risk + monitoringScore * w.monitoring;
+  const score = Math.min(100, Math.max(0, Math.round(composite * 100)));
+  const grade = score >= 90 ? 'A' : score >= 80 ? 'B' : score >= 70 ? 'C' : score >= 60 ? 'D' : 'F';
+
+  return {
+    score,
+    grade,
+    dimensions: {
+      control: { score: Math.round(ctrlScore * 100), weight: w.control },
+      poam: { score: Math.round(poamScore * 100), weight: w.poam },
+      evidence: { score: Math.round(evidenceScore * 100), weight: w.evidence },
+      risk: { score: Math.round(riskScore * 100), weight: w.risk },
+      monitoring: { score: Math.round(monitoringScore * 100), weight: w.monitoring },
+    },
+  };
+}
+
+function getOrgScoringWeights(org) {
+  try {
+    const meta = typeof org.metadata === 'string' ? JSON.parse(org.metadata) : (org.metadata || {});
+    if (meta.scoring_weights) return { ...DEFAULT_SCORE_WEIGHTS, ...meta.scoring_weights };
+  } catch {}
+  return DEFAULT_SCORE_WEIGHTS;
 }
 
 // ============================================================================
@@ -3218,23 +3284,89 @@ async function handleFrameworkStats(env, org) {
 async function handleCreateComplianceSnapshot(request, env, org, user) {
   if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Forbidden' }, 403);
   const today = new Date().toISOString().split('T')[0];
-  const { results: impls } = await env.DB.prepare(
-    `SELECT system_id, framework_id, status, COUNT(*) as count FROM control_implementations WHERE org_id = ? GROUP BY system_id, framework_id, status`
-  ).bind(org.id).all();
+  const weights = getOrgScoringWeights(org);
+
+  // Gather all data in parallel
+  const [implsRes, poamsRes, overdueRes, evidenceRes, risksRes, monitoringRes] = await Promise.all([
+    env.DB.prepare(
+      'SELECT system_id, framework_id, status, COUNT(*) as count FROM control_implementations WHERE org_id = ? GROUP BY system_id, framework_id, status'
+    ).bind(org.id).all(),
+    env.DB.prepare(
+      'SELECT system_id, status, COUNT(*) as count FROM poams WHERE org_id = ? GROUP BY system_id, status'
+    ).bind(org.id).all(),
+    env.DB.prepare(
+      `SELECT system_id, COUNT(*) as count FROM poams WHERE org_id = ? AND status NOT IN ('completed','accepted','deferred') AND scheduled_completion < ? GROUP BY system_id`
+    ).bind(org.id, today).all(),
+    env.DB.prepare(
+      `SELECT ci.system_id, ci.framework_id, COUNT(DISTINCT ecl.implementation_id) as covered, COUNT(DISTINCT ci.id) as applicable
+       FROM control_implementations ci LEFT JOIN evidence_control_links ecl ON ecl.implementation_id = ci.id
+       WHERE ci.org_id = ? AND ci.status != 'not_applicable' GROUP BY ci.system_id, ci.framework_id`
+    ).bind(org.id).all(),
+    env.DB.prepare(
+      `SELECT system_id, risk_level, COUNT(*) as count FROM risks WHERE org_id = ? AND status != 'closed' AND system_id IS NOT NULL GROUP BY system_id, risk_level`
+    ).bind(org.id).all(),
+    env.DB.prepare(
+      'SELECT system_id, last_result, COUNT(*) as count FROM monitoring_checks WHERE org_id = ? AND is_active = 1 GROUP BY system_id, last_result'
+    ).bind(org.id).all(),
+  ]);
+
+  // Index control implementations
   const combos = {};
-  for (const row of impls) {
+  for (const row of implsRes.results) {
     const key = `${row.system_id}|${row.framework_id}`;
     if (!combos[key]) combos[key] = { system_id: row.system_id, framework_id: row.framework_id, total: 0, implemented: 0, partially_implemented: 0, planned: 0, not_applicable: 0, not_implemented: 0 };
     combos[key][row.status] = (combos[key][row.status] || 0) + row.count;
     combos[key].total += row.count;
   }
+
+  // Index POA&Ms by system
+  const poamBySys = {};
+  for (const r of poamsRes.results) {
+    if (!poamBySys[r.system_id]) poamBySys[r.system_id] = { open: 0, in_progress: 0, completed: 0, overdue: 0 };
+    if (r.status === 'open') poamBySys[r.system_id].open += r.count;
+    else if (r.status === 'in_progress') poamBySys[r.system_id].in_progress += r.count;
+    else if (r.status === 'completed' || r.status === 'accepted') poamBySys[r.system_id].completed += r.count;
+  }
+  for (const r of overdueRes.results) {
+    if (!poamBySys[r.system_id]) poamBySys[r.system_id] = { open: 0, in_progress: 0, completed: 0, overdue: 0 };
+    poamBySys[r.system_id].overdue = r.count;
+  }
+
+  // Index evidence, risks, monitoring
+  const evidByKey = {};
+  for (const r of evidenceRes.results) evidByKey[`${r.system_id}|${r.framework_id}`] = { covered: r.covered, applicable: r.applicable };
+  const riskBySys = {};
+  for (const r of risksRes.results) {
+    if (!riskBySys[r.system_id]) riskBySys[r.system_id] = { critical: 0, high: 0, moderate: 0, low: 0 };
+    riskBySys[r.system_id][r.risk_level] = r.count;
+  }
+  const monBySys = {};
+  for (const r of monitoringRes.results) {
+    if (!monBySys[r.system_id]) monBySys[r.system_id] = { pass: 0, total: 0 };
+    if (r.last_result === 'pass') monBySys[r.system_id].pass += r.count;
+    monBySys[r.system_id].total += r.count;
+  }
+
   let inserted = 0;
   for (const c of Object.values(combos)) {
     const pct = c.total > 0 ? Math.round(((c.implemented + c.not_applicable) / c.total) * 100) : 0;
+    const key = `${c.system_id}|${c.framework_id}`;
+    const poam = poamBySys[c.system_id] || { open: 0, in_progress: 0, completed: 0, overdue: 0 };
+    const evid = evidByKey[key] || { covered: 0, applicable: c.total - c.not_applicable };
+    const risk = riskBySys[c.system_id] || { critical: 0, high: 0, moderate: 0, low: 0 };
+    const mon = monBySys[c.system_id] || { pass: 0, total: 0 };
+
+    const scoreResult = computeComplianceScore({
+      controls: { implemented: c.implemented, partially: c.partially_implemented, planned: c.planned, na: c.not_applicable, not_impl: c.not_implemented, total: c.total },
+      poams: poam, evidence: evid, risks: risk, monitoring: mon,
+    }, weights);
+
+    const metadata = JSON.stringify({ score: scoreResult.score, grade: scoreResult.grade, dimensions: scoreResult.dimensions });
+
     await env.DB.prepare(
-      `INSERT OR REPLACE INTO compliance_snapshots (id, org_id, system_id, framework_id, snapshot_date, total_controls, implemented, partially_implemented, planned, not_applicable, not_implemented, compliance_percentage)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(generateId(), org.id, c.system_id, c.framework_id, today, c.total, c.implemented, c.partially_implemented, c.planned, c.not_applicable, c.not_implemented, pct).run();
+      `INSERT OR REPLACE INTO compliance_snapshots (id, org_id, system_id, framework_id, snapshot_date, total_controls, implemented, partially_implemented, planned, not_applicable, not_implemented, compliance_percentage, metadata)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(generateId(), org.id, c.system_id, c.framework_id, today, c.total, c.implemented, c.partially_implemented, c.planned, c.not_applicable, c.not_implemented, pct, metadata).run();
     inserted++;
   }
   await auditLog(env, org.id, user.id, 'create_snapshot', 'compliance_snapshot', today, { count: inserted });
@@ -3258,6 +3390,246 @@ async function handleGetComplianceTrends(env, url, org) {
   query += ' ORDER BY cs.snapshot_date ASC';
   const { results } = await env.DB.prepare(query).bind(...params).all();
   return jsonResponse({ trends: results });
+}
+
+// ============================================================================
+// COMPLIANCE SCORING ENDPOINTS
+// ============================================================================
+
+async function handleComplianceScores(env, url, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  const systemFilter = url.searchParams.get('system_id');
+  const frameworkFilter = url.searchParams.get('framework_id');
+  const weights = getOrgScoringWeights(org);
+  const today = new Date().toISOString().split('T')[0];
+
+  // Parallel queries for all scoring dimensions
+  const [
+    systemsRes, frameworksRes, controlsRes, poamsRes, overdueRes,
+    evidenceRes, risksRes, monitoringRes, latestSnapshots
+  ] = await Promise.all([
+    env.DB.prepare('SELECT id, name, acronym FROM systems WHERE org_id = ? ORDER BY name').bind(org.id).all(),
+    env.DB.prepare(
+      `SELECT DISTINCT cf.id, cf.name FROM compliance_frameworks cf
+       JOIN organization_frameworks of2 ON of2.framework_id = cf.id
+       WHERE of2.org_id = ? AND of2.enabled = 1 ORDER BY cf.name`
+    ).bind(org.id).all(),
+    env.DB.prepare(
+      'SELECT system_id, framework_id, status, COUNT(*) as count FROM control_implementations WHERE org_id = ? GROUP BY system_id, framework_id, status'
+    ).bind(org.id).all(),
+    env.DB.prepare(
+      `SELECT system_id, status, COUNT(*) as count FROM poams WHERE org_id = ? GROUP BY system_id, status`
+    ).bind(org.id).all(),
+    env.DB.prepare(
+      `SELECT system_id, COUNT(*) as count FROM poams WHERE org_id = ? AND status NOT IN ('completed','accepted','deferred') AND scheduled_completion < ? GROUP BY system_id`
+    ).bind(org.id, today).all(),
+    env.DB.prepare(
+      `SELECT ci.system_id, ci.framework_id, COUNT(DISTINCT ecl.implementation_id) as covered,
+              COUNT(DISTINCT ci.id) as applicable
+       FROM control_implementations ci
+       LEFT JOIN evidence_control_links ecl ON ecl.implementation_id = ci.id
+       WHERE ci.org_id = ? AND ci.status != 'not_applicable'
+       GROUP BY ci.system_id, ci.framework_id`
+    ).bind(org.id).all(),
+    env.DB.prepare(
+      `SELECT system_id, risk_level, COUNT(*) as count FROM risks WHERE org_id = ? AND status != 'closed' AND system_id IS NOT NULL GROUP BY system_id, risk_level`
+    ).bind(org.id).all(),
+    env.DB.prepare(
+      `SELECT system_id, last_result, COUNT(*) as count FROM monitoring_checks WHERE org_id = ? AND is_active = 1 GROUP BY system_id, last_result`
+    ).bind(org.id).all(),
+    env.DB.prepare(
+      `SELECT system_id, framework_id, metadata FROM compliance_snapshots WHERE org_id = ? AND snapshot_date = (SELECT MAX(snapshot_date) FROM compliance_snapshots WHERE org_id = ?)`
+    ).bind(org.id, org.id).all(),
+  ]);
+
+  // Index all data by system_id (and framework_id where applicable)
+  const ctrlByKey = {};
+  for (const r of controlsRes.results) {
+    const key = `${r.system_id}|${r.framework_id}`;
+    if (!ctrlByKey[key]) ctrlByKey[key] = { implemented: 0, partially: 0, planned: 0, na: 0, not_impl: 0, total: 0 };
+    const s = ctrlByKey[key];
+    if (r.status === 'implemented') s.implemented += r.count;
+    else if (r.status === 'partially_implemented') s.partially += r.count;
+    else if (r.status === 'planned') s.planned += r.count;
+    else if (r.status === 'not_applicable') s.na += r.count;
+    else if (r.status === 'not_implemented') s.not_impl += r.count;
+    else if (r.status === 'alternative') s.implemented += r.count; // treat alternative as implemented
+    s.total += r.count;
+  }
+
+  const poamBySys = {};
+  for (const r of poamsRes.results) {
+    if (!poamBySys[r.system_id]) poamBySys[r.system_id] = { open: 0, in_progress: 0, completed: 0, overdue: 0 };
+    const p = poamBySys[r.system_id];
+    if (r.status === 'open') p.open += r.count;
+    else if (r.status === 'in_progress') p.in_progress += r.count;
+    else if (r.status === 'completed' || r.status === 'accepted') p.completed += r.count;
+  }
+  for (const r of overdueRes.results) {
+    if (poamBySys[r.system_id]) poamBySys[r.system_id].overdue = r.count;
+    else poamBySys[r.system_id] = { open: 0, in_progress: 0, completed: 0, overdue: r.count };
+  }
+
+  const evidByKey = {};
+  for (const r of evidenceRes.results) {
+    evidByKey[`${r.system_id}|${r.framework_id}`] = { covered: r.covered, applicable: r.applicable };
+  }
+
+  const riskBySys = {};
+  for (const r of risksRes.results) {
+    if (!riskBySys[r.system_id]) riskBySys[r.system_id] = { critical: 0, high: 0, moderate: 0, low: 0 };
+    riskBySys[r.system_id][r.risk_level] = r.count;
+  }
+
+  const monBySys = {};
+  for (const r of monitoringRes.results) {
+    if (!monBySys[r.system_id]) monBySys[r.system_id] = { pass: 0, total: 0 };
+    if (r.last_result === 'pass') monBySys[r.system_id].pass += r.count;
+    monBySys[r.system_id].total += r.count;
+  }
+
+  const prevByKey = {};
+  for (const r of latestSnapshots.results) {
+    try {
+      const meta = typeof r.metadata === 'string' ? JSON.parse(r.metadata) : (r.metadata || {});
+      if (meta.score != null) prevByKey[`${r.system_id}|${r.framework_id}`] = meta.score;
+    } catch {}
+  }
+
+  const systemMap = {};
+  for (const s of systemsRes.results) systemMap[s.id] = s;
+  const fwMap = {};
+  for (const f of frameworksRes.results) fwMap[f.id] = f;
+
+  // Compute per system×framework scores
+  const scores = [];
+  const orgTotals = { controls: { implemented: 0, partially: 0, planned: 0, na: 0, not_impl: 0, total: 0 },
+    poams: { open: 0, in_progress: 0, completed: 0, overdue: 0 },
+    evidence: { covered: 0, applicable: 0 },
+    risks: { critical: 0, high: 0, moderate: 0, low: 0 },
+    monitoring: { pass: 0, total: 0 } };
+
+  for (const sys of systemsRes.results) {
+    if (systemFilter && sys.id !== systemFilter) continue;
+    for (const fw of frameworksRes.results) {
+      if (frameworkFilter && fw.id !== frameworkFilter) continue;
+      const key = `${sys.id}|${fw.id}`;
+      const ctrl = ctrlByKey[key] || { implemented: 0, partially: 0, planned: 0, na: 0, not_impl: 0, total: 0 };
+      if (ctrl.total === 0) continue; // skip combos with no controls
+
+      const poam = poamBySys[sys.id] || { open: 0, in_progress: 0, completed: 0, overdue: 0 };
+      const evid = evidByKey[key] || { covered: 0, applicable: ctrl.total - ctrl.na };
+      const risk = riskBySys[sys.id] || { critical: 0, high: 0, moderate: 0, low: 0 };
+      const mon = monBySys[sys.id] || { pass: 0, total: 0 };
+
+      const result = computeComplianceScore({ controls: ctrl, poams: poam, evidence: evid, risks: risk, monitoring: mon }, weights);
+
+      scores.push({
+        system_id: sys.id, system_name: sys.name, system_acronym: sys.acronym,
+        framework_id: fw.id, framework_name: fw.name,
+        score: result.score, grade: result.grade, dimensions: result.dimensions,
+        previous_score: prevByKey[key] ?? null,
+      });
+
+      // Accumulate org totals
+      orgTotals.controls.implemented += ctrl.implemented;
+      orgTotals.controls.partially += ctrl.partially;
+      orgTotals.controls.planned += ctrl.planned;
+      orgTotals.controls.na += ctrl.na;
+      orgTotals.controls.not_impl += ctrl.not_impl;
+      orgTotals.controls.total += ctrl.total;
+      orgTotals.poams.open += poam.open;
+      orgTotals.poams.in_progress += poam.in_progress;
+      orgTotals.poams.completed += poam.completed;
+      orgTotals.poams.overdue += poam.overdue;
+      orgTotals.evidence.covered += evid.covered;
+      orgTotals.evidence.applicable += evid.applicable;
+      orgTotals.risks.critical += risk.critical;
+      orgTotals.risks.high += risk.high;
+      orgTotals.risks.moderate += risk.moderate;
+      orgTotals.risks.low += risk.low;
+      orgTotals.monitoring.pass += mon.pass;
+      orgTotals.monitoring.total += mon.total;
+    }
+  }
+
+  // Deduplicate org risk/poam/monitoring (they're per-system, not per-system×framework)
+  // Use system-level for org aggregate
+  const seenSystems = new Set();
+  const orgDedupe = { poams: { open: 0, in_progress: 0, completed: 0, overdue: 0 },
+    risks: { critical: 0, high: 0, moderate: 0, low: 0 }, monitoring: { pass: 0, total: 0 } };
+  for (const sys of systemsRes.results) {
+    if (systemFilter && sys.id !== systemFilter) continue;
+    if (seenSystems.has(sys.id)) continue;
+    seenSystems.add(sys.id);
+    const poam = poamBySys[sys.id] || { open: 0, in_progress: 0, completed: 0, overdue: 0 };
+    orgDedupe.poams.open += poam.open;
+    orgDedupe.poams.in_progress += poam.in_progress;
+    orgDedupe.poams.completed += poam.completed;
+    orgDedupe.poams.overdue += poam.overdue;
+    const risk = riskBySys[sys.id] || { critical: 0, high: 0, moderate: 0, low: 0 };
+    orgDedupe.risks.critical += risk.critical;
+    orgDedupe.risks.high += risk.high;
+    orgDedupe.risks.moderate += risk.moderate;
+    orgDedupe.risks.low += risk.low;
+    const mon = monBySys[sys.id] || { pass: 0, total: 0 };
+    orgDedupe.monitoring.pass += mon.pass;
+    orgDedupe.monitoring.total += mon.total;
+  }
+
+  const orgScore = computeComplianceScore({
+    controls: orgTotals.controls,
+    poams: orgDedupe.poams,
+    evidence: orgTotals.evidence,
+    risks: orgDedupe.risks,
+    monitoring: orgDedupe.monitoring,
+  }, weights);
+
+  return jsonResponse({ scores, org_score: orgScore, weights });
+}
+
+async function handleGetScoreConfig(env, org, user) {
+  if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const weights = getOrgScoringWeights(org);
+  return jsonResponse({ weights, defaults: DEFAULT_SCORE_WEIGHTS });
+}
+
+async function handleUpdateScoreConfig(request, env, org, user) {
+  if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const body = await request.json();
+  const { weights } = body;
+  if (!weights || typeof weights !== 'object') return jsonResponse({ error: 'weights object required' }, 400);
+
+  const required = ['control', 'poam', 'evidence', 'risk', 'monitoring'];
+  for (const k of required) {
+    if (typeof weights[k] !== 'number' || weights[k] < 0 || weights[k] > 1) {
+      return jsonResponse({ error: `Invalid weight for ${k}: must be a number between 0 and 1` }, 400);
+    }
+  }
+
+  const sum = required.reduce((s, k) => s + weights[k], 0);
+  if (Math.abs(sum - 1.0) > 0.02) {
+    return jsonResponse({ error: `Weights must sum to 1.0 (currently ${sum.toFixed(2)})` }, 400);
+  }
+
+  // Normalize to exactly 1.0
+  const normalized = {};
+  for (const k of required) normalized[k] = Math.round((weights[k] / sum) * 100) / 100;
+  const normSum = required.reduce((s, k) => s + normalized[k], 0);
+  if (normSum !== 1.0) normalized[required[0]] += Math.round((1.0 - normSum) * 100) / 100;
+
+  // Save to org metadata
+  let meta = {};
+  try { meta = typeof org.metadata === 'string' ? JSON.parse(org.metadata) : (org.metadata || {}); } catch {}
+  meta.scoring_weights = normalized;
+
+  await env.DB.prepare('UPDATE organizations SET metadata = ? WHERE id = ?')
+    .bind(JSON.stringify(meta), org.id).run();
+
+  await auditLog(env, org.id, user.id, 'update_score_config', 'organization', org.id, { weights: normalized });
+
+  return jsonResponse({ weights: normalized, message: 'Scoring weights updated' });
 }
 
 // ============================================================================

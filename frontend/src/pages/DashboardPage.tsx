@@ -58,6 +58,50 @@ interface MyWorkData {
   counts: { poams: number; overdue_poams: number; evidence_due: number; audit_tasks: number };
 }
 
+interface ScoreDimension {
+  score: number;
+  weight: number;
+}
+
+interface ComplianceScoreResult {
+  score: number;
+  grade: string;
+  dimensions: Record<string, ScoreDimension>;
+  previous_score: number | null;
+}
+
+interface ComplianceScoreEntry {
+  system_id: string;
+  system_name: string;
+  framework_id: string;
+  framework_name: string;
+  score: number;
+  grade: string;
+  dimensions: Record<string, ScoreDimension>;
+  previous_score: number | null;
+}
+
+interface ComplianceScoresResponse {
+  scores: ComplianceScoreEntry[];
+  org_score: ComplianceScoreResult;
+}
+
+const GRADE_COLORS: Record<string, { text: string; bg: string; border: string; ring: string }> = {
+  A: { text: 'text-green-700', bg: 'bg-green-100', border: 'border-green-200', ring: 'stroke-green-500' },
+  B: { text: 'text-blue-700', bg: 'bg-blue-100', border: 'border-blue-200', ring: 'stroke-blue-500' },
+  C: { text: 'text-yellow-700', bg: 'bg-yellow-100', border: 'border-yellow-200', ring: 'stroke-yellow-500' },
+  D: { text: 'text-orange-700', bg: 'bg-orange-100', border: 'border-orange-200', ring: 'stroke-orange-500' },
+  F: { text: 'text-red-700', bg: 'bg-red-100', border: 'border-red-200', ring: 'stroke-red-500' },
+};
+
+const DIMENSION_META: Record<string, { label: string; icon: string; href: string }> = {
+  control: { label: 'Controls', icon: 'M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z', href: '/controls' },
+  poam: { label: 'POA&Ms', icon: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2', href: '/poams' },
+  evidence: { label: 'Evidence', icon: 'M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z', href: '/evidence' },
+  risk: { label: 'Risk Posture', icon: 'M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z', href: '/risks' },
+  monitoring: { label: 'Monitoring', icon: 'M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z', href: '/monitoring' },
+};
+
 // ---------------------------------------------------------------------------
 // Main Dashboard
 // ---------------------------------------------------------------------------
@@ -80,6 +124,7 @@ export function DashboardPage() {
   const [auditScore, setAuditScore] = useState<{ score: number; passed_checks: number; total_checks: number } | null>(null);
   const [myWork, setMyWork] = useState<MyWorkData | null>(null);
   const [pendingApprovalCount, setPendingApprovalCount] = useState<number | null>(null);
+  const [compScores, setCompScores] = useState<ComplianceScoresResponse | null>(null);
 
   useEffect(() => {
     // Core dashboard stats (always loaded)
@@ -98,6 +143,11 @@ export function DashboardPage() {
 
     // Analyst+ data
     if (canEdit) {
+      // Compliance scores (weighted scoring engine)
+      api<ComplianceScoresResponse>('/api/v1/compliance/scores')
+        .then((d) => setCompScores(d))
+        .catch(() => {});
+
       // Compliance trends
       api<{ trends: TrendPoint[] }>('/api/v1/compliance/trends?days=30')
         .then((d) => setTrends(d.trends || []))
@@ -172,12 +222,17 @@ export function DashboardPage() {
 
       {/* Key Metrics — all roles */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-        <MetricCard
-          title={`${t('compliance')} Score`}
-          value={`${compPct}%`}
-          subtitle={`${s?.controls.implemented || 0} of ${s?.controls.total || 0} ${t('control').toLowerCase()}s`}
-          color={compColor}
-        />
+        {/* Compliance Score — enhanced with letter grade when available */}
+        {compScores?.org_score ? (
+          <ComplianceScoreCard score={compScores.org_score} label={`${t('compliance')} Score`} />
+        ) : (
+          <MetricCard
+            title={`${t('compliance')} Score`}
+            value={`${compPct}%`}
+            subtitle={`${s?.controls.implemented || 0} of ${s?.controls.total || 0} ${t('control').toLowerCase()}s`}
+            color={compColor}
+          />
+        )}
         <MetricCard
           title={nav('systems')}
           value={String(s?.systems || 0)}
@@ -208,11 +263,20 @@ export function DashboardPage() {
             {frameworkStats.map((fw) => {
               const compliant = fw.implemented + fw.not_applicable;
               const pct = fw.total > 0 ? Math.round((compliant / fw.total) * 100) : 0;
+              // Find the best matching score entry for this framework (aggregate across systems)
+              const fwScores = compScores?.scores.filter(s => s.framework_id === fw.framework_id) || [];
+              const avgScore = fwScores.length > 0
+                ? Math.round(fwScores.reduce((sum, s) => sum + s.score, 0) / fwScores.length)
+                : null;
+              const grade = avgScore !== null
+                ? (avgScore >= 90 ? 'A' : avgScore >= 80 ? 'B' : avgScore >= 70 ? 'C' : avgScore >= 60 ? 'D' : 'F')
+                : null;
               return (
                 <DonutChart
                   key={fw.framework_id}
                   label={fw.framework_name}
                   percentage={pct}
+                  grade={grade}
                 />
               );
             })}
@@ -385,8 +449,42 @@ export function DashboardPage() {
       {/* TWO-COLUMN GRID — role-filtered widgets */}
       {/* ================================================================ */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Control Implementation Status — analyst+ */}
-        {canEdit && (
+        {/* Score Breakdown — analyst+ (shows when scoring engine data available) */}
+        {canEdit && compScores?.org_score && (
+          <div className="bg-white rounded-xl border border-gray-200 p-6">
+            <h2 className="font-semibold text-gray-900 mb-4">Score Breakdown</h2>
+            <div className="space-y-3">
+              {Object.entries(compScores.org_score.dimensions).map(([key, dim]) => {
+                const meta = DIMENSION_META[key];
+                if (!meta) return null;
+                const barColor = dim.score >= 80 ? 'bg-green-500' : dim.score >= 60 ? 'bg-yellow-500' : dim.score >= 40 ? 'bg-orange-500' : 'bg-red-500';
+                return (
+                  <a key={key} href={meta.href} className="block group">
+                    <div className="flex items-center justify-between text-sm mb-1">
+                      <div className="flex items-center gap-2">
+                        <svg className="w-3.5 h-3.5 text-gray-400 group-hover:text-blue-500 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={meta.icon} />
+                        </svg>
+                        <span className="text-gray-700 group-hover:text-blue-600 transition-colors">{meta.label}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-gray-400">{Math.round(dim.weight * 100)}%</span>
+                        <span className="text-gray-900 font-semibold w-8 text-right">{dim.score}</span>
+                      </div>
+                    </div>
+                    <div className="w-full bg-gray-100 rounded-full h-2">
+                      <div className={`${barColor} h-2 rounded-full transition-all`} style={{ width: `${dim.score}%` }} />
+                    </div>
+                  </a>
+                );
+              })}
+            </div>
+            <p className="text-xs text-gray-400 mt-3">Click a dimension to view details</p>
+          </div>
+        )}
+
+        {/* Control Implementation Status — analyst+ (fallback when no scores) */}
+        {canEdit && !compScores?.org_score && (
           <div className="bg-white rounded-xl border border-gray-200 p-6">
             <h2 className="font-semibold text-gray-900 mb-4">
               {t('control')} Implementation Status
@@ -657,10 +755,38 @@ function QuickAction({
 }
 
 // ---------------------------------------------------------------------------
+// Compliance Score Card (letter grade hero card)
+// ---------------------------------------------------------------------------
+
+function ComplianceScoreCard({ score, label }: { score: ComplianceScoreResult; label: string }) {
+  const gc = GRADE_COLORS[score.grade] || GRADE_COLORS.F;
+  const trend = score.previous_score !== null ? score.score - score.previous_score : null;
+
+  return (
+    <div className={`bg-white rounded-xl border ${gc.border} p-5`}>
+      <p className="text-sm font-medium text-gray-500 mb-2">{label}</p>
+      <div className="flex items-center gap-3">
+        <div className={`w-14 h-14 rounded-xl ${gc.bg} flex items-center justify-center`}>
+          <span className={`text-2xl font-black ${gc.text}`}>{score.grade}</span>
+        </div>
+        <div>
+          <p className={`text-2xl font-bold ${gc.text}`}>{score.score}<span className="text-sm font-normal text-gray-400">/100</span></p>
+          {trend !== null && (
+            <p className={`text-xs font-medium ${trend > 0 ? 'text-green-600' : trend < 0 ? 'text-red-600' : 'text-gray-400'}`}>
+              {trend > 0 ? '↑' : trend < 0 ? '↓' : '→'} {Math.abs(trend)} pts
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Donut Chart for per-framework compliance
 // ---------------------------------------------------------------------------
 
-function DonutChart({ label, percentage }: { label: string; percentage: number }) {
+function DonutChart({ label, percentage, grade }: { label: string; percentage: number; grade?: string | null }) {
   const size = 100;
   const strokeWidth = 10;
   const radius = (size - strokeWidth) / 2;
@@ -694,12 +820,16 @@ function DonutChart({ label, percentage }: { label: string; percentage: number }
           className="transition-all duration-700"
         />
       </svg>
-      <span
-        className="text-lg font-bold -mt-16 mb-8"
-        style={{ color: strokeColor }}
-      >
-        {percentage}%
-      </span>
+      <div className="flex items-center gap-1 -mt-16 mb-8">
+        <span className="text-lg font-bold" style={{ color: strokeColor }}>
+          {percentage}%
+        </span>
+        {grade && (
+          <span className={`text-xs font-bold px-1 py-0.5 rounded ${GRADE_COLORS[grade]?.bg || 'bg-gray-100'} ${GRADE_COLORS[grade]?.text || 'text-gray-600'}`}>
+            {grade}
+          </span>
+        )}
+      </div>
       <p className="text-xs text-gray-600 font-medium text-center max-w-[120px] truncate">
         {label}
       </p>
