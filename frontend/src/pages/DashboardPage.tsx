@@ -70,6 +70,7 @@ export function DashboardPage() {
   const [snapshotLoading, setSnapshotLoading] = useState(false);
   const [snapshotMsg, setSnapshotMsg] = useState('');
   const [scheduleStats, setScheduleStats] = useState<{ total: number; overdue: number; due_this_week: number; due_this_month: number } | null>(null);
+  const [auditScore, setAuditScore] = useState<{ score: number; passed_checks: number; total_checks: number } | null>(null);
 
   useEffect(() => {
     // Core dashboard stats (always loaded)
@@ -99,6 +100,11 @@ export function DashboardPage() {
     // Evidence schedule stats
     api<{ stats: { total: number; overdue: number; due_this_week: number; due_this_month: number } }>('/api/v1/evidence/schedules/stats')
       .then((d) => setScheduleStats(d.stats))
+      .catch(() => {});
+
+    // Audit readiness score
+    api<{ readiness: { score: number; passed_checks: number; total_checks: number } }>('/api/v1/audit-prep/readiness')
+      .then((d) => setAuditScore(d.readiness))
       .catch(() => {});
   }, []);
 
@@ -364,6 +370,28 @@ export function DashboardPage() {
             </p>
           )}
         </div>
+
+        {/* Audit Readiness */}
+        {auditScore && (
+          <div className={`bg-white rounded-xl border p-6 ${auditScore.score >= 90 ? 'border-green-200' : auditScore.score >= 70 ? 'border-amber-200' : 'border-red-200'}`}>
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="font-semibold text-gray-900">Audit Readiness</h2>
+              <a href="/audit-prep" className="text-sm text-blue-600 hover:text-blue-800">View Checklist &rarr;</a>
+            </div>
+            <div className="flex items-center gap-4">
+              <span className={`text-3xl font-bold ${auditScore.score >= 90 ? 'text-green-600' : auditScore.score >= 70 ? 'text-amber-600' : 'text-red-600'}`}>
+                {auditScore.score}%
+              </span>
+              <div className="flex-1">
+                <div className="w-full bg-gray-200 rounded-full h-2">
+                  <div className={`h-2 rounded-full ${auditScore.score >= 90 ? 'bg-green-500' : auditScore.score >= 70 ? 'bg-amber-500' : 'bg-red-500'}`}
+                    style={{ width: `${auditScore.score}%` }} />
+                </div>
+                <p className="text-xs text-gray-500 mt-1">{auditScore.passed_checks}/{auditScore.total_checks} checks passed</p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Evidence Schedules */}
         {scheduleStats && (scheduleStats.total > 0 || scheduleStats.overdue > 0) && (

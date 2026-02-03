@@ -150,6 +150,13 @@ async function handleRequest(request, env, url) {
   if (path.match(/^\/api\/v1\/evidence\/schedules\/[\w-]+$/) && method === 'PUT') return handleUpdateEvidenceSchedule(request, env, org, user, path.split('/')[4]);
   if (path.match(/^\/api\/v1\/evidence\/schedules\/[\w-]+$/) && method === 'DELETE') return handleDeleteEvidenceSchedule(env, org, user, path.split('/')[4]);
 
+  // Audit Preparation
+  if (path === '/api/v1/audit-prep/readiness' && method === 'GET') return handleAuditReadiness(env, org);
+  if (path === '/api/v1/audit-prep/items' && method === 'GET') return handleListAuditItems(env, org);
+  if (path === '/api/v1/audit-prep/items' && method === 'POST') return handleCreateAuditItem(request, env, org, user);
+  if (path.match(/^\/api\/v1\/audit-prep\/items\/[\w-]+$/) && method === 'PUT') return handleUpdateAuditItem(request, env, org, user, path.split('/')[5]);
+  if (path.match(/^\/api\/v1\/audit-prep\/items\/[\w-]+$/) && method === 'DELETE') return handleDeleteAuditItem(env, org, user, path.split('/')[5]);
+
   // SSP / OSCAL
   if (path === '/api/v1/ssp/generate' && method === 'POST') return handleGenerateSSP(request, env, org, user);
   if (path === '/api/v1/ssp' && method === 'GET') return handleListSSPs(env, org);
@@ -3341,4 +3348,253 @@ async function handleScheduledEvidenceChecks(env) {
   } catch (error) {
     console.error('[CRON] Evidence check error:', error);
   }
+}
+
+// ============================================================================
+// AUDIT PREPARATION CHECKLIST
+// ============================================================================
+
+async function handleAuditReadiness(env, org) {
+  const today = new Date().toISOString().split('T')[0];
+
+  // Run parallel queries for all auto-computed checks
+  const [
+    controlStats,
+    highRiskControls,
+    overduePoams,
+    poamsWithoutMilestones,
+    highCritPoamsOverdue,
+    overdueSchedules,
+    expiredEvidence,
+    implementedWithoutEvidence,
+    sspDocs,
+    monitoringChecks,
+    failedChecks,
+    pendingApprovals,
+    systems,
+    customItems,
+  ] = await Promise.all([
+    // Controls: total, implemented, not_assessed
+    env.DB.prepare(`SELECT
+      COUNT(*) as total,
+      SUM(CASE WHEN status IN ('implemented','not_applicable') THEN 1 ELSE 0 END) as compliant,
+      SUM(CASE WHEN assessment_result = 'not_assessed' AND status = 'not_implemented' THEN 1 ELSE 0 END) as unassessed
+      FROM control_implementations WHERE org_id = ?`).bind(org.id).first(),
+    // Controls: high/critical risk unresolved
+    env.DB.prepare(`SELECT COUNT(*) as count FROM control_implementations
+      WHERE org_id = ? AND risk_level IN ('critical','high') AND status NOT IN ('implemented','not_applicable')`).bind(org.id).first(),
+    // POA&Ms: overdue
+    env.DB.prepare(`SELECT COUNT(*) as count FROM poams
+      WHERE org_id = ? AND scheduled_completion < ? AND status NOT IN ('completed','accepted','deferred')`).bind(org.id, today).first(),
+    // POA&Ms: without milestones
+    env.DB.prepare(`SELECT COUNT(*) as count FROM poams p
+      WHERE p.org_id = ? AND p.status NOT IN ('completed','accepted','deferred')
+      AND NOT EXISTS (SELECT 1 FROM poam_milestones m WHERE m.poam_id = p.id)`).bind(org.id).first(),
+    // POA&Ms: high/critical overdue
+    env.DB.prepare(`SELECT COUNT(*) as count FROM poams
+      WHERE org_id = ? AND risk_level IN ('critical','high') AND scheduled_completion < ? AND status NOT IN ('completed','accepted','deferred')`).bind(org.id, today).first(),
+    // Evidence: overdue schedules
+    env.DB.prepare(`SELECT COUNT(*) as count FROM evidence_schedules
+      WHERE org_id = ? AND is_active = 1 AND next_due_date < ?`).bind(org.id, today).first(),
+    // Evidence: expired
+    env.DB.prepare(`SELECT COUNT(*) as count FROM evidence WHERE org_id = ? AND status = 'expired'`).bind(org.id).first(),
+    // Evidence: implemented controls without linked evidence
+    env.DB.prepare(`SELECT COUNT(*) as count FROM control_implementations ci
+      WHERE ci.org_id = ? AND ci.status = 'implemented'
+      AND NOT EXISTS (SELECT 1 FROM evidence_control_links ecl WHERE ecl.implementation_id = ci.id)`).bind(org.id).first(),
+    // SSP: published docs
+    env.DB.prepare(`SELECT id, status, oscal_json FROM ssp_documents WHERE org_id = ? ORDER BY created_at DESC LIMIT 5`).bind(org.id).all(),
+    // Monitoring: active checks
+    env.DB.prepare(`SELECT COUNT(*) as count FROM monitoring_checks WHERE org_id = ? AND is_active = 1`).bind(org.id).first(),
+    // Monitoring: failed checks
+    env.DB.prepare(`SELECT COUNT(*) as count FROM monitoring_checks WHERE org_id = ? AND is_active = 1 AND last_result = 'fail'`).bind(org.id).first(),
+    // Approvals: pending
+    env.DB.prepare(`SELECT COUNT(*) as count FROM approval_requests WHERE org_id = ? AND status = 'pending'`).bind(org.id).first(),
+    // Systems: authorization status
+    env.DB.prepare(`SELECT authorization_expiry FROM systems WHERE org_id = ? AND status = 'active' LIMIT 1`).bind(org.id).first(),
+    // Custom checklist items
+    env.DB.prepare(`SELECT ci.*, u.name as assigned_to_name, cu.name as completed_by_name
+      FROM audit_checklist_items ci
+      LEFT JOIN users u ON u.id = ci.assigned_to
+      LEFT JOIN users cu ON cu.id = ci.completed_by
+      WHERE ci.org_id = ? ORDER BY ci.sort_order, ci.created_at`).bind(org.id).all(),
+  ]);
+
+  const total = controlStats?.total || 0;
+  const compliant = controlStats?.compliant || 0;
+  const compliancePct = total > 0 ? Math.round((compliant / total) * 100) : 0;
+
+  // Check if SSP is published and sections complete
+  const sspResults = sspDocs?.results || [];
+  const publishedSSP = sspResults.find(s => s.status === 'published');
+  let sspSectionsComplete = false;
+  if (publishedSSP && publishedSSP.oscal_json) {
+    try {
+      const oscal = JSON.parse(publishedSSP.oscal_json);
+      const sections = oscal?._authoring?.sections || {};
+      const sectionValues = Object.values(sections);
+      sspSectionsComplete = sectionValues.length >= 8 && sectionValues.every(v => v && String(v).trim().length > 10);
+    } catch { sspSectionsComplete = false; }
+  }
+
+  // Build auto-computed items
+  const categories = {
+    controls: {
+      items: [
+        { key: 'controls_assessed', label: 'All controls assessed', description: 'No unassessed controls remain', passed: (controlStats?.unassessed || 0) === 0, value: `${controlStats?.unassessed || 0} unassessed`, target: '0', link: '/controls' },
+        { key: 'high_risk_resolved', label: 'High/critical risk controls resolved', description: 'No high or critical risk controls left unresolved', passed: (highRiskControls?.count || 0) === 0, value: `${highRiskControls?.count || 0} unresolved`, target: '0', link: '/controls' },
+        { key: 'compliance_80', label: 'Compliance above 80%', description: 'Overall compliance percentage meets threshold', passed: compliancePct >= 80, value: `${compliancePct}%`, target: '80%', link: '/' },
+      ],
+    },
+    poams: {
+      items: [
+        { key: 'no_overdue_poams', label: 'No overdue POA&Ms', description: 'All POA&Ms within scheduled completion date', passed: (overduePoams?.count || 0) === 0, value: `${overduePoams?.count || 0} overdue`, target: '0', link: '/poams' },
+        { key: 'poams_have_milestones', label: 'All open POA&Ms have milestones', description: 'Every active POA&M includes at least one milestone', passed: (poamsWithoutMilestones?.count || 0) === 0, value: `${poamsWithoutMilestones?.count || 0} without milestones`, target: '0', link: '/poams' },
+        { key: 'high_crit_poams_on_track', label: 'High/critical POA&Ms on track', description: 'No high or critical POA&Ms past their due date', passed: (highCritPoamsOverdue?.count || 0) === 0, value: `${highCritPoamsOverdue?.count || 0} overdue`, target: '0', link: '/poams' },
+      ],
+    },
+    evidence: {
+      items: [
+        { key: 'no_overdue_schedules', label: 'No overdue evidence schedules', description: 'All recurring evidence collection is current', passed: (overdueSchedules?.count || 0) === 0, value: `${overdueSchedules?.count || 0} overdue`, target: '0', link: '/evidence/schedules' },
+        { key: 'no_expired_evidence', label: 'No expired evidence', description: 'All evidence files are within their validity period', passed: (expiredEvidence?.count || 0) === 0, value: `${expiredEvidence?.count || 0} expired`, target: '0', link: '/evidence' },
+        { key: 'controls_have_evidence', label: 'Implemented controls have evidence', description: 'All implemented controls are backed by evidence', passed: (implementedWithoutEvidence?.count || 0) === 0, value: `${implementedWithoutEvidence?.count || 0} without evidence`, target: '0', link: '/controls' },
+      ],
+    },
+    ssp: {
+      items: [
+        { key: 'ssp_published', label: 'SSP published', description: 'At least one System Security Plan is published', passed: !!publishedSSP, value: publishedSSP ? 'Published' : 'Not published', target: 'Published', link: '/ssp' },
+        { key: 'ssp_sections_complete', label: 'SSP sections complete', description: 'All SSP sections have substantive content', passed: sspSectionsComplete, value: sspSectionsComplete ? 'Complete' : 'Incomplete', target: 'Complete', link: '/ssp' },
+      ],
+    },
+    monitoring: {
+      items: [
+        { key: 'monitoring_active', label: 'Continuous monitoring active', description: 'At least one monitoring check is configured and active', passed: (monitoringChecks?.count || 0) > 0, value: `${monitoringChecks?.count || 0} active`, target: '1+', link: '/monitoring' },
+        { key: 'no_failed_checks', label: 'No failed monitoring checks', description: 'All active monitoring checks are passing', passed: (failedChecks?.count || 0) === 0, value: `${failedChecks?.count || 0} failed`, target: '0', link: '/monitoring' },
+      ],
+    },
+    approvals: {
+      items: [
+        { key: 'no_pending_approvals', label: 'No pending approvals', description: 'All approval requests have been reviewed', passed: (pendingApprovals?.count || 0) === 0, value: `${pendingApprovals?.count || 0} pending`, target: '0', link: '/approvals' },
+      ],
+    },
+    system: {
+      items: [
+        { key: 'auth_current', label: 'System authorization current', description: 'Authorization has not expired', passed: !systems?.authorization_expiry || systems.authorization_expiry >= today, value: systems?.authorization_expiry ? (systems.authorization_expiry >= today ? `Expires ${systems.authorization_expiry}` : 'Expired') : 'No expiry set', target: 'Current', link: '/systems' },
+      ],
+    },
+    custom: {
+      items: (customItems?.results || []).map(ci => ({
+        id: ci.id, title: ci.title, description: ci.description, completed: !!ci.completed,
+        completed_at: ci.completed_at, completed_by_name: ci.completed_by_name,
+        assigned_to: ci.assigned_to, assigned_to_name: ci.assigned_to_name,
+        due_date: ci.due_date, sort_order: ci.sort_order,
+      })),
+    },
+  };
+
+  // Calculate totals
+  let totalChecks = 0, passedChecks = 0;
+  for (const [catKey, cat] of Object.entries(categories)) {
+    const items = cat.items || [];
+    if (catKey === 'custom') {
+      totalChecks += items.length;
+      passedChecks += items.filter(i => i.completed).length;
+      cat.total = items.length;
+      cat.passed = items.filter(i => i.completed).length;
+    } else {
+      totalChecks += items.length;
+      passedChecks += items.filter(i => i.passed).length;
+      cat.total = items.length;
+      cat.passed = items.filter(i => i.passed).length;
+    }
+  }
+
+  const score = totalChecks > 0 ? Math.round((passedChecks / totalChecks) * 100) : 0;
+
+  return jsonResponse({
+    readiness: { score, total_checks: totalChecks, passed_checks: passedChecks, categories },
+  });
+}
+
+async function handleListAuditItems(env, org) {
+  const { results } = await env.DB.prepare(
+    `SELECT ci.*, u.name as assigned_to_name, cu.name as completed_by_name
+     FROM audit_checklist_items ci
+     LEFT JOIN users u ON u.id = ci.assigned_to
+     LEFT JOIN users cu ON cu.id = ci.completed_by
+     WHERE ci.org_id = ? ORDER BY ci.sort_order, ci.created_at`
+  ).bind(org.id).all();
+  return jsonResponse({ items: results });
+}
+
+async function handleCreateAuditItem(request, env, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const { title, description, assigned_to, due_date } = await request.json();
+  if (!title) return jsonResponse({ error: 'title required' }, 400);
+
+  const id = generateId();
+  const maxOrder = await env.DB.prepare('SELECT MAX(sort_order) as m FROM audit_checklist_items WHERE org_id = ?').bind(org.id).first();
+  const sortOrder = (maxOrder?.m || 0) + 1;
+
+  await env.DB.prepare(
+    `INSERT INTO audit_checklist_items (id, org_id, title, description, assigned_to, due_date, sort_order, created_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(id, org.id, title, description || null, assigned_to || null, due_date || null, sortOrder, user.id).run();
+
+  await auditLog(env, org.id, user.id, 'create', 'audit_checklist_item', id, { title });
+
+  const item = await env.DB.prepare('SELECT * FROM audit_checklist_items WHERE id = ?').bind(id).first();
+  return jsonResponse({ item }, 201);
+}
+
+async function handleUpdateAuditItem(request, env, org, user, itemId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const item = await env.DB.prepare('SELECT * FROM audit_checklist_items WHERE id = ? AND org_id = ?').bind(itemId, org.id).first();
+  if (!item) return jsonResponse({ error: 'Item not found' }, 404);
+
+  const body = await request.json();
+  const updates = [];
+  const values = [];
+
+  if (body.title !== undefined) { updates.push('title = ?'); values.push(body.title); }
+  if (body.description !== undefined) { updates.push('description = ?'); values.push(body.description); }
+  if (body.assigned_to !== undefined) { updates.push('assigned_to = ?'); values.push(body.assigned_to || null); }
+  if (body.due_date !== undefined) { updates.push('due_date = ?'); values.push(body.due_date || null); }
+  if (body.sort_order !== undefined) { updates.push('sort_order = ?'); values.push(body.sort_order); }
+
+  if (body.completed !== undefined) {
+    updates.push('completed = ?');
+    values.push(body.completed ? 1 : 0);
+    if (body.completed) {
+      updates.push("completed_at = datetime('now')");
+      updates.push('completed_by = ?');
+      values.push(user.id);
+    } else {
+      updates.push('completed_at = NULL');
+      updates.push('completed_by = NULL');
+    }
+  }
+
+  if (updates.length === 0) return jsonResponse({ error: 'No fields to update' }, 400);
+  updates.push("updated_at = datetime('now')");
+  values.push(itemId);
+
+  await env.DB.prepare(`UPDATE audit_checklist_items SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run();
+  await auditLog(env, org.id, user.id, 'update', 'audit_checklist_item', itemId, body);
+
+  const updated = await env.DB.prepare(
+    `SELECT ci.*, u.name as assigned_to_name, cu.name as completed_by_name
+     FROM audit_checklist_items ci LEFT JOIN users u ON u.id = ci.assigned_to LEFT JOIN users cu ON cu.id = ci.completed_by
+     WHERE ci.id = ?`
+  ).bind(itemId).first();
+  return jsonResponse({ item: updated });
+}
+
+async function handleDeleteAuditItem(env, org, user, itemId) {
+  if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const item = await env.DB.prepare('SELECT * FROM audit_checklist_items WHERE id = ? AND org_id = ?').bind(itemId, org.id).first();
+  if (!item) return jsonResponse({ error: 'Item not found' }, 404);
+  await env.DB.prepare('DELETE FROM audit_checklist_items WHERE id = ?').bind(itemId).run();
+  await auditLog(env, org.id, user.id, 'delete', 'audit_checklist_item', itemId, { title: item.title });
+  return jsonResponse({ message: 'Item deleted' });
 }
