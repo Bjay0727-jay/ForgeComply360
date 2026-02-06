@@ -91,6 +91,155 @@ function addCoverPage(doc: jsPDF, title: string, subtitle: string, orgName: stri
   doc.addPage();
 }
 
+/**
+ * Professional cover page with CUI classification banners, organization branding, and document metadata.
+ * Consistent design across all FedRAMP/ATO document types.
+ */
+function addProfessionalCoverPage(
+  doc: jsPDF,
+  docType: string,
+  title: string,
+  orgName: string,
+  systemName?: string,
+  metadata?: { version?: string; status?: string; impactLevel?: string; preparedBy?: string; date?: string },
+): void {
+  const cx = PAGE.width / 2;
+  const classification = 'CONTROLLED UNCLASSIFIED INFORMATION (CUI)';
+
+  // Top classification banner
+  doc.setFillColor(...COLORS.danger);
+  doc.rect(0, 0, PAGE.width, 12, 'F');
+  doc.setFontSize(9);
+  doc.setTextColor(255, 255, 255);
+  doc.setFont('helvetica', 'bold');
+  doc.text(classification, cx, 8, { align: 'center' });
+
+  // Organization branding area
+  doc.setFillColor(...COLORS.primary);
+  doc.rect(PAGE.ml, 30, PAGE.cw, 25, 'F');
+  doc.setFontSize(16);
+  doc.setTextColor(255, 255, 255);
+  doc.text(orgName.toUpperCase(), cx, 46, { align: 'center' });
+
+  // Document type
+  doc.setFontSize(12);
+  doc.setTextColor(...COLORS.muted);
+  doc.setFont('helvetica', 'normal');
+  doc.text(docType.toUpperCase(), cx, 70, { align: 'center' });
+
+  // Main title
+  doc.setFontSize(24);
+  doc.setTextColor(...COLORS.primary);
+  doc.setFont('helvetica', 'bold');
+  const titleLines = doc.splitTextToSize(title, PAGE.cw - 40);
+  let ty = 90;
+  for (const line of titleLines) {
+    doc.text(line, cx, ty, { align: 'center' });
+    ty += 10;
+  }
+
+  // System name box (if provided)
+  if (systemName) {
+    const boxY = ty + 10;
+    doc.setFillColor(244, 247, 251);
+    doc.setDrawColor(...COLORS.primary);
+    doc.setLineWidth(1);
+    doc.rect(PAGE.ml + 20, boxY, PAGE.cw - 40, 25, 'FD');
+    doc.setFontSize(14);
+    doc.setTextColor(...COLORS.primary);
+    doc.setFont('helvetica', 'bold');
+    doc.text(systemName, cx, boxY + 15, { align: 'center' });
+    ty = boxY + 35;
+  }
+
+  // Document metadata table
+  const metaY = Math.max(ty + 15, 160);
+  doc.setFontSize(10);
+  doc.setTextColor(...COLORS.text);
+
+  const metaRows: [string, string][] = [
+    ['Document Version:', metadata?.version || '1.0'],
+    ['Document Status:', (metadata?.status || 'DRAFT').toUpperCase()],
+    ['Prepared By:', metadata?.preparedBy || orgName],
+    ['Date:', metadata?.date || nowStr()],
+  ];
+
+  if (metadata?.impactLevel) {
+    metaRows.push(['Impact Level:', `${metadata.impactLevel.toUpperCase()} IMPACT`]);
+  }
+
+  let my = metaY;
+  for (const [label, value] of metaRows) {
+    doc.setFont('helvetica', 'bold');
+    doc.text(label, PAGE.ml + 30, my);
+    doc.setFont('helvetica', 'normal');
+    doc.text(value, PAGE.ml + 80, my);
+    my += 8;
+  }
+
+  // Bottom classification banner
+  doc.setFillColor(...COLORS.danger);
+  doc.rect(0, PAGE.height - 12, PAGE.width, 12, 'F');
+  doc.setFontSize(9);
+  doc.setTextColor(255, 255, 255);
+  doc.setFont('helvetica', 'bold');
+  doc.text(classification, cx, PAGE.height - 5, { align: 'center' });
+
+  doc.addPage();
+}
+
+/**
+ * Professional document header - appears on every page except cover
+ */
+function addProfessionalDocHeader(doc: jsPDF, docTitle: string, systemName: string, version: string): void {
+  const pageCount = doc.getNumberOfPages();
+  for (let i = 2; i <= pageCount; i++) {
+    doc.setPage(i);
+    // Header line
+    doc.setDrawColor(...COLORS.primary);
+    doc.setLineWidth(0.5);
+    doc.line(PAGE.ml, 12, PAGE.width - PAGE.mr, 12);
+    // Left: System/Doc name
+    doc.setFontSize(8);
+    doc.setTextColor(...COLORS.muted);
+    doc.setFont('helvetica', 'normal');
+    doc.text(systemName || docTitle, PAGE.ml, 10);
+    // Center: Document title
+    doc.text(docTitle, PAGE.width / 2, 10, { align: 'center' });
+    // Right: Version
+    doc.text(`Version ${version}`, PAGE.width - PAGE.mr, 10, { align: 'right' });
+  }
+}
+
+/**
+ * Professional document footer with CUI classification
+ */
+function addProfessionalDocFooter(doc: jsPDF, orgName: string, classification: string = 'CONTROLLED UNCLASSIFIED INFORMATION (CUI)'): void {
+  const pageCount = doc.getNumberOfPages();
+  for (let i = 1; i <= pageCount; i++) {
+    doc.setPage(i);
+    // Footer line
+    doc.setDrawColor(...COLORS.primary);
+    doc.setLineWidth(0.3);
+    doc.line(PAGE.ml, PAGE.height - 15, PAGE.width - PAGE.mr, PAGE.height - 15);
+    // Left: Classification
+    doc.setFontSize(7);
+    doc.setTextColor(...COLORS.danger);
+    doc.setFont('helvetica', 'bold');
+    doc.text(classification, PAGE.ml, PAGE.height - 11);
+    // Center: Organization
+    doc.setTextColor(...COLORS.muted);
+    doc.setFont('helvetica', 'normal');
+    doc.text(orgName, PAGE.width / 2, PAGE.height - 11, { align: 'center' });
+    // Right: Page number
+    doc.text(`Page ${i} of ${pageCount}`, PAGE.width - PAGE.mr, PAGE.height - 11, { align: 'right' });
+    // Bottom: Generator credit
+    doc.setFontSize(6);
+    doc.setTextColor(...COLORS.footerText);
+    doc.text('Generated by ForgeComply 360', PAGE.width / 2, PAGE.height - 7, { align: 'center' });
+  }
+}
+
 function addSectionHeading(doc: jsPDF, text: string, level: 1 | 2 | 3, y: number): number {
   y = ensureSpace(doc, y, 20);
   const sizes = { 1: FONTS.h1, 2: FONTS.h2, 3: FONTS.h3 };
@@ -483,14 +632,26 @@ function renderExecutiveSummaryContent(doc: jsPDF, data: ReportData, startY?: nu
   return y;
 }
 
-export async function exportExecutiveSummaryReportPdf(data: ReportData, orgName: string): Promise<void> {
+export async function exportExecutiveSummaryReportPdf(data: ReportData, orgName: string, systemName?: string): Promise<void> {
   const doc = createPdfDoc();
   const title = 'Executive Summary Report';
+  const docType = 'Compliance & Risk Overview';
   setDocMetadata(doc, title, orgName);
-  addCoverPage(doc, title, 'Compliance & Risk Overview', orgName);
+
+  // Professional cover page
+  addProfessionalCoverPage(doc, docType, title, orgName, systemName, {
+    version: '1.0',
+    status: 'FINAL',
+    date: nowStr(),
+  });
+
   renderExecutiveSummaryContent(doc, data);
-  addPageFooter(doc, 'ForgeComply 360 \u2014 Reporting & Export Engine');
-  downloadPdf(doc, `Executive Summary Report - ${new Date().toISOString().split('T')[0]}`);
+
+  // Professional headers and footers
+  addProfessionalDocHeader(doc, title, systemName || orgName, '1.0');
+  addProfessionalDocFooter(doc, orgName);
+
+  downloadPdf(doc, `Executive-Summary-Report-${new Date().toISOString().split('T')[0]}`);
 }
 
 // ============================================================================
@@ -600,14 +761,26 @@ function renderCompliancePostureContent(doc: jsPDF, data: ReportData, startY?: n
   return y;
 }
 
-export async function exportCompliancePostureReportPdf(data: ReportData, orgName: string): Promise<void> {
+export async function exportCompliancePostureReportPdf(data: ReportData, orgName: string, systemName?: string): Promise<void> {
   const doc = createPdfDoc();
   const title = 'Compliance Posture Report';
+  const docType = 'Framework Analysis & Gap Assessment';
   setDocMetadata(doc, title, orgName);
-  addCoverPage(doc, title, 'Framework Analysis & Gap Assessment', orgName);
+
+  // Professional cover page
+  addProfessionalCoverPage(doc, docType, title, orgName, systemName, {
+    version: '1.0',
+    status: 'FINAL',
+    date: nowStr(),
+  });
+
   renderCompliancePostureContent(doc, data);
-  addPageFooter(doc, 'ForgeComply 360 \u2014 Reporting & Export Engine');
-  downloadPdf(doc, `Compliance Posture Report - ${new Date().toISOString().split('T')[0]}`);
+
+  // Professional headers and footers
+  addProfessionalDocHeader(doc, title, systemName || orgName, '1.0');
+  addProfessionalDocFooter(doc, orgName);
+
+  downloadPdf(doc, `Compliance-Posture-Report-${new Date().toISOString().split('T')[0]}`);
 }
 
 // ============================================================================
@@ -701,33 +874,69 @@ function renderRiskSummaryContent(doc: jsPDF, data: ReportData, startY?: number)
   return y;
 }
 
-export async function exportRiskSummaryReportPdf(data: ReportData, orgName: string): Promise<void> {
+export async function exportRiskSummaryReportPdf(data: ReportData, orgName: string, systemName?: string): Promise<void> {
   const doc = createPdfDoc();
   const title = 'Risk Summary Report';
+  const docType = 'Enterprise Risk & Vendor Risk Overview';
   setDocMetadata(doc, title, orgName);
-  addCoverPage(doc, title, 'Enterprise Risk & Vendor Risk Overview', orgName);
+
+  // Professional cover page
+  addProfessionalCoverPage(doc, docType, title, orgName, systemName, {
+    version: '1.0',
+    status: 'FINAL',
+    date: nowStr(),
+  });
+
   renderRiskSummaryContent(doc, data);
-  addPageFooter(doc, 'ForgeComply 360 \u2014 Reporting & Export Engine');
-  downloadPdf(doc, `Risk Summary Report - ${new Date().toISOString().split('T')[0]}`);
+
+  // Professional headers and footers
+  addProfessionalDocHeader(doc, title, systemName || orgName, '1.0');
+  addProfessionalDocFooter(doc, orgName);
+
+  downloadPdf(doc, `Risk-Summary-Report-${new Date().toISOString().split('T')[0]}`);
 }
 
 // ============================================================================
 // AUDIT-READY PACKAGE PDF (COMBINED SINGLE FILE)
 // ============================================================================
 
-export async function exportAuditReadyPackagePdf(data: ReportData, orgName: string): Promise<void> {
+export async function exportAuditReadyPackagePdf(data: ReportData, orgName: string, systemName?: string): Promise<void> {
   const doc = createPdfDoc();
-  setDocMetadata(doc, 'Audit-Ready Compliance Package', orgName);
+  const title = 'Audit-Ready Compliance Package';
+  const docType = 'Comprehensive Compliance Documentation';
+  setDocMetadata(doc, title, orgName);
 
-  // Master cover
-  addCoverPage(doc, 'Audit-Ready Compliance Package', 'Executive Summary \u2022 Compliance Posture \u2022 Risk Summary', orgName);
+  // Professional cover page
+  addProfessionalCoverPage(doc, docType, title, orgName, systemName, {
+    version: '1.0',
+    status: 'FINAL',
+    date: nowStr(),
+  });
 
   // Master TOC
   let y = PAGE.mt;
-  y = addSectionHeading(doc, 'Package Contents', 2, y);
-  y = addParagraph(doc, 'Part 1: Executive Summary Report', y, { bold: true });
-  y = addParagraph(doc, 'Part 2: Compliance Posture Report', y, { bold: true });
-  y = addParagraph(doc, 'Part 3: Risk Summary Report', y, { bold: true });
+  doc.setFontSize(FONTS.h1);
+  doc.setTextColor(...COLORS.primary);
+  doc.setFont('helvetica', 'bold');
+  doc.text('TABLE OF CONTENTS', PAGE.ml, y);
+  doc.setDrawColor(...COLORS.primary);
+  doc.setLineWidth(0.5);
+  doc.line(PAGE.ml, y + 3, PAGE.ml + 60, y + 3);
+  y += 15;
+
+  const tocItems = [
+    'Part 1: Executive Summary Report',
+    'Part 2: Compliance Posture Report',
+    'Part 3: Risk Summary Report',
+  ];
+
+  doc.setFontSize(11);
+  for (const item of tocItems) {
+    doc.setTextColor(...COLORS.text);
+    doc.setFont('helvetica', 'normal');
+    doc.text(item, PAGE.ml + 5, y);
+    y += 8;
+  }
   doc.addPage();
 
   // Part 1: Executive Summary
@@ -750,19 +959,29 @@ export async function exportAuditReadyPackagePdf(data: ReportData, orgName: stri
   y += 4;
   renderRiskSummaryContent(doc, data, y);
 
-  addPageFooter(doc, 'ForgeComply 360 \u2014 Audit-Ready Package');
-  downloadPdf(doc, `Audit-Ready_Package_${new Date().toISOString().split('T')[0]}`);
+  // Professional headers and footers
+  addProfessionalDocHeader(doc, title, systemName || orgName, '1.0');
+  addProfessionalDocFooter(doc, orgName);
+
+  downloadPdf(doc, `Audit-Ready-Package-${new Date().toISOString().split('T')[0]}`);
 }
 
 // ============================================================================
-// RISK REGISTER PDF
+// RISK REGISTER PDF - Professional Format
 // ============================================================================
 
-export async function exportRiskRegisterPdf(risks: any[], orgName: string): Promise<void> {
+export async function exportRiskRegisterPdf(risks: any[], orgName: string, systemName?: string): Promise<void> {
   const doc = createPdfDoc();
-  setDocMetadata(doc, 'Risk Register Report', orgName);
+  const title = 'Risk Register Report';
+  const docType = 'Enterprise Risk Management';
+  setDocMetadata(doc, title, orgName);
 
-  addCoverPage(doc, 'Risk Register Report', 'Enterprise Risk Management', orgName);
+  // Professional cover page
+  addProfessionalCoverPage(doc, docType, title, orgName, systemName, {
+    version: '1.0',
+    status: 'FINAL',
+    date: nowStr(),
+  });
 
   let y = PAGE.mt;
 
@@ -771,13 +990,17 @@ export async function exportRiskRegisterPdf(risks: any[], orgName: string): Prom
   const levelCounts: Record<string, number> = { critical: 0, high: 0, moderate: 0, low: 0 };
   for (const r of openRisks) { if (r.risk_level && levelCounts[r.risk_level] !== undefined) levelCounts[r.risk_level]++; }
 
-  y = addSectionHeading(doc, 'Executive Summary', 2, y);
-  y = addDataTable(doc, ['Metric', 'Value'], [
-    ['Total Open Risks', String(openRisks.length)],
-    ['Critical', String(levelCounts.critical)],
-    ['High', String(levelCounts.high)],
-    ['Moderate', String(levelCounts.moderate)],
-    ['Low', String(levelCounts.low)],
+  y = addSectionHeading(doc, '1. Executive Summary', 1, y);
+  y = addParagraph(doc, `This Risk Register documents ${risks.length} identified risks for ${systemName || orgName}. Of these, ${openRisks.length} risks are currently open and require ongoing management.`, y);
+  y += 3;
+
+  y = addSectionHeading(doc, 'Risk Distribution by Level', 2, y);
+  y = addDataTable(doc, ['Risk Level', 'Count', 'Percentage'], [
+    ['Critical', String(levelCounts.critical), `${risks.length > 0 ? ((levelCounts.critical / openRisks.length) * 100).toFixed(1) : 0}%`],
+    ['High', String(levelCounts.high), `${risks.length > 0 ? ((levelCounts.high / openRisks.length) * 100).toFixed(1) : 0}%`],
+    ['Moderate', String(levelCounts.moderate), `${risks.length > 0 ? ((levelCounts.moderate / openRisks.length) * 100).toFixed(1) : 0}%`],
+    ['Low', String(levelCounts.low), `${risks.length > 0 ? ((levelCounts.low / openRisks.length) * 100).toFixed(1) : 0}%`],
+    ['Total Open', String(openRisks.length), '100%'],
   ], y, {
     didParseCell: (d: any) => {
       if (d.section === 'body' && d.column.index === 0) {
@@ -791,7 +1014,9 @@ export async function exportRiskRegisterPdf(risks: any[], orgName: string): Prom
   });
 
   // Full risk table
-  y = addSectionHeading(doc, 'Risk Details', 2, y);
+  doc.addPage();
+  y = PAGE.mt;
+  y = addSectionHeading(doc, '2. Risk Details', 1, y);
   const riskRows = risks.map(r => [
     r.risk_id || '', r.title || '', r.category || '',
     String(r.likelihood || ''), String(r.impact || ''), String(r.risk_score || ''),
@@ -810,12 +1035,15 @@ export async function exportRiskRegisterPdf(risks: any[], orgName: string): Prom
     },
   });
 
-  addPageFooter(doc, 'ForgeComply 360 \u2014 RiskForge ERM');
-  downloadPdf(doc, 'Risk Register Report');
+  // Professional headers and footers
+  addProfessionalDocHeader(doc, title, systemName || orgName, '1.0');
+  addProfessionalDocFooter(doc, orgName);
+
+  downloadPdf(doc, `Risk-Register-${new Date().toISOString().split('T')[0]}`);
 }
 
 // ============================================================================
-// COMPLIANCE DOCUMENT (ATO) PDF
+// COMPLIANCE DOCUMENT (ATO) PDF - Professional Format
 // ============================================================================
 
 export async function exportComplianceDocPdf(
@@ -828,46 +1056,137 @@ export async function exportComplianceDocPdf(
   const systemName = metadata.systemName || metadata.system_name || 'System';
   const orgName = metadata.orgName || metadata.org_name || 'Organization';
   const impactLevel = metadata.impactLevel || metadata.impact_level || '';
+  const version = metadata.version || '1.0';
+  const status = metadata.status || 'draft';
 
   setDocMetadata(doc, title || docType, orgName);
-  addCoverPage(doc, docType, systemName, orgName, impactLevel ? [`Impact Level: ${impactLevel}`] : undefined);
 
-  let y = PAGE.mt;
+  // Professional cover page
+  addProfessionalCoverPage(doc, docType, title || docType, orgName, systemName, {
+    version,
+    status,
+    impactLevel: impactLevel || undefined,
+    preparedBy: metadata.preparedBy || metadata.prepared_by,
+    date: metadata.date || nowStr(),
+  });
 
-  // Metadata table
-  const metaEntries = Object.entries(metadata).filter(([k]) =>
-    !['systemName', 'system_name', 'orgName', 'org_name', 'impactLevel', 'impact_level'].includes(k));
-  if (metaEntries.length > 0 || impactLevel) {
-    y = addSectionHeading(doc, 'Document Information', 2, y);
-    const kvRows: [string, string][] = [
-      ['System', systemName],
-      ['Organization', orgName],
-    ];
-    if (impactLevel) kvRows.push(['Impact Level', impactLevel]);
-    kvRows.push(['Date', nowStr()]);
-    for (const [key, val] of metaEntries) {
-      if (val) kvRows.push([key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()), val]);
+  let y = PAGE.mt + 5;
+
+  // Table of Contents (for longer documents)
+  const sections = extractSectionsFromContent(content);
+  if (sections.length > 3) {
+    y = addSectionHeading(doc, 'Table of Contents', 1, y);
+    for (let i = 0; i < sections.length; i++) {
+      doc.setFontSize(10);
+      doc.setTextColor(...COLORS.text);
+      doc.setFont('helvetica', 'normal');
+      const tocText = `${i + 1}. ${sections[i].title}`;
+      doc.text(tocText, PAGE.ml + 5, y);
+      y += 6;
+      if (y > PAGE.height - PAGE.mb - 20) { doc.addPage(); y = PAGE.mt; }
     }
-    y = addKvTable(doc, kvRows, y);
+    doc.addPage();
+    y = PAGE.mt;
   }
 
-  // Content body
+  // Document Information section
+  y = addSectionHeading(doc, 'Document Information', 1, y);
+  const kvRows: [string, string][] = [
+    ['Document Type', docType],
+    ['System', systemName],
+    ['Organization', orgName],
+  ];
+  if (impactLevel) kvRows.push(['Security Categorization', `${impactLevel.toUpperCase()} IMPACT`]);
+  kvRows.push(['Document Version', version]);
+  kvRows.push(['Status', status.replace('_', ' ').toUpperCase()]);
+  kvRows.push(['Date', nowStr()]);
+
+  // Add additional metadata
+  const metaEntries = Object.entries(metadata).filter(([k]) =>
+    !['systemName', 'system_name', 'orgName', 'org_name', 'impactLevel', 'impact_level', 'version', 'status', 'preparedBy', 'prepared_by', 'date'].includes(k));
+  for (const [key, val] of metaEntries) {
+    if (val) kvRows.push([key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()), val]);
+  }
+  y = addKvTable(doc, kvRows, y);
+  y += 5;
+
+  // Content body with smart section parsing
   const paragraphs = content.split(/\n\n+/);
+  let currentSectionNum = 0;
+
   for (const para of paragraphs) {
     const trimmed = para.trim();
     if (!trimmed) continue;
-    if (/^\d+\.\s+[A-Z]/.test(trimmed)) {
-      const firstLine = trimmed.split('\n')[0];
-      const rest = trimmed.slice(firstLine.length).trim();
-      y = addSectionHeading(doc, firstLine, 2, y);
-      if (rest) y = addParagraph(doc, rest, y);
+
+    // Detect numbered section headers
+    const sectionMatch = trimmed.match(/^(\d+)\.\s+(.+)/);
+    if (sectionMatch) {
+      const lines = trimmed.split('\n');
+      const headerLine = lines[0];
+      const restContent = lines.slice(1).join('\n').trim();
+
+      // Check if this is a main section (start new page for major sections)
+      if (currentSectionNum > 0 && parseInt(sectionMatch[1]) !== currentSectionNum) {
+        doc.addPage();
+        y = PAGE.mt;
+      }
+      currentSectionNum = parseInt(sectionMatch[1]);
+
+      y = addSectionHeading(doc, headerLine, 1, y);
+      if (restContent) {
+        y = addParagraph(doc, restContent, y);
+      }
+    } else if (/^[A-Z][A-Za-z\s]+:$/.test(trimmed.split('\n')[0])) {
+      // Subsection header (e.g., "Purpose:", "Scope:")
+      const lines = trimmed.split('\n');
+      y = addSectionHeading(doc, lines[0].replace(':', ''), 2, y);
+      if (lines.length > 1) {
+        y = addParagraph(doc, lines.slice(1).join('\n').trim(), y);
+      }
+    } else if (trimmed.startsWith('•') || trimmed.startsWith('-') || trimmed.startsWith('*')) {
+      // Bullet list
+      const items = trimmed.split('\n').map(line => line.replace(/^[•\-*]\s*/, '').trim()).filter(Boolean);
+      y = addBulletList(doc, items, y);
     } else {
+      // Regular paragraph
       y = addParagraph(doc, trimmed, y);
+    }
+
+    // Page break if needed
+    if (y > PAGE.height - PAGE.mb - 10) {
+      doc.addPage();
+      y = PAGE.mt;
     }
   }
 
-  addPageFooter(doc);
-  downloadPdf(doc, title || docType);
+  // Add professional headers and footers
+  addProfessionalDocHeader(doc, docType, systemName, version);
+  addProfessionalDocFooter(doc, orgName);
+
+  // Add draft watermark if status is draft
+  if (status.toLowerCase() === 'draft' || status.toLowerCase() === 'in_review') {
+    addDraftWatermark(doc);
+  }
+
+  downloadPdf(doc, `${docType.replace(/\s+/g, '-')}-${systemName.replace(/\s+/g, '-')}-${nowStr().replace(/,?\s+/g, '-')}`);
+}
+
+/**
+ * Extract section titles from content for TOC generation
+ */
+function extractSectionsFromContent(content: string): { title: string; level: number }[] {
+  const sections: { title: string; level: number }[] = [];
+  const lines = content.split('\n');
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const match = trimmed.match(/^(\d+)\.\s+(.+)/);
+    if (match) {
+      sections.push({ title: match[2], level: 1 });
+    }
+  }
+
+  return sections;
 }
 
 const COMPLIANCE_DOC_TYPES: Record<string, string> = {
@@ -890,4 +1209,552 @@ export function exportComplianceDocByTemplatePdf(
 ): Promise<void> {
   const docType = COMPLIANCE_DOC_TYPES[templateId] || title;
   return exportComplianceDocPdf(docType, title, content, metadata);
+}
+
+// ============================================================================
+// PROFESSIONAL SSP EXPORT (FedRAMP-Compliant Format)
+// ============================================================================
+
+export interface SSPExportData {
+  systemName: string;
+  systemAcronym?: string;
+  frameworkName: string;
+  orgName: string;
+  version?: string;
+  status?: 'draft' | 'in_review' | 'approved' | 'published';
+  preparedBy?: string;
+  preparedDate?: string;
+  // FIPS 199 Categorization
+  fips199?: {
+    confidentiality: 'Low' | 'Moderate' | 'High';
+    integrity: 'Low' | 'Moderate' | 'High';
+    availability: 'Low' | 'Moderate' | 'High';
+    overallLevel: 'Low' | 'Moderate' | 'High';
+    justification?: string;
+  };
+  // Roles
+  roles?: {
+    authorizingOfficial?: { name: string; title: string; org: string };
+    systemOwner?: { name: string; title: string; org: string };
+    isso?: { name: string; title: string; org: string };
+    securityEngineer?: { name: string; title: string; org: string };
+    assessor?: { name: string; title: string; org: string };
+  };
+  // Environment
+  environment?: {
+    cloudProvider?: string;
+    deploymentModel?: string;
+    serviceModel?: string;
+    securityServices?: string[];
+    diagramPlaceholder?: boolean;
+  };
+  // Sections content
+  sections: Record<string, { content: string; status: string }>;
+  // Control implementations
+  implementations?: any[];
+  // Control baseline info
+  controlBaseline?: {
+    name: string;
+    revision: string;
+    totalControls: number;
+    inheritedControls?: number;
+    systemImplemented?: number;
+  };
+}
+
+const PROFESSIONAL_SSP_SECTIONS = [
+  { key: 'executive_summary', label: 'Executive Summary', number: '1' },
+  { key: 'system_description', label: 'System Description and Boundary', number: '2' },
+  { key: 'fips199_categorization', label: 'FIPS 199 Security Categorization', number: '3' },
+  { key: 'control_baseline', label: 'Control Baseline', number: '4' },
+  { key: 'control_implementations', label: 'Control Implementation Summary', number: '5' },
+  { key: 'roles_responsibilities', label: 'Roles and Responsibilities', number: '6' },
+  { key: 'environment_architecture', label: 'Environment and Architecture', number: '7' },
+  { key: 'authorization_boundary', label: 'Authorization Boundary', number: '8' },
+  { key: 'data_flow', label: 'Data Flow', number: '9' },
+  { key: 'network_architecture', label: 'Network Architecture', number: '10' },
+  { key: 'system_interconnections', label: 'System Interconnections', number: '11' },
+  { key: 'contingency_plan', label: 'Contingency Plan Summary', number: '12' },
+  { key: 'incident_response', label: 'Incident Response Summary', number: '13' },
+  { key: 'continuous_monitoring', label: 'Continuous Monitoring Strategy', number: '14' },
+  { key: 'control_details', label: 'Detailed Control Implementations', number: 'Appendix A' },
+];
+
+function addProfessionalHeader(doc: jsPDF, systemName: string, docTitle: string, version: string): void {
+  const pageCount = doc.getNumberOfPages();
+  for (let i = 2; i <= pageCount; i++) { // Skip cover page
+    doc.setPage(i);
+    // Header line
+    doc.setDrawColor(...COLORS.primary);
+    doc.setLineWidth(0.5);
+    doc.line(PAGE.ml, 12, PAGE.width - PAGE.mr, 12);
+    // Left: System name
+    doc.setFontSize(8);
+    doc.setTextColor(...COLORS.muted);
+    doc.setFont('helvetica', 'normal');
+    doc.text(systemName, PAGE.ml, 10);
+    // Center: Document title
+    doc.text(docTitle, PAGE.width / 2, 10, { align: 'center' });
+    // Right: Version
+    doc.text(`Version ${version}`, PAGE.width - PAGE.mr, 10, { align: 'right' });
+  }
+}
+
+function addProfessionalFooter(doc: jsPDF, orgName: string, classification: string = 'CONTROLLED UNCLASSIFIED INFORMATION (CUI)'): void {
+  const pageCount = doc.getNumberOfPages();
+  for (let i = 1; i <= pageCount; i++) {
+    doc.setPage(i);
+    // Footer line
+    doc.setDrawColor(...COLORS.primary);
+    doc.setLineWidth(0.3);
+    doc.line(PAGE.ml, PAGE.height - 15, PAGE.width - PAGE.mr, PAGE.height - 15);
+    // Left: Classification
+    doc.setFontSize(7);
+    doc.setTextColor(...COLORS.danger);
+    doc.setFont('helvetica', 'bold');
+    doc.text(classification, PAGE.ml, PAGE.height - 11);
+    // Center: Organization
+    doc.setTextColor(...COLORS.muted);
+    doc.setFont('helvetica', 'normal');
+    doc.text(orgName, PAGE.width / 2, PAGE.height - 11, { align: 'center' });
+    // Right: Page number
+    doc.text(`Page ${i} of ${pageCount}`, PAGE.width - PAGE.mr, PAGE.height - 11, { align: 'right' });
+    // Bottom: Generator credit
+    doc.setFontSize(6);
+    doc.setTextColor(...COLORS.footerText);
+    doc.text('Generated by ForgeComply 360', PAGE.width / 2, PAGE.height - 7, { align: 'center' });
+  }
+}
+
+function addProfessionalCover(doc: jsPDF, data: SSPExportData): void {
+  const cx = PAGE.width / 2;
+
+  // Top classification banner
+  doc.setFillColor(...COLORS.danger);
+  doc.rect(0, 0, PAGE.width, 12, 'F');
+  doc.setFontSize(9);
+  doc.setTextColor(255, 255, 255);
+  doc.setFont('helvetica', 'bold');
+  doc.text('CONTROLLED UNCLASSIFIED INFORMATION (CUI)', cx, 8, { align: 'center' });
+
+  // Logo placeholder area
+  doc.setFillColor(...COLORS.primary);
+  doc.rect(PAGE.ml, 30, PAGE.cw, 25, 'F');
+  doc.setFontSize(16);
+  doc.setTextColor(255, 255, 255);
+  doc.text(data.orgName.toUpperCase(), cx, 46, { align: 'center' });
+
+  // Main title
+  doc.setFontSize(28);
+  doc.setTextColor(...COLORS.primary);
+  doc.setFont('helvetica', 'bold');
+  doc.text('SYSTEM SECURITY PLAN', cx, 85, { align: 'center' });
+
+  // Framework
+  doc.setFontSize(16);
+  doc.setTextColor(...COLORS.secondary);
+  doc.text(data.frameworkName, cx, 100, { align: 'center' });
+
+  // System name box
+  doc.setFillColor(244, 247, 251);
+  doc.setDrawColor(...COLORS.primary);
+  doc.setLineWidth(1);
+  doc.rect(PAGE.ml + 20, 115, PAGE.cw - 40, 30, 'FD');
+  doc.setFontSize(18);
+  doc.setTextColor(...COLORS.primary);
+  doc.setFont('helvetica', 'bold');
+  doc.text(data.systemName, cx, 130, { align: 'center' });
+  if (data.systemAcronym) {
+    doc.setFontSize(12);
+    doc.setFont('helvetica', 'normal');
+    doc.text(`(${data.systemAcronym})`, cx, 140, { align: 'center' });
+  }
+
+  // Document metadata table
+  const metaY = 160;
+  doc.setFontSize(10);
+  doc.setTextColor(...COLORS.text);
+
+  const metaRows: [string, string][] = [
+    ['Document Version:', data.version || '1.0'],
+    ['Document Status:', (data.status || 'draft').replace('_', ' ').toUpperCase()],
+    ['Prepared By:', data.preparedBy || data.orgName],
+    ['Prepared Date:', data.preparedDate || nowStr()],
+  ];
+
+  if (data.fips199?.overallLevel) {
+    metaRows.push(['Security Categorization:', `${data.fips199.overallLevel.toUpperCase()} IMPACT`]);
+  }
+
+  let my = metaY;
+  for (const [label, value] of metaRows) {
+    doc.setFont('helvetica', 'bold');
+    doc.text(label, PAGE.ml + 30, my);
+    doc.setFont('helvetica', 'normal');
+    doc.text(value, PAGE.ml + 80, my);
+    my += 8;
+  }
+
+  // Bottom classification banner
+  doc.setFillColor(...COLORS.danger);
+  doc.rect(0, PAGE.height - 12, PAGE.width, 12, 'F');
+  doc.setFontSize(9);
+  doc.setTextColor(255, 255, 255);
+  doc.setFont('helvetica', 'bold');
+  doc.text('CONTROLLED UNCLASSIFIED INFORMATION (CUI)', cx, PAGE.height - 5, { align: 'center' });
+
+  doc.addPage();
+}
+
+function addTableOfContents(doc: jsPDF, hasImplementations: boolean): void {
+  let y = PAGE.mt + 5;
+
+  doc.setFontSize(FONTS.h1);
+  doc.setTextColor(...COLORS.primary);
+  doc.setFont('helvetica', 'bold');
+  doc.text('TABLE OF CONTENTS', PAGE.ml, y);
+  doc.setDrawColor(...COLORS.primary);
+  doc.setLineWidth(0.5);
+  doc.line(PAGE.ml, y + 3, PAGE.ml + 60, y + 3);
+  y += 15;
+
+  doc.setFontSize(11);
+  doc.setFont('helvetica', 'normal');
+
+  for (const section of PROFESSIONAL_SSP_SECTIONS) {
+    if (section.key === 'control_details' && !hasImplementations) continue;
+
+    doc.setTextColor(...COLORS.text);
+    const text = `${section.number}. ${section.label}`;
+    doc.text(text, PAGE.ml + 5, y);
+
+    // Dot leader
+    const textWidth = doc.getTextWidth(text);
+    doc.setTextColor(...COLORS.muted);
+    const dotsStart = PAGE.ml + 10 + textWidth;
+    const dotsEnd = PAGE.width - PAGE.mr - 15;
+    let dx = dotsStart;
+    while (dx < dotsEnd) {
+      doc.text('.', dx, y);
+      dx += 2;
+    }
+    y += 8;
+  }
+
+  doc.addPage();
+}
+
+function addFIPS199Section(doc: jsPDF, data: SSPExportData, sectionNum: string): number {
+  let y = PAGE.mt;
+  y = addSectionHeading(doc, `${sectionNum}. FIPS 199 Security Categorization`, 1, y);
+
+  if (!data.fips199) {
+    y = addParagraph(doc, 'Security categorization has not been completed for this system. A FIPS 199 Security Categorization document should be developed to determine the appropriate impact levels for confidentiality, integrity, and availability.', y);
+    return y;
+  }
+
+  y = addParagraph(doc, `In accordance with FIPS Publication 199 (Standards for Security Categorization of Federal Information and Information Systems) and NIST SP 800-60, the security categorization for ${data.systemName} has been determined as follows:`, y);
+  y += 5;
+
+  // CIA Table
+  y = addDataTable(doc, ['Security Objective', 'Impact Level', 'Justification'], [
+    ['Confidentiality', data.fips199.confidentiality, 'Based on information type analysis per NIST SP 800-60'],
+    ['Integrity', data.fips199.integrity, 'Based on information type analysis per NIST SP 800-60'],
+    ['Availability', data.fips199.availability, 'Based on information type analysis per NIST SP 800-60'],
+  ], y, {
+    columnStyles: {
+      0: { fontStyle: 'bold', cellWidth: 40 },
+      1: { cellWidth: 30, halign: 'center' },
+      2: { cellWidth: 'auto' },
+    },
+  });
+
+  // Overall categorization box
+  y += 5;
+  doc.setFillColor(244, 247, 251);
+  doc.setDrawColor(...COLORS.primary);
+  doc.setLineWidth(0.5);
+  doc.rect(PAGE.ml, y, PAGE.cw, 25, 'FD');
+
+  doc.setFontSize(10);
+  doc.setTextColor(...COLORS.muted);
+  doc.setFont('helvetica', 'normal');
+  doc.text('Overall System Security Categorization (High Water Mark):', PAGE.ml + 5, y + 8);
+
+  doc.setFontSize(14);
+  doc.setTextColor(...COLORS.primary);
+  doc.setFont('helvetica', 'bold');
+  doc.text(`SC ${data.systemAcronym || data.systemName} = {(C, ${data.fips199.confidentiality}), (I, ${data.fips199.integrity}), (A, ${data.fips199.availability})} = ${data.fips199.overallLevel.toUpperCase()} IMPACT`, PAGE.ml + 5, y + 18);
+
+  y += 35;
+
+  if (data.fips199.justification) {
+    y = addSectionHeading(doc, 'Categorization Justification', 3, y);
+    y = addParagraph(doc, data.fips199.justification, y);
+  }
+
+  return y;
+}
+
+function addControlBaselineSection(doc: jsPDF, data: SSPExportData, sectionNum: string): number {
+  let y = PAGE.mt;
+  y = addSectionHeading(doc, `${sectionNum}. Control Baseline`, 1, y);
+
+  const baseline = data.controlBaseline || {
+    name: data.frameworkName,
+    revision: 'Rev 5',
+    totalControls: data.implementations?.length || 0,
+  };
+
+  y = addParagraph(doc, `The security control baseline for ${data.systemName} is derived from the following authoritative source:`, y);
+  y += 3;
+
+  y = addKvTable(doc, [
+    ['Control Framework', baseline.name],
+    ['Revision', baseline.revision],
+    ['Impact Level', data.fips199?.overallLevel || 'Moderate'],
+    ['Total Baseline Controls', String(baseline.totalControls)],
+  ], y);
+
+  y = addSectionHeading(doc, 'Control Responsibility', 3, y);
+  y = addParagraph(doc, 'Controls within this SSP are categorized by implementation responsibility:', y);
+
+  const inheritedCount = baseline.inheritedControls || Math.round(baseline.totalControls * 0.3);
+  const systemCount = baseline.systemImplemented || (baseline.totalControls - inheritedCount);
+
+  y = addDataTable(doc, ['Category', 'Count', 'Description'], [
+    ['Inherited Controls', String(inheritedCount), 'Controls fully satisfied by the cloud service provider (CSP)'],
+    ['System-Implemented', String(systemCount), 'Controls implemented at the application or customer responsibility layer'],
+    ['Shared Controls', String(Math.round(baseline.totalControls * 0.15)), 'Controls with shared responsibility between CSP and customer'],
+  ], y);
+
+  return y;
+}
+
+function addRolesSection(doc: jsPDF, data: SSPExportData, sectionNum: string): number {
+  let y = PAGE.mt;
+  y = addSectionHeading(doc, `${sectionNum}. Roles and Responsibilities`, 1, y);
+
+  y = addParagraph(doc, 'The following individuals and organizational roles are responsible for the security of this information system:', y);
+  y += 5;
+
+  const roles = data.roles || {};
+
+  const roleData: [string, string, string, string][] = [
+    ['Authorizing Official (AO)', roles.authorizingOfficial?.name || 'TBD', roles.authorizingOfficial?.title || 'TBD', 'Accepts risk and authorizes system operation'],
+    ['System Owner', roles.systemOwner?.name || 'TBD', roles.systemOwner?.title || 'TBD', 'Responsible for overall system operation and security'],
+    ['Information System Security Officer (ISSO)', roles.isso?.name || 'TBD', roles.isso?.title || 'TBD', 'Day-to-day security operations and monitoring'],
+    ['Security Engineer', roles.securityEngineer?.name || 'TBD', roles.securityEngineer?.title || 'TBD', 'Implements and maintains security controls'],
+    ['Third Party Assessor (3PAO)', roles.assessor?.name || 'TBD', roles.assessor?.title || 'TBD', 'Independent security assessment'],
+  ];
+
+  y = addDataTable(doc, ['Role', 'Name', 'Title', 'Responsibility'], roleData, y, {
+    columnStyles: {
+      0: { fontStyle: 'bold', cellWidth: 45 },
+      1: { cellWidth: 35 },
+      2: { cellWidth: 35 },
+      3: { cellWidth: 'auto' },
+    },
+  });
+
+  return y;
+}
+
+function addEnvironmentSection(doc: jsPDF, data: SSPExportData, sectionNum: string): number {
+  let y = PAGE.mt;
+  y = addSectionHeading(doc, `${sectionNum}. Environment and Architecture`, 1, y);
+
+  const env = data.environment || {};
+
+  y = addParagraph(doc, `${data.systemName} operates in a cloud-native environment with the following characteristics:`, y);
+  y += 3;
+
+  y = addKvTable(doc, [
+    ['Cloud Provider', env.cloudProvider || 'AWS GovCloud (US)'],
+    ['Deployment Model', env.deploymentModel || 'Government Community Cloud'],
+    ['Service Model', env.serviceModel || 'Platform as a Service (PaaS)'],
+  ], y);
+
+  if (env.securityServices?.length) {
+    y = addSectionHeading(doc, 'Security Services', 3, y);
+    y = addBulletList(doc, env.securityServices, y);
+  } else {
+    y = addSectionHeading(doc, 'Security Services', 3, y);
+    y = addBulletList(doc, [
+      'AWS Identity and Access Management (IAM)',
+      'AWS Key Management Service (KMS)',
+      'AWS CloudTrail for audit logging',
+      'AWS GuardDuty for threat detection',
+      'AWS Config for configuration monitoring',
+      'AWS WAF for web application firewall',
+    ], y);
+  }
+
+  y += 5;
+
+  // Architecture diagram placeholder
+  doc.setFillColor(248, 250, 252);
+  doc.setDrawColor(...COLORS.muted);
+  doc.setLineWidth(0.3);
+  doc.setLineDashPattern([2, 2], 0);
+  doc.rect(PAGE.ml, y, PAGE.cw, 50, 'FD');
+  doc.setLineDashPattern([], 0);
+
+  doc.setFontSize(11);
+  doc.setTextColor(...COLORS.muted);
+  doc.setFont('helvetica', 'italic');
+  doc.text('[Architecture Diagram Placeholder]', PAGE.width / 2, y + 20, { align: 'center' });
+  doc.setFontSize(9);
+  doc.text('Insert system architecture diagram showing security boundaries,', PAGE.width / 2, y + 30, { align: 'center' });
+  doc.text('data flows, and key security components.', PAGE.width / 2, y + 37, { align: 'center' });
+
+  y += 60;
+
+  return y;
+}
+
+export async function exportProfessionalSSPPdf(data: SSPExportData): Promise<void> {
+  const doc = createPdfDoc();
+  const docTitle = `System Security Plan - ${data.systemAcronym || data.systemName}`;
+  setDocMetadata(doc, docTitle, data.orgName);
+
+  // Cover page
+  addProfessionalCover(doc, data);
+
+  // Table of Contents
+  addTableOfContents(doc, !!(data.implementations?.length));
+
+  // Section 1: Executive Summary
+  let y = PAGE.mt;
+  y = addSectionHeading(doc, '1. Executive Summary', 1, y);
+  const execContent = data.sections.executive_summary?.content || data.sections.system_info?.content;
+  if (execContent?.trim()) {
+    for (const para of execContent.split(/\n\n+/)) {
+      if (para.trim()) y = addParagraph(doc, para.trim(), y);
+    }
+  } else {
+    y = addParagraph(doc, `This System Security Plan (SSP) documents the security controls implemented for ${data.systemName} in accordance with ${data.frameworkName}. The system has been categorized as ${data.fips199?.overallLevel || 'Moderate'} impact based on FIPS 199 analysis.`, y);
+  }
+  doc.addPage();
+
+  // Section 2: System Description
+  y = PAGE.mt;
+  y = addSectionHeading(doc, '2. System Description and Boundary', 1, y);
+  const sysDesc = data.sections.system_description?.content || data.sections.system_info?.content;
+  if (sysDesc?.trim()) {
+    for (const para of sysDesc.split(/\n\n+/)) {
+      if (para.trim()) y = addParagraph(doc, para.trim(), y);
+    }
+  } else {
+    y = addParagraph(doc, '(System description content to be completed)', y);
+  }
+  doc.addPage();
+
+  // Section 3: FIPS 199 Categorization
+  addFIPS199Section(doc, data, '3');
+  doc.addPage();
+
+  // Section 4: Control Baseline
+  addControlBaselineSection(doc, data, '4');
+  doc.addPage();
+
+  // Section 5: Control Implementation Summary
+  y = PAGE.mt;
+  y = addSectionHeading(doc, '5. Control Implementation Summary', 1, y);
+
+  if (data.implementations?.length) {
+    y = addParagraph(doc, 'The following table summarizes the implementation status of security controls:', y);
+
+    const statusCounts: Record<string, number> = {};
+    for (const impl of data.implementations) {
+      const st = impl.status || 'not_implemented';
+      statusCounts[st] = (statusCounts[st] || 0) + 1;
+    }
+    const total = data.implementations.length;
+
+    const summaryRows = Object.entries(STATUS_LABELS).map(([key, label]) => {
+      const count = statusCounts[key] || 0;
+      const pct = total > 0 ? ((count / total) * 100).toFixed(1) + '%' : '0.0%';
+      return [label, String(count), pct];
+    });
+
+    y = addDataTable(doc, ['Implementation Status', 'Count', 'Percentage'], summaryRows, y);
+
+    // Sample implementation (first implemented control)
+    const sampleImpl = data.implementations.find(i => i.status === 'implemented' && i.narrative);
+    if (sampleImpl) {
+      y = addSectionHeading(doc, 'Sample Control Implementation', 3, y);
+      y = addKvTable(doc, [
+        ['Control ID', sampleImpl.control_id || sampleImpl.controlId],
+        ['Title', sampleImpl.title || sampleImpl.control_title || 'N/A'],
+        ['Status', STATUS_LABELS[sampleImpl.status] || sampleImpl.status],
+        ['Implementation', sampleImpl.narrative || sampleImpl.implementation_narrative || 'N/A'],
+      ], y);
+    }
+  } else {
+    y = addParagraph(doc, 'Control implementation details are managed within the ForgeComply 360 platform. Each control includes implementation narrative, responsible party, and evidence linkage.', y);
+  }
+  doc.addPage();
+
+  // Section 6: Roles and Responsibilities
+  addRolesSection(doc, data, '6');
+  doc.addPage();
+
+  // Section 7: Environment and Architecture
+  addEnvironmentSection(doc, data, '7');
+  doc.addPage();
+
+  // Sections 8-14: Remaining SSP sections
+  const remainingSections = [
+    { num: '8', key: 'authorization_boundary', label: 'Authorization Boundary' },
+    { num: '9', key: 'data_flow', label: 'Data Flow' },
+    { num: '10', key: 'network_architecture', label: 'Network Architecture' },
+    { num: '11', key: 'system_interconnections', label: 'System Interconnections' },
+    { num: '12', key: 'contingency_plan', label: 'Contingency Plan Summary' },
+    { num: '13', key: 'incident_response', label: 'Incident Response Summary' },
+    { num: '14', key: 'continuous_monitoring', label: 'Continuous Monitoring Strategy' },
+  ];
+
+  for (const section of remainingSections) {
+    y = PAGE.mt;
+    y = addSectionHeading(doc, `${section.num}. ${section.label}`, 1, y);
+    const content = data.sections[section.key]?.content;
+    if (content?.trim()) {
+      for (const para of content.split(/\n\n+/)) {
+        if (para.trim()) y = addParagraph(doc, para.trim(), y);
+      }
+    } else {
+      y = addParagraph(doc, '(Section content to be completed)', y);
+    }
+    doc.addPage();
+  }
+
+  // Appendix A: Detailed Control Implementations
+  if (data.implementations?.length) {
+    y = PAGE.mt;
+    y = addSectionHeading(doc, 'Appendix A. Detailed Control Implementations', 1, y);
+
+    for (const impl of data.implementations) {
+      y = ensureSpace(doc, y, 40);
+      const controlId = impl.control_id || impl.controlId || 'N/A';
+      const title = impl.title || impl.control_title || '';
+      y = addSectionHeading(doc, `${controlId}${title ? ' — ' + title : ''}`, 3, y);
+      y = addKvTable(doc, [
+        ['Status', STATUS_LABELS[impl.status] || impl.status || 'Not Implemented'],
+        ['Responsible Role', impl.responsible_role || 'Unassigned'],
+        ['Implementation Narrative', impl.narrative || impl.implementation_narrative || 'Pending'],
+      ], y);
+    }
+  }
+
+  // Add watermark if draft
+  if (data.status === 'draft' || data.status === 'in_review') {
+    addDraftWatermark(doc);
+  }
+
+  // Add professional headers and footers
+  addProfessionalHeader(doc, data.systemAcronym || data.systemName, 'System Security Plan', data.version || '1.0');
+  addProfessionalFooter(doc, data.orgName);
+
+  downloadPdf(doc, `SSP-${data.systemAcronym || data.systemName}-${data.frameworkName.replace(/\s+/g, '-')}`);
 }

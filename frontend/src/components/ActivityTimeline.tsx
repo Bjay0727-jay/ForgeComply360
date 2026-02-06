@@ -41,7 +41,7 @@ const FIELD_LABELS: Record<string, string> = {
   service_model: 'Service Model',
   implementation_description: 'Implementation Description',
   responsible_role: 'Responsible Role',
-  ai_narrative: 'AI Narrative',
+  ai_narrative: 'ForgeML Writer',
   title: 'Title',
   category: 'Category',
   likelihood: 'Likelihood',
@@ -71,8 +71,8 @@ const ACTION_LABELS: Record<string, string> = {
   delete: 'deleted',
   bulk_import: 'imported',
   bulk_update: 'bulk updated',
-  ai_narrative: 'generated AI narrative for',
-  ai_generate: 'AI generated',
+  ai_narrative: 'generated ForgeML narrative for',
+  ai_generate: 'ForgeML generated',
 };
 
 function relativeTime(dateStr: string): string {

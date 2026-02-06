@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { api } from '../utils/api';
 import {
@@ -13,78 +13,113 @@ import {
   exportRiskSummaryReportPdf,
   exportAuditReadyPackagePdf,
 } from '../utils/pdfExportHelpers';
+import { PageHeader } from '../components/PageHeader';
+import { useToast } from '../components/Toast';
+import { BUTTONS, CARDS, BADGES, TYPOGRAPHY } from '../utils/typography';
 
-const REPORT_TYPES = [
+// ---------------------------------------------------------------------------
+// Report Type Configuration
+// ---------------------------------------------------------------------------
+
+interface ReportType {
+  key: string;
+  title: string;
+  description: string;
+  icon: string;
+  badgeColor: string;
+  iconBgColor: string;
+}
+
+const REPORT_TYPES: ReportType[] = [
   {
     key: 'executive-summary',
     title: 'Executive Summary',
     description: 'High-level overview of compliance posture, risk landscape, and key metrics. Ideal for leadership briefings and board presentations.',
     icon: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01',
-    color: 'blue',
-    bg: 'bg-blue-50',
-    iconBg: 'bg-blue-100 text-blue-600',
-    border: 'border-blue-200 hover:border-blue-400',
-    btn: 'bg-blue-600 hover:bg-blue-700',
+    badgeColor: 'info',
+    iconBgColor: 'bg-blue-100 text-blue-600',
   },
   {
     key: 'compliance-posture',
     title: 'Compliance Posture Report',
     description: 'Detailed breakdown of control implementation status across all frameworks, gap analysis by control family, and compliance trend data.',
     icon: 'M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z',
-    color: 'green',
-    bg: 'bg-green-50',
-    iconBg: 'bg-green-100 text-green-600',
-    border: 'border-green-200 hover:border-green-400',
-    btn: 'bg-green-600 hover:bg-green-700',
+    badgeColor: 'success',
+    iconBgColor: 'bg-green-100 text-green-600',
   },
   {
     key: 'risk-summary',
     title: 'Risk Summary Report',
     description: 'Comprehensive risk register summary with breakdowns by level, category, and treatment status. Includes vendor risk overview and tier analysis.',
     icon: 'M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z',
-    color: 'orange',
-    bg: 'bg-orange-50',
-    iconBg: 'bg-orange-100 text-orange-600',
-    border: 'border-orange-200 hover:border-orange-400',
-    btn: 'bg-orange-600 hover:bg-orange-700',
+    badgeColor: 'warning',
+    iconBgColor: 'bg-orange-100 text-orange-600',
   },
   {
     key: 'audit-ready',
     title: 'Audit-Ready Package',
     description: 'Bundled download containing Executive Summary, Compliance Posture, and Risk Summary reports. Ready for auditor delivery.',
     icon: 'M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z',
-    color: 'purple',
-    bg: 'bg-purple-50',
-    iconBg: 'bg-purple-100 text-purple-600',
-    border: 'border-purple-200 hover:border-purple-400',
-    btn: 'bg-purple-600 hover:bg-purple-700',
+    badgeColor: 'purple',
+    iconBgColor: 'bg-purple-100 text-purple-600',
   },
 ];
 
+// LocalStorage key for format preferences
+const FORMAT_PREF_KEY = 'forgecomply_report_format_prefs';
+
+// ---------------------------------------------------------------------------
+// Main Component
+// ---------------------------------------------------------------------------
+
 export function ReportsPage() {
   const { org, canManage } = useAuth();
+  const { addToast } = useToast();
   const [generating, setGenerating] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [lastGenerated, setLastGenerated] = useState<string | null>(null);
   const [formatPref, setFormatPref] = useState<Record<string, 'docx' | 'pdf'>>({});
 
+  // Load format preferences from localStorage
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(FORMAT_PREF_KEY);
+      if (saved) {
+        setFormatPref(JSON.parse(saved));
+      }
+    } catch {
+      // Ignore parse errors
+    }
+  }, []);
+
+  // Save format preferences to localStorage
+  const updateFormatPref = (reportKey: string, format: 'docx' | 'pdf') => {
+    setFormatPref(prev => {
+      const updated = { ...prev, [reportKey]: format };
+      try {
+        localStorage.setItem(FORMAT_PREF_KEY, JSON.stringify(updated));
+      } catch {
+        // Ignore storage errors
+      }
+      return updated;
+    });
+  };
+
   if (!canManage) {
     return (
-      <div className="p-8 text-center">
+      <div className={`${CARDS.elevated} p-12 text-center max-w-md mx-auto mt-12`}>
         <div className="mx-auto w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mb-4">
           <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
           </svg>
         </div>
-        <h2 className="text-xl font-semibold text-gray-700 mb-2">Access Restricted</h2>
-        <p className="text-gray-500">Reports are available to managers, admins, and owners only.</p>
+        <h2 className={TYPOGRAPHY.sectionTitle}>Access Restricted</h2>
+        <p className={`${TYPOGRAPHY.bodyMuted} mt-2`}>Reports are available to managers, admins, and owners only.</p>
       </div>
     );
   }
 
   const handleGenerate = async (reportKey: string) => {
     setGenerating(reportKey);
-    setError(null);
     try {
       const orgName = org?.name || 'Organization';
 
@@ -108,6 +143,8 @@ export function ReportsPage() {
       };
 
       const format = formatPref[reportKey] || 'docx';
+      const reportTitle = REPORT_TYPES.find(r => r.key === reportKey)?.title || 'Report';
+
       if (format === 'pdf') {
         switch (reportKey) {
           case 'executive-summary':
@@ -139,38 +176,44 @@ export function ReportsPage() {
             break;
         }
       }
+
       setLastGenerated(reportKey);
+      addToast({
+        type: 'success',
+        title: 'Report generated',
+        message: `${reportTitle} (${format.toUpperCase()}) downloaded successfully`,
+      });
+
+      // Clear the "Downloaded" state after 3 seconds
+      setTimeout(() => setLastGenerated(null), 3000);
     } catch (err: any) {
       console.error('Report generation failed:', err);
-      setError(err.message || 'Report generation failed. Please try again.');
+      addToast({
+        type: 'error',
+        title: 'Report generation failed',
+        message: err.message || 'Unable to generate report. Please try again.',
+      });
     } finally {
       setGenerating(null);
     }
   };
 
-  return (
-    <div className="p-6 max-w-6xl mx-auto">
-      {/* Header */}
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-gray-900 mb-2">Reports</h1>
-        <p className="text-gray-500">Generate professional compliance reports for leadership, auditors, and stakeholders. Export as Word (.doc) or PDF format.</p>
-      </div>
+  const getBadgeClasses = (color: string) => {
+    switch (color) {
+      case 'info': return BADGES.info;
+      case 'success': return BADGES.success;
+      case 'warning': return BADGES.warning;
+      case 'purple': return BADGES.purple;
+      default: return BADGES.neutral;
+    }
+  };
 
-      {/* Error banner */}
-      {error && (
-        <div className="mb-6 bg-red-50 border border-red-200 rounded-lg p-4 flex items-start gap-3">
-          <svg className="w-5 h-5 text-red-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-          <div>
-            <p className="text-sm font-medium text-red-800">Report generation failed</p>
-            <p className="text-sm text-red-600 mt-1">{error}</p>
-          </div>
-          <button onClick={() => setError(null)} className="ml-auto text-red-400 hover:text-red-600">
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
-          </button>
-        </div>
-      )}
+  return (
+    <div>
+      <PageHeader
+        title="Reports"
+        subtitle="Generate professional compliance reports for leadership, auditors, and stakeholders"
+      />
 
       {/* Report Cards Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -178,44 +221,59 @@ export function ReportsPage() {
           const isGenerating = generating === report.key;
           const isAnyGenerating = generating !== null;
           const justGenerated = lastGenerated === report.key && !isAnyGenerating;
+          const currentFormat = formatPref[report.key] || 'docx';
 
           return (
             <div
               key={report.key}
-              className={`bg-white rounded-xl border-2 ${report.border} p-6 transition-all duration-200 ${isAnyGenerating && !isGenerating ? 'opacity-60' : ''}`}
+              className={`${CARDS.elevated} p-6 transition-all duration-200 ${isAnyGenerating && !isGenerating ? 'opacity-60' : ''}`}
             >
               {/* Icon + Title */}
               <div className="flex items-start gap-4 mb-4">
-                <div className={`w-12 h-12 rounded-lg ${report.iconBg} flex items-center justify-center shrink-0`}>
+                <div className={`w-12 h-12 rounded-lg ${report.iconBgColor} flex items-center justify-center shrink-0`}>
                   <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={report.icon} />
                   </svg>
                 </div>
                 <div>
-                  <h3 className="text-lg font-semibold text-gray-900">{report.title}</h3>
+                  <h3 className={TYPOGRAPHY.sectionTitle}>{report.title}</h3>
                   {report.key === 'audit-ready' && (
-                    <span className="inline-block mt-1 px-2 py-0.5 bg-purple-100 text-purple-700 text-xs font-medium rounded-full">
-                      {(formatPref[report.key] || 'docx') === 'pdf' ? '1 Combined PDF' : '3 Reports'}
+                    <span className={`inline-block mt-1 ${BADGES.pill} ${BADGES.purple}`}>
+                      {currentFormat === 'pdf' ? '1 Combined PDF' : '3 Reports'}
                     </span>
                   )}
                 </div>
               </div>
 
               {/* Description */}
-              <p className="text-sm text-gray-600 mb-6 leading-relaxed">{report.description}</p>
+              <p className={`${TYPOGRAPHY.bodyMuted} mb-6 leading-relaxed`}>{report.description}</p>
 
               {/* Format Toggle */}
-              <div className="flex items-center gap-2 mb-3">
-                <span className="text-xs text-gray-500">Format:</span>
-                <div className="flex">
+              <div className="flex items-center gap-2 mb-4">
+                <span className={TYPOGRAPHY.metaLabel}>Format:</span>
+                <div className="flex" role="group" aria-label="Export format">
                   <button
-                    onClick={() => setFormatPref(p => ({ ...p, [report.key]: 'docx' }))}
-                    className={`px-2.5 py-1 text-xs font-medium rounded-l-md border ${(formatPref[report.key] || 'docx') === 'docx' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}
-                  >DOCX</button>
+                    onClick={() => updateFormatPref(report.key, 'docx')}
+                    className={`px-3 py-1.5 text-xs font-medium rounded-l-lg border transition-colors ${
+                      currentFormat === 'docx'
+                        ? 'bg-forge-navy-900 text-white border-forge-navy-900'
+                        : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+                    }`}
+                    aria-pressed={currentFormat === 'docx'}
+                  >
+                    DOCX
+                  </button>
                   <button
-                    onClick={() => setFormatPref(p => ({ ...p, [report.key]: 'pdf' }))}
-                    className={`px-2.5 py-1 text-xs font-medium rounded-r-md border border-l-0 ${formatPref[report.key] === 'pdf' ? 'bg-red-600 text-white border-red-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}
-                  >PDF</button>
+                    onClick={() => updateFormatPref(report.key, 'pdf')}
+                    className={`px-3 py-1.5 text-xs font-medium rounded-r-lg border border-l-0 transition-colors ${
+                      currentFormat === 'pdf'
+                        ? 'bg-forge-navy-900 text-white border-forge-navy-900'
+                        : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+                    }`}
+                    aria-pressed={currentFormat === 'pdf'}
+                  >
+                    PDF
+                  </button>
                 </div>
               </div>
 
@@ -223,26 +281,27 @@ export function ReportsPage() {
               <button
                 onClick={() => handleGenerate(report.key)}
                 disabled={isAnyGenerating}
-                className={`w-full flex items-center justify-center gap-2 px-4 py-2.5 ${report.btn} text-white rounded-lg font-medium text-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed`}
+                className={`w-full ${BUTTONS.primary} flex items-center justify-center gap-2`}
+                aria-busy={isGenerating}
               >
                 {isGenerating ? (
                   <>
-                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                    Generating...
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" aria-hidden="true" />
+                    <span>Generating...</span>
                   </>
                 ) : justGenerated ? (
                   <>
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                     </svg>
-                    Downloaded
+                    <span>Downloaded</span>
                   </>
                 ) : (
                   <>
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                     </svg>
-                    Generate Report
+                    <span>Generate Report</span>
                   </>
                 )}
               </button>
@@ -252,9 +311,9 @@ export function ReportsPage() {
       </div>
 
       {/* Footer info */}
-      <div className="mt-8 text-center text-xs text-gray-400">
+      <p className={`mt-8 text-center ${TYPOGRAPHY.timestamp}`}>
         Reports aggregate data from across ForgeComply 360 including compliance controls, risk register, vendor assessments, and monitoring checks.
-      </div>
+      </p>
     </div>
   );
 }

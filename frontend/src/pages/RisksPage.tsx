@@ -5,6 +5,15 @@ import { api } from '../utils/api';
 import { exportRisksCSV, exportRiskRegisterDoc } from '../utils/exportHelpers';
 import { exportRiskRegisterPdf } from '../utils/pdfExportHelpers';
 import { ActivityTimeline } from '../components/ActivityTimeline';
+import { PageHeader } from '../components/PageHeader';
+import { FilterBar, FilterField } from '../components/FilterBar';
+import { RiskHeatMap, MetricCard as ChartMetricCard } from '../components/charts';
+import { STATUS_COLORS } from '../utils/chartTheme';
+import { SkeletonMetricCards, SkeletonListItem } from '../components/Skeleton';
+import { EmptyState } from '../components/EmptyState';
+import { FormField } from '../components/FormField';
+import { Pagination } from '../components/Pagination';
+import { TYPOGRAPHY, BUTTONS, FORMS, CARDS, MODALS, BADGES, STATUS_BADGE_COLORS } from '../utils/typography';
 
 interface Risk {
   id: string;
@@ -26,6 +35,9 @@ interface Risk {
   related_controls: string;
   created_at: string;
   updated_at: string;
+  ai_risk_score: number | null;
+  ai_recommendation: string | null;
+  ai_scored_at: string | null;
 }
 
 interface RiskStats {
@@ -43,9 +55,9 @@ const TREATMENTS = ['mitigate', 'accept', 'transfer', 'avoid'];
 const STATUSES = ['open', 'in_treatment', 'monitored', 'closed', 'accepted'];
 const LEVELS = ['low', 'moderate', 'high', 'critical'];
 
-const riskColor = (score: number) => score >= 15 ? 'bg-red-100 text-red-700 border-red-200' : score >= 10 ? 'bg-orange-100 text-orange-700 border-orange-200' : score >= 5 ? 'bg-yellow-100 text-yellow-700 border-yellow-200' : 'bg-green-100 text-green-700 border-green-200';
-const levelColor = (level: string) => level === 'critical' ? 'bg-red-100 text-red-700' : level === 'high' ? 'bg-orange-100 text-orange-700' : level === 'moderate' ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700';
-const statusColor = (status: string) => status === 'closed' ? 'bg-green-100 text-green-700' : status === 'accepted' ? 'bg-blue-100 text-blue-700' : status === 'monitored' ? 'bg-purple-100 text-purple-700' : status === 'in_treatment' ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700';
+const riskColor = (score: number) => score >= 15 ? `${BADGES.error} border-red-200` : score >= 10 ? `${BADGES.orange} border-orange-200` : score >= 5 ? `${BADGES.warning} border-yellow-200` : `${BADGES.success} border-green-200`;
+const levelColor = (level: string) => level === 'critical' ? BADGES.error : level === 'high' ? BADGES.orange : level === 'moderate' ? BADGES.warning : BADGES.success;
+const statusColor = (status: string) => status === 'closed' ? BADGES.success : status === 'accepted' ? BADGES.info : status === 'monitored' ? BADGES.purple : status === 'in_treatment' ? BADGES.warning : BADGES.error;
 const heatCellColor = (score: number) => score >= 15 ? '#fee2e2' : score >= 10 ? '#ffedd5' : score >= 5 ? '#fef9c3' : '#dcfce7';
 const heatCellBorder = (score: number) => score >= 15 ? '#fca5a5' : score >= 10 ? '#fdba74' : score >= 5 ? '#fde047' : '#86efac';
 
@@ -64,6 +76,8 @@ export function RisksPage() {
   const [editFields, setEditFields] = useState<Record<string, any>>({});
   const [showHeatMap, setShowHeatMap] = useState(true);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [aiScoring, setAiScoring] = useState<string | null>(null); // null | risk_id | 'all'
+  const [showAiDetail, setShowAiDetail] = useState<string | null>(null);
 
   // Filters
   const [filterSystem, setFilterSystem] = useState('');
@@ -72,6 +86,9 @@ export function RisksPage() {
   const [filterLevel, setFilterLevel] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [heatMapFilter, setHeatMapFilter] = useState<{ l: number; i: number } | null>(null);
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [limit, setLimit] = useState(50);
 
   // Approval workflow
   const [showApprovalModal, setShowApprovalModal] = useState(false);
@@ -88,14 +105,15 @@ export function RisksPage() {
 
   const loadRisks = () => {
     const params = new URLSearchParams();
+    params.set('page', String(page));
+    params.set('limit', String(limit));
     if (filterSystem) params.set('system_id', filterSystem);
     if (filterStatus) params.set('status', filterStatus);
     if (filterCategory) params.set('category', filterCategory);
     if (filterLevel) params.set('risk_level', filterLevel);
     if (searchTerm) params.set('search', searchTerm);
     if (heatMapFilter) { params.set('likelihood', String(heatMapFilter.l)); params.set('impact', String(heatMapFilter.i)); }
-    const qs = params.toString();
-    api(`/api/v1/risks${qs ? '?' + qs : ''}`).then(d => setRisks(d.risks)).catch(() => {});
+    api(`/api/v1/risks?${params.toString()}`).then(d => { setRisks(d.risks); setTotal(d.total || d.risks.length); }).catch(() => {});
   };
 
   const loadStats = () => {
@@ -104,14 +122,15 @@ export function RisksPage() {
 
   useEffect(() => {
     Promise.all([
-      api('/api/v1/risks').then(d => setRisks(d.risks)),
+      api('/api/v1/risks?page=1&limit=50').then(d => { setRisks(d.risks); setTotal(d.total || d.risks.length); }),
       api('/api/v1/systems').then(d => setSystems(d.systems)),
       api('/api/v1/risks/stats').then(d => setStats(d.stats)),
       api('/api/v1/controls').then(d => setControls(d.controls || [])).catch(() => {}),
     ]).catch(() => {}).finally(() => setLoading(false));
   }, []);
 
-  useEffect(() => { if (!loading) loadRisks(); }, [filterSystem, filterStatus, filterCategory, filterLevel, searchTerm, heatMapFilter]);
+  useEffect(() => { if (!loading) { setPage(1); loadRisks(); } }, [filterSystem, filterStatus, filterCategory, filterLevel, searchTerm, heatMapFilter]);
+  useEffect(() => { if (!loading) loadRisks(); }, [page, limit]);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -182,6 +201,27 @@ export function RisksPage() {
     } catch {}
   };
 
+  const handleAIScoreAll = async () => {
+    setAiScoring('all');
+    try {
+      const res = await api('/api/v1/risks/ai-score', { method: 'POST', body: JSON.stringify({ score_all: true }) });
+      if (res.scored) {
+        setRisks(prev => prev.map(r => {
+          const scored = res.scored.find((s: any) => s.risk_id === r.id);
+          return scored ? { ...r, ai_risk_score: scored.ai_risk_score, ai_recommendation: scored.ai_recommendation, ai_scored_at: scored.ai_scored_at } : r;
+        }));
+      }
+    } catch {} finally { setAiScoring(null); }
+  };
+
+  const handleAIScoreSingle = async (riskId: string) => {
+    setAiScoring(riskId);
+    try {
+      const res = await api('/api/v1/risks/ai-score', { method: 'POST', body: JSON.stringify({ risk_id: riskId }) });
+      setRisks(prev => prev.map(r => r.id === riskId ? { ...r, ai_risk_score: res.ai_risk_score, ai_recommendation: res.ai_recommendation, ai_scored_at: res.ai_scored_at } : r));
+    } catch {} finally { setAiScoring(null); }
+  };
+
   const toggleControl = (controlId: string) => {
     const current: string[] = editFields.related_controls || [];
     setEditFields({
@@ -201,72 +241,69 @@ export function RisksPage() {
     return grid;
   };
 
-  if (loading) return <div className="flex justify-center py-12"><div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" /></div>;
+  if (loading) return <div><SkeletonMetricCards /><SkeletonListItem count={5} /></div>;
 
   const heatData = buildHeatMapData();
 
   return (
     <div>
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">{nav('risks')} (RiskForge ERM)</h1>
-          <p className="text-gray-500 text-sm mt-1">Identify, assess, and manage organizational {t('risk').toLowerCase()}s</p>
-        </div>
-        <div className="flex items-center gap-2">
-          {risks.length > 0 && (
-            <>
-              <button onClick={() => exportRisksCSV(risks)} className="px-3 py-2 text-xs font-medium text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200 flex items-center gap-1">
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
-                CSV
-              </button>
-              <button onClick={() => exportRiskRegisterDoc(risks, 'Organization')} className="px-3 py-2 text-xs font-medium text-green-700 bg-green-50 rounded-lg hover:bg-green-100 flex items-center gap-1">
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
-                DOCX
-              </button>
-              <button onClick={() => exportRiskRegisterPdf(risks, 'Organization')} className="px-3 py-2 text-xs font-medium text-red-700 bg-red-50 rounded-lg hover:bg-red-100 flex items-center gap-1">
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
-                PDF
-              </button>
-            </>
-          )}
-          {canManage && <button onClick={() => setShowCreate(true)} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">+ New {t('risk')}</button>}
-        </div>
-      </div>
+      <PageHeader title={`${nav('risks')} (RiskForge ERM)`} subtitle={`Identify, assess, and manage organizational ${t('risk').toLowerCase()}s`}>
+        {risks.length > 0 && (
+          <>
+            <button onClick={() => exportRisksCSV(risks)} className="px-3 py-2 text-xs font-medium text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200 flex items-center gap-1">
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+              CSV
+            </button>
+            <button onClick={() => exportRiskRegisterDoc(risks, 'Organization')} className="px-3 py-2 text-xs font-medium text-green-700 bg-green-50 rounded-lg hover:bg-green-100 flex items-center gap-1">
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+              DOCX
+            </button>
+            <button onClick={() => exportRiskRegisterPdf(risks, 'Organization')} className="px-3 py-2 text-xs font-medium text-red-700 bg-red-50 rounded-lg hover:bg-red-100 flex items-center gap-1">
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+              PDF
+            </button>
+          </>
+        )}
+        {canManage && (
+          <button onClick={handleAIScoreAll} disabled={aiScoring === 'all'} className="px-3 py-2 text-xs font-medium text-purple-100 bg-purple-600/40 rounded-lg hover:bg-purple-600/60 flex items-center gap-1 border border-purple-400/30 disabled:opacity-50">
+            {aiScoring === 'all' ? <><div className="w-3 h-3 border-2 border-purple-200 border-t-transparent rounded-full animate-spin" /> Scoring...</> : <><svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg> AI Score All</>}
+          </button>
+        )}
+        {canManage && <button onClick={() => setShowCreate(true)} className="px-4 py-2 bg-white text-gray-900 rounded-lg text-sm font-medium hover:bg-white/90">+ New {t('risk')}</button>}
+      </PageHeader>
 
-      {/* Analytics Cards */}
+      {/* Analytics Cards — Dark MetricCards */}
       {stats && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-          <div className="bg-white rounded-xl border border-gray-200 p-4">
-            <p className="text-xs text-gray-500 font-medium">Open Risks</p>
-            <p className="text-2xl font-bold text-gray-900 mt-1">{stats.open_count}</p>
-            <p className="text-[10px] text-gray-400 mt-1">{stats.total} total registered</p>
-          </div>
-          <div className="bg-white rounded-xl border border-gray-200 p-4">
-            <p className="text-xs text-gray-500 font-medium">Critical / High</p>
-            <p className="text-2xl font-bold text-red-600 mt-1">{(stats.by_level?.critical || 0) + (stats.by_level?.high || 0)}</p>
-            <div className="flex gap-2 mt-1">
-              <span className="text-[10px] text-red-500">{stats.by_level?.critical || 0} critical</span>
-              <span className="text-[10px] text-orange-500">{stats.by_level?.high || 0} high</span>
-            </div>
-          </div>
-          <div className="bg-white rounded-xl border border-gray-200 p-4">
-            <p className="text-xs text-gray-500 font-medium">Avg Risk Score</p>
-            <p className="text-2xl font-bold text-gray-900 mt-1">{stats.avg_score}<span className="text-sm text-gray-400 font-normal">/25</span></p>
-            <div className="w-full bg-gray-200 rounded-full h-1.5 mt-2">
-              <div className="h-1.5 rounded-full" style={{ width: `${(stats.avg_score / 25) * 100}%`, backgroundColor: stats.avg_score >= 15 ? '#dc2626' : stats.avg_score >= 10 ? '#ea580c' : stats.avg_score >= 5 ? '#ca8a04' : '#16a34a' }} />
-            </div>
-          </div>
-          <div className="bg-white rounded-xl border border-gray-200 p-4">
-            <p className="text-xs text-gray-500 font-medium">Treatment Plans</p>
-            <p className="text-2xl font-bold text-gray-900 mt-1">{stats.total > 0 ? Math.round((stats.with_treatment / stats.total) * 100) : 0}%</p>
-            <p className="text-[10px] text-gray-400 mt-1">{stats.with_treatment} of {stats.total} have plans</p>
-          </div>
+          <ChartMetricCard
+            title="Open Risks"
+            value={String(stats.open_count || 0)}
+            subtitle={`${stats.total || 0} total registered`}
+            accentColor={STATUS_COLORS.danger}
+          />
+          <ChartMetricCard
+            title="Critical / High"
+            value={String((stats.by_level?.critical || 0) + (stats.by_level?.high || 0))}
+            subtitle={`${stats.by_level?.critical || 0} critical, ${stats.by_level?.high || 0} high`}
+            accentColor={STATUS_COLORS.danger}
+          />
+          <ChartMetricCard
+            title="Avg Risk Score"
+            value={`${stats.avg_score}/25`}
+            accentColor={stats.avg_score >= 15 ? STATUS_COLORS.danger : stats.avg_score >= 10 ? STATUS_COLORS.orange : stats.avg_score >= 5 ? STATUS_COLORS.warning : STATUS_COLORS.success}
+          />
+          <ChartMetricCard
+            title="Treatment Plans"
+            value={`${stats.total > 0 ? Math.round(((stats.with_treatment || 0) / stats.total) * 100) : 0}%`}
+            subtitle={`${stats.with_treatment || 0} of ${stats.total || 0} have plans`}
+            accentColor={STATUS_COLORS.info}
+          />
         </div>
       )}
 
-      {/* Heat Map */}
-      <div className="bg-white rounded-xl border border-gray-200 mb-6">
+      {/* Heat Map — Enhanced RiskHeatMap */}
+      <div className="bg-white rounded-xl border border-blue-200 mb-6">
         <button onClick={() => setShowHeatMap(!showHeatMap)} className="w-full flex items-center justify-between px-6 py-3 hover:bg-gray-50">
           <div className="flex items-center gap-2">
             <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" /></svg>
@@ -277,62 +314,35 @@ export function RisksPage() {
         </button>
         {showHeatMap && (
           <div className="px-6 pb-6">
-            <div className="flex gap-6">
-              <div className="flex items-start gap-2">
-                <div className="flex flex-col items-center mr-1">
-                  <span className="text-[10px] text-gray-400 font-medium -rotate-90 whitespace-nowrap mb-8">LIKELIHOOD</span>
-                </div>
-                <div>
-                  <svg width="330" height="330" viewBox="0 0 330 330">
-                    {/* Y-axis labels */}
-                    {[5, 4, 3, 2, 1].map((l, yi) => (
-                      <text key={`yl-${l}`} x="20" y={yi * 58 + 38} textAnchor="middle" fontSize="11" fill="#6b7280" fontWeight="500">{l}</text>
-                    ))}
-                    {/* X-axis labels */}
-                    {[1, 2, 3, 4, 5].map((i, xi) => (
-                      <text key={`xl-${i}`} x={xi * 58 + 68} y="320" textAnchor="middle" fontSize="11" fill="#6b7280" fontWeight="500">{i}</text>
-                    ))}
-                    {/* Grid cells */}
-                    {[5, 4, 3, 2, 1].map((l, yi) =>
-                      [1, 2, 3, 4, 5].map((i, xi) => {
-                        const score = l * i;
-                        const count = heatData[l - 1]?.[i - 1] || 0;
-                        const isActive = heatMapFilter?.l === l && heatMapFilter?.i === i;
-                        return (
-                          <g key={`${l}-${i}`}>
-                            <rect
-                              x={xi * 58 + 40}
-                              y={yi * 58 + 10}
-                              width="54"
-                              height="54"
-                              rx="6"
-                              fill={heatCellColor(score)}
-                              stroke={isActive ? '#3b82f6' : heatCellBorder(score)}
-                              strokeWidth={isActive ? 3 : 1.5}
-                              style={{ cursor: 'pointer' }}
-                              onClick={() => {
-                                if (isActive) { setHeatMapFilter(null); } else { setHeatMapFilter({ l, i }); }
-                              }}
-                            />
-                            {count > 0 && (
-                              <text x={xi * 58 + 67} y={yi * 58 + 42} textAnchor="middle" fontSize="16" fontWeight="700" fill={score >= 15 ? '#dc2626' : score >= 10 ? '#ea580c' : score >= 5 ? '#a16207' : '#15803d'} style={{ pointerEvents: 'none' }}>{count}</text>
-                            )}
-                            <text x={xi * 58 + 67} y={yi * 58 + 56} textAnchor="middle" fontSize="8" fill="#9ca3af" style={{ pointerEvents: 'none' }}>{score}</text>
-                          </g>
-                        );
-                      })
-                    )}
-                  </svg>
-                  <p className="text-[10px] text-gray-400 text-center font-medium mt-1">IMPACT</p>
-                </div>
-              </div>
+            <div className="flex flex-col md:flex-row gap-4">
+              <RiskHeatMap
+                risks={(() => {
+                  // Build risk cells from grid data
+                  const cells: { likelihood: number; impact: number; count: number; score: number }[] = [];
+                  for (let l = 1; l <= 5; l++) {
+                    for (let i = 1; i <= 5; i++) {
+                      const count = heatData[l - 1]?.[i - 1] || 0;
+                      cells.push({ likelihood: l, impact: i, count, score: l * i });
+                    }
+                  }
+                  return cells;
+                })()}
+                size={380}
+                onCellClick={(cell) => {
+                  if (heatMapFilter?.l === cell.likelihood && heatMapFilter?.i === cell.impact) {
+                    setHeatMapFilter(null);
+                  } else {
+                    setHeatMapFilter({ l: cell.likelihood, i: cell.impact });
+                  }
+                }}
+              />
               {/* Legend */}
               <div className="flex flex-col justify-center gap-2 text-xs">
                 <p className="font-medium text-gray-700 mb-1">Risk Zones</p>
-                <div className="flex items-center gap-2"><div className="w-5 h-5 rounded" style={{ background: '#fee2e2', border: '1px solid #fca5a5' }} /><span className="text-gray-600">Critical (15-25)</span></div>
-                <div className="flex items-center gap-2"><div className="w-5 h-5 rounded" style={{ background: '#ffedd5', border: '1px solid #fdba74' }} /><span className="text-gray-600">High (10-14)</span></div>
-                <div className="flex items-center gap-2"><div className="w-5 h-5 rounded" style={{ background: '#fef9c3', border: '1px solid #fde047' }} /><span className="text-gray-600">Moderate (5-9)</span></div>
-                <div className="flex items-center gap-2"><div className="w-5 h-5 rounded" style={{ background: '#dcfce7', border: '1px solid #86efac' }} /><span className="text-gray-600">Low (1-4)</span></div>
+                <div className="flex items-center gap-2"><div className="w-5 h-5 rounded" style={{ background: '#fef2f2', border: '1px solid #fca5a5' }} /><span className="text-gray-600">Critical (15-25)</span></div>
+                <div className="flex items-center gap-2"><div className="w-5 h-5 rounded" style={{ background: '#fff7ed', border: '1px solid #fdba74' }} /><span className="text-gray-600">High (10-14)</span></div>
+                <div className="flex items-center gap-2"><div className="w-5 h-5 rounded" style={{ background: '#fffbeb', border: '1px solid #fde047' }} /><span className="text-gray-600">Moderate (5-9)</span></div>
+                <div className="flex items-center gap-2"><div className="w-5 h-5 rounded" style={{ background: '#f0fdf4', border: '1px solid #86efac' }} /><span className="text-gray-600">Low (1-4)</span></div>
                 {heatMapFilter && (
                   <button onClick={() => setHeatMapFilter(null)} className="mt-2 text-xs text-blue-600 hover:text-blue-800 font-medium">Clear heat map filter</button>
                 )}
@@ -343,65 +353,60 @@ export function RisksPage() {
       </div>
 
       {/* Filter Bar */}
-      <div className="bg-white rounded-xl border border-gray-200 px-4 py-3 mb-4 flex flex-wrap items-center gap-3">
-        <select value={filterSystem} onChange={e => setFilterSystem(e.target.value)} className="px-3 py-1.5 border border-gray-300 rounded-md text-xs">
-          <option value="">All Systems</option>
-          {systems.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-        </select>
-        <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} className="px-3 py-1.5 border border-gray-300 rounded-md text-xs">
-          <option value="">All Statuses</option>
-          {STATUSES.map(s => <option key={s} value={s} className="capitalize">{s.replace(/_/g, ' ')}</option>)}
-        </select>
-        <select value={filterCategory} onChange={e => setFilterCategory(e.target.value)} className="px-3 py-1.5 border border-gray-300 rounded-md text-xs">
-          <option value="">All Categories</option>
-          {CATEGORIES.map(c => <option key={c} value={c} className="capitalize">{c}</option>)}
-        </select>
-        <select value={filterLevel} onChange={e => setFilterLevel(e.target.value)} className="px-3 py-1.5 border border-gray-300 rounded-md text-xs">
-          <option value="">All Levels</option>
-          {LEVELS.map(l => <option key={l} value={l} className="capitalize">{l}</option>)}
-        </select>
-        <input type="text" placeholder="Search risks..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="px-3 py-1.5 border border-gray-300 rounded-md text-xs flex-1 min-w-[150px]" />
-        <span className="text-xs text-gray-400 ml-auto">{risks.length} risk{risks.length !== 1 ? 's' : ''}</span>
-      </div>
+      <FilterBar
+        filters={[
+          { type: 'select', key: 'system', label: 'All Systems', options: systems.map(s => ({ value: s.id, label: s.name })) },
+          { type: 'select', key: 'status', label: 'All Statuses', options: STATUSES.map(s => ({ value: s, label: s.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()) })) },
+          { type: 'select', key: 'category', label: 'All Categories', options: CATEGORIES.map(c => ({ value: c, label: c.charAt(0).toUpperCase() + c.slice(1) })) },
+          { type: 'select', key: 'level', label: 'All Levels', options: LEVELS.map(l => ({ value: l, label: l.charAt(0).toUpperCase() + l.slice(1) })) },
+          { type: 'search', key: 'search', label: 'Search risks...' },
+        ] as FilterField[]}
+        values={{ system: filterSystem, status: filterStatus, category: filterCategory, level: filterLevel, search: searchTerm }}
+        onChange={(key, val) => {
+          const v = val as string;
+          if (key === 'system') setFilterSystem(v);
+          else if (key === 'status') setFilterStatus(v);
+          else if (key === 'category') setFilterCategory(v);
+          else if (key === 'level') setFilterLevel(v);
+          else if (key === 'search') setSearchTerm(v);
+        }}
+        onClear={() => { setFilterSystem(''); setFilterStatus(''); setFilterCategory(''); setFilterLevel(''); setSearchTerm(''); }}
+        resultCount={risks.length}
+        resultLabel="risks"
+      />
 
       {/* Create Form */}
       {showCreate && (
-        <div className="bg-white rounded-xl border border-gray-200 p-6 mb-4">
+        <div className="bg-white rounded-xl border border-blue-200 p-6 mb-4">
           <h3 className="font-semibold text-gray-900 mb-4">Register New {t('risk')}</h3>
           <form onSubmit={handleCreate} className="space-y-4">
-            <input type="text" placeholder={`${t('risk')} Title *`} value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} required className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm" />
-            <textarea placeholder="Description" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} rows={2} className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm" />
+            <FormField label={`${t('risk')} Title`} name="risk_title" value={form.title} onChange={v => setForm({ ...form, title: v })} required placeholder={`Enter ${t('risk').toLowerCase()} title`} />
+            <FormField label="Description" name="risk_desc" type="textarea" value={form.description} onChange={v => setForm({ ...form, description: v })} rows={2} />
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <select value={form.system_id} onChange={e => setForm({ ...form, system_id: e.target.value })} className="px-3 py-2.5 border border-gray-300 rounded-lg text-sm">
+              <FormField label="System" name="risk_system" type="select" value={form.system_id} onChange={v => setForm({ ...form, system_id: v })} className="mb-0">
                 <option value="">Select System</option>
                 {systems.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-              </select>
-              <select value={form.category} onChange={e => setForm({ ...form, category: e.target.value })} className="px-3 py-2.5 border border-gray-300 rounded-lg text-sm">
+              </FormField>
+              <FormField label="Category" name="risk_category" type="select" value={form.category} onChange={v => setForm({ ...form, category: v })} className="mb-0">
                 {CATEGORIES.map(c => <option key={c} value={c} className="capitalize">{c}</option>)}
-              </select>
-              <div>
-                <label className="text-xs text-gray-500">Likelihood (1-5)</label>
-                <input type="number" min={1} max={5} value={form.likelihood} onChange={e => setForm({ ...form, likelihood: +e.target.value })} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
-              </div>
-              <div>
-                <label className="text-xs text-gray-500">Impact (1-5)</label>
-                <input type="number" min={1} max={5} value={form.impact} onChange={e => setForm({ ...form, impact: +e.target.value })} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
-              </div>
+              </FormField>
+              <FormField label="Likelihood (1-5)" name="risk_likelihood" type="number" value={String(form.likelihood)} onChange={v => setForm({ ...form, likelihood: +v })} min={1} max={5} validate={v => { const n = +v; return n < 1 || n > 5 ? 'Must be 1-5' : null; }} className="mb-0" />
+              <FormField label="Impact (1-5)" name="risk_impact" type="number" value={String(form.impact)} onChange={v => setForm({ ...form, impact: +v })} min={1} max={5} validate={v => { const n = +v; return n < 1 || n > 5 ? 'Must be 1-5' : null; }} className="mb-0" />
             </div>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <select value={form.treatment} onChange={e => setForm({ ...form, treatment: e.target.value })} className="px-3 py-2.5 border border-gray-300 rounded-lg text-sm">
+              <FormField label="Treatment" name="risk_treatment" type="select" value={form.treatment} onChange={v => setForm({ ...form, treatment: v })} className="mb-0">
                 {TREATMENTS.map(t => <option key={t} value={t} className="capitalize">{t}</option>)}
-              </select>
-              <input type="text" placeholder="Risk Owner" value={form.owner} onChange={e => setForm({ ...form, owner: e.target.value })} className="px-3 py-2.5 border border-gray-300 rounded-lg text-sm" />
-              <input type="date" value={form.treatment_due_date} onChange={e => setForm({ ...form, treatment_due_date: e.target.value })} className="px-3 py-2.5 border border-gray-300 rounded-lg text-sm" title="Treatment Due Date" />
+              </FormField>
+              <FormField label="Risk Owner" name="risk_owner" value={form.owner} onChange={v => setForm({ ...form, owner: v })} placeholder="Risk Owner" className="mb-0" />
+              <FormField label="Treatment Due Date" name="risk_due_date" type="date" value={form.treatment_due_date} onChange={v => setForm({ ...form, treatment_due_date: v })} className="mb-0" />
               <div className="flex items-center">
                 <span className={`text-sm font-medium px-3 py-1.5 rounded ${riskColor(form.likelihood * form.impact)}`}>Score: {form.likelihood * form.impact}</span>
               </div>
             </div>
-            <textarea placeholder="Treatment plan details..." value={form.treatment_plan} onChange={e => setForm({ ...form, treatment_plan: e.target.value })} rows={2} className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm" />
+            <FormField label="Treatment Plan" name="risk_treatment_plan" type="textarea" value={form.treatment_plan} onChange={v => setForm({ ...form, treatment_plan: v })} rows={2} placeholder="Treatment plan details..." />
             <div className="flex gap-3">
-              <button type="submit" disabled={saving} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50">{saving ? 'Creating...' : 'Create Risk'}</button>
-              <button type="button" onClick={() => setShowCreate(false)} className="px-4 py-2 text-gray-600 text-sm">Cancel</button>
+              <button type="submit" disabled={saving} className={BUTTONS.primary}>{saving ? 'Creating...' : 'Create Risk'}</button>
+              <button type="button" onClick={() => setShowCreate(false)} className={BUTTONS.ghost}>Cancel</button>
             </div>
           </form>
         </div>
@@ -409,10 +414,7 @@ export function RisksPage() {
 
       {/* Risk List */}
       {risks.length === 0 ? (
-        <div className="bg-white rounded-xl border border-gray-200 p-12 text-center">
-          <svg className="w-12 h-12 mx-auto text-gray-300 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
-          <p className="text-gray-500">No {t('risk').toLowerCase()}s found{(filterSystem || filterStatus || filterCategory || filterLevel || searchTerm || heatMapFilter) ? ' matching filters' : ''}.</p>
-        </div>
+        <EmptyState title="No risks found" subtitle="Create a risk assessment to get started" icon="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
       ) : (
         <div className="space-y-3">
           {risks.map(r => {
@@ -421,13 +423,14 @@ export function RisksPage() {
             try { relControls = JSON.parse(r.related_controls || '[]'); } catch {}
 
             return (
-              <div key={r.id} className={`bg-white rounded-xl border ${isExpanded ? 'border-blue-300 ring-1 ring-blue-100' : 'border-gray-200'} overflow-hidden`}>
+              <div key={r.id} className={`bg-white rounded-xl border ${isExpanded ? 'border-blue-300 ring-1 ring-blue-100' : 'border-blue-200'} overflow-hidden`}>
                 {/* Collapsed Row */}
-                <div className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-gray-50" onClick={() => handleExpand(r)}>
+                <div className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-gray-50" role="button" aria-expanded={isExpanded} tabIndex={0} onClick={() => handleExpand(r)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleExpand(r); } }}>
                   <svg className={`w-4 h-4 text-gray-400 transition-transform flex-shrink-0 ${isExpanded ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
                   <span className="font-mono text-xs text-gray-400 flex-shrink-0 w-24">{r.risk_id}</span>
                   <span className={`text-xs px-2 py-0.5 rounded border font-bold flex-shrink-0 ${riskColor(r.risk_score)}`}>{r.risk_score}</span>
                   <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium flex-shrink-0 ${levelColor(r.risk_level)}`}>{r.risk_level}</span>
+                  {r.ai_risk_score !== null && r.ai_risk_score !== undefined && <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold flex-shrink-0 ${r.ai_risk_score >= 70 ? 'bg-green-100 text-green-700' : r.ai_risk_score >= 40 ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700'}`}>AI:{r.ai_risk_score}</span>}
                   <span className="text-sm font-medium text-gray-900 truncate flex-1">{r.title}</span>
                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 capitalize flex-shrink-0">{r.category}</span>
                   <span className="text-xs text-gray-400 flex-shrink-0">L:{r.likelihood} I:{r.impact}</span>
@@ -439,7 +442,7 @@ export function RisksPage() {
 
                 {/* Expanded Detail */}
                 {isExpanded && (
-                  <div className="border-t border-gray-200 px-6 py-5 bg-gray-50">
+                  <div className="border-t border-blue-200 px-6 py-5 bg-gray-50">
                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                       {/* Left: Editable Fields */}
                       <div className="lg:col-span-2 space-y-3">
@@ -529,16 +532,16 @@ export function RisksPage() {
 
                             {/* Action Buttons */}
                             <div className="flex items-center gap-3 pt-2">
-                              <button onClick={() => handleSaveEdit(r.id)} disabled={savingEdit} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1">
+                              <button onClick={() => handleSaveEdit(r.id)} disabled={savingEdit} className={`${BUTTONS.primary} flex items-center gap-1`}>
                                 {savingEdit ? <><div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" /> Saving...</> : <><svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> Save Changes</>}
                               </button>
-                              <button onClick={() => setExpandedId(null)} className="px-4 py-2 text-gray-600 text-sm hover:text-gray-800">Cancel</button>
+                              <button onClick={() => setExpandedId(null)} className={BUTTONS.ghost}>Cancel</button>
                               <div className="ml-auto">
                                 {deleteConfirm === r.id ? (
                                   <div className="flex items-center gap-2">
                                     <span className="text-xs text-red-600">Delete this risk?</span>
-                                    <button onClick={() => handleDelete(r.id)} className="px-3 py-1.5 bg-red-600 text-white rounded text-xs font-medium hover:bg-red-700">Confirm</button>
-                                    <button onClick={() => setDeleteConfirm(null)} className="px-3 py-1.5 text-gray-500 text-xs">No</button>
+                                    <button onClick={() => handleDelete(r.id)} className={`${BUTTONS.danger} ${BUTTONS.sm}`}>Confirm</button>
+                                    <button onClick={() => setDeleteConfirm(null)} className={`${BUTTONS.ghost} ${BUTTONS.sm}`}>No</button>
                                   </div>
                                 ) : (
                                   <button onClick={() => setDeleteConfirm(r.id)} className="px-3 py-1.5 text-red-500 hover:text-red-700 text-xs font-medium">Delete</button>
@@ -565,7 +568,7 @@ export function RisksPage() {
                       {/* Right: Mini Scoring Matrix */}
                       <div>
                         <p className="text-xs font-medium text-gray-500 mb-2">Risk Position</p>
-                        <div className="bg-white rounded-lg border border-gray-200 p-3">
+                        <div className="bg-white rounded-lg border border-blue-200 p-3">
                           <svg width="180" height="180" viewBox="0 0 180 180">
                             {[5, 4, 3, 2, 1].map((l, yi) => (
                               <text key={`ml-${l}`} x="8" y={yi * 30 + 22} textAnchor="middle" fontSize="9" fill="#9ca3af">{l}</text>
@@ -598,8 +601,37 @@ export function RisksPage() {
                           <div className="flex justify-between"><span>Updated</span><span className="font-medium text-gray-700">{new Date(r.updated_at).toLocaleDateString()}</span></div>
                         </div>
 
+                        {/* AI Insights */}
+                        <div className="mt-4 pt-3 border-t border-blue-200">
+                          <div className="flex items-center justify-between mb-2">
+                            <p className="text-xs font-medium text-gray-500">AI Risk Insights</p>
+                            <button onClick={() => handleAIScoreSingle(r.id)} disabled={aiScoring === r.id} className="text-[10px] px-2 py-1 bg-purple-50 text-purple-700 rounded hover:bg-purple-100 disabled:opacity-50 font-medium">
+                              {aiScoring === r.id ? 'Scoring...' : 'Score with AI'}
+                            </button>
+                          </div>
+                          {r.ai_risk_score !== null && r.ai_risk_score !== undefined ? (
+                            <div className="space-y-2">
+                              <div className="flex items-center gap-2">
+                                <div className={`text-lg font-bold ${r.ai_risk_score >= 70 ? 'text-green-600' : r.ai_risk_score >= 40 ? 'text-yellow-600' : 'text-red-600'}`}>{r.ai_risk_score}/100</div>
+                                <div className="flex-1 bg-gray-200 rounded-full h-2">
+                                  <div className={`h-2 rounded-full ${r.ai_risk_score >= 70 ? 'bg-green-500' : r.ai_risk_score >= 40 ? 'bg-yellow-500' : 'bg-red-500'}`} style={{ width: `${r.ai_risk_score}%` }} />
+                                </div>
+                              </div>
+                              {r.ai_recommendation && (
+                                <div>
+                                  <button onClick={() => setShowAiDetail(showAiDetail === r.id ? null : r.id)} className="text-[10px] text-purple-600 hover:underline font-medium">{showAiDetail === r.id ? 'Hide' : 'Show'} Recommendation</button>
+                                  {showAiDetail === r.id && <p className="text-xs text-gray-600 mt-1 bg-purple-50 rounded-lg p-2 border border-purple-100">{r.ai_recommendation}</p>}
+                                </div>
+                              )}
+                              {r.ai_scored_at && <p className="text-[10px] text-gray-400">Scored {new Date(r.ai_scored_at).toLocaleDateString()}</p>}
+                            </div>
+                          ) : (
+                            <p className="text-xs text-gray-400 italic">Not yet scored. Click "Score with AI" to analyze.</p>
+                          )}
+                        </div>
+
                         {/* Activity Timeline */}
-                        <div className="mt-4 pt-3 border-t border-gray-200">
+                        <div className="mt-4 pt-3 border-t border-blue-200">
                           <ActivityTimeline resourceType="risk" resourceId={r.id} />
                         </div>
                       </div>
@@ -611,11 +643,12 @@ export function RisksPage() {
           })}
         </div>
       )}
+      <Pagination page={page} totalPages={Math.ceil(total / limit)} total={total} limit={limit} onPageChange={setPage} onLimitChange={setLimit} showLimitSelector />
       {/* Risk Acceptance Approval Modal */}
       {showApprovalModal && approvalRiskId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4 p-6">
-            <h2 className="text-lg font-bold text-gray-900 mb-1">Request Approval</h2>
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4 p-6" role="dialog" aria-modal="true" aria-labelledby="risk-approval-modal-title">
+            <h2 id="risk-approval-modal-title" className="text-lg font-bold text-gray-900 mb-1">Request Approval</h2>
             <p className="text-sm text-gray-500 mb-4">Accepting a risk requires admin approval.</p>
             <div className="bg-gray-50 rounded-lg p-3 mb-4">
               <p className="font-medium text-gray-900 text-sm">{risks.find((r: any) => r.id === approvalRiskId)?.title || 'Risk'}</p>

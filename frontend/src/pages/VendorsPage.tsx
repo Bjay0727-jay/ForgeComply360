@@ -1,8 +1,17 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useExperience } from '../hooks/useExperience';
 import { useAuth } from '../hooks/useAuth';
 import { api } from '../utils/api';
 import { exportVendorsCSV, exportVendorAssessmentDoc } from '../utils/exportHelpers';
+import { PageHeader } from '../components/PageHeader';
+import { FilterBar, FilterField } from '../components/FilterBar';
+import { ScoreRadialChart, MetricCard as ChartMetricCard } from '../components/charts';
+import { STATUS_COLORS } from '../utils/chartTheme';
+import { SkeletonMetricCards, SkeletonListItem } from '../components/Skeleton';
+import { EmptyState } from '../components/EmptyState';
+import { FormField } from '../components/FormField';
+import { Pagination } from '../components/Pagination';
+import { TYPOGRAPHY, FORMS, BUTTONS, BADGES, CARDS } from '../utils/typography';
 
 interface Vendor {
   id: string;
@@ -51,13 +60,13 @@ const ASSESSMENT_CATEGORIES = [
 ];
 
 const critColor = (c: string) =>
-  c === 'critical' ? 'bg-red-100 text-red-700' : c === 'high' ? 'bg-orange-100 text-orange-700' : c === 'medium' ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700';
+  c === 'critical' ? BADGES.error : c === 'high' ? BADGES.orange : c === 'medium' ? BADGES.warning : BADGES.success;
 
 const statusColor = (s: string) =>
-  s === 'approved' ? 'bg-green-100 text-green-700' : s === 'active' ? 'bg-blue-100 text-blue-700' : s === 'under_review' ? 'bg-yellow-100 text-yellow-700' : s === 'suspended' ? 'bg-orange-100 text-orange-700' : 'bg-red-100 text-red-700';
+  s === 'approved' ? BADGES.success : s === 'active' ? BADGES.info : s === 'under_review' ? BADGES.warning : s === 'suspended' ? BADGES.orange : BADGES.error;
 
 const tierColor = (t: number) =>
-  t === 4 ? 'bg-red-100 text-red-700' : t === 3 ? 'bg-orange-100 text-orange-700' : t === 2 ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700';
+  t === 4 ? BADGES.error : t === 3 ? BADGES.orange : t === 2 ? BADGES.warning : BADGES.success;
 
 const tierLabel = (t: number) =>
   t === 1 ? 'Tier 1' : t === 2 ? 'Tier 2' : t === 3 ? 'Tier 3' : 'Tier 4';
@@ -85,22 +94,7 @@ function isContractExpiring(v: Vendor): boolean {
   return end >= now && end.getTime() - now.getTime() <= 30 * 86400000;
 }
 
-function RiskScoreDonut({ score }: { score: number }) {
-  const r = 24;
-  const circ = 2 * Math.PI * r;
-  const pct = Math.min(score / 25, 1);
-  const offset = circ - pct * circ;
-  const color = scoreColorHex(score);
-  return (
-    <svg width="64" height="64" viewBox="0 0 64 64">
-      <circle cx="32" cy="32" r={r} fill="none" stroke="#e5e7eb" strokeWidth="6" />
-      <circle cx="32" cy="32" r={r} fill="none" stroke={color} strokeWidth="6"
-        strokeDasharray={circ} strokeDashoffset={offset} strokeLinecap="round"
-        transform="rotate(-90 32 32)" className="transition-all duration-500" />
-      <text x="32" y="35" textAnchor="middle" fontSize="14" fontWeight="bold" fill="#111827">{score}</text>
-    </svg>
-  );
-}
+// RiskScoreDonut replaced by ScoreRadialChart from charts/
 
 export function VendorsPage() {
   const { t, nav, isHealthcare } = useExperience();
@@ -133,32 +127,32 @@ export function VendorsPage() {
   const [filterTier, setFilterTier] = useState('');
   const [filterClass, setFilterClass] = useState('');
   const [search, setSearch] = useState('');
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [limit, setLimit] = useState(50);
 
   const loadData = () => {
+    const params = new URLSearchParams();
+    params.set('page', String(page));
+    params.set('limit', String(limit));
+    if (filterCrit) params.set('criticality', filterCrit);
+    if (filterStatus) params.set('status', filterStatus);
+    if (filterTier) params.set('tier', filterTier);
+    if (filterClass) params.set('data_classification', filterClass);
+    if (search) params.set('search', search);
     Promise.all([
-      api('/api/v1/vendors').catch(() => ({ vendors: [] })),
+      api(`/api/v1/vendors?${params.toString()}`).catch(() => ({ vendors: [], total: 0 })),
       api('/api/v1/vendors/stats').catch(() => ({ stats: null })),
     ]).then(([vData, sData]) => {
       setVendors(vData.vendors || []);
+      setTotal(vData.total || (vData.vendors || []).length);
       setStats(sData.stats || null);
       setLoading(false);
     });
   };
 
-  useEffect(loadData, []);
-
-  const filtered = useMemo(() => {
-    let list = vendors;
-    if (filterCrit) list = list.filter((v) => v.criticality === filterCrit);
-    if (filterStatus) list = list.filter((v) => v.status === filterStatus);
-    if (filterTier) list = list.filter((v) => v.risk_tier === Number(filterTier));
-    if (filterClass) list = list.filter((v) => v.data_classification === filterClass);
-    if (search) {
-      const s = search.toLowerCase();
-      list = list.filter((v) => v.name.toLowerCase().includes(s) || (v.category || '').toLowerCase().includes(s) || (v.contact_name || '').toLowerCase().includes(s) || (v.description || '').toLowerCase().includes(s));
-    }
-    return list;
-  }, [vendors, filterCrit, filterStatus, filterTier, filterClass, search]);
+  useEffect(loadData, [page, limit, filterCrit, filterStatus, filterTier, filterClass, search]);
+  useEffect(() => { setPage(1); }, [filterCrit, filterStatus, filterTier, filterClass, search]);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -210,11 +204,7 @@ export function VendorsPage() {
     } catch {}
   };
 
-  if (loading) return (
-    <div className="flex justify-center py-12">
-      <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
-    </div>
-  );
+  if (loading) return <div><SkeletonMetricCards /><SkeletonListItem count={5} /></div>;
 
   const assessTotal = Object.values(assessScores).reduce((a, b) => a + b, 0);
   const assessTier = assessTotal >= 21 ? 1 : assessTotal >= 16 ? 2 : assessTotal >= 11 ? 3 : 4;
@@ -222,108 +212,98 @@ export function VendorsPage() {
   return (
     <div>
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">{nav('vendors')} (VendorGuard TPRM)</h1>
-          <p className="text-gray-500 text-sm mt-1">Manage {t('vendor').toLowerCase()} risk and compliance</p>
-        </div>
-        <div className="flex items-center gap-2">
-          {vendors.length > 0 && (
-            <button onClick={() => exportVendorsCSV(vendors)} className="px-3 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50">
-              Export CSV
-            </button>
-          )}
-          {canManage && (
-            <button onClick={() => setShowCreate(true)} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">
-              + New {t('vendor')}
-            </button>
-          )}
-        </div>
-      </div>
+      <PageHeader title={`${nav('vendors')} (VendorGuard TPRM)`} subtitle={`Manage ${t('vendor').toLowerCase()} risk and compliance`}>
+        {vendors.length > 0 && (
+          <button onClick={() => exportVendorsCSV(vendors)} className={BUTTONS.secondary}>
+            Export CSV
+          </button>
+        )}
+        {canManage && (
+          <button onClick={() => setShowCreate(true)} className={BUTTONS.primary}>
+            + New {t('vendor')}
+          </button>
+        )}
+      </PageHeader>
 
-      {/* Stats Cards */}
+      {/* Stats Cards — Dark MetricCards */}
       {stats && (
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-          <div className="bg-white rounded-xl border border-gray-200 p-5">
-            <div className="text-xs text-gray-500 uppercase tracking-wider mb-1">Total Vendors</div>
-            <div className="text-3xl font-bold text-gray-900">{stats.total}</div>
-            <div className="text-xs text-gray-400 mt-1">{stats.by_status.active || 0} active</div>
-          </div>
-          <div className="bg-white rounded-xl border border-gray-200 p-5">
-            <div className="text-xs text-gray-500 uppercase tracking-wider mb-1">Critical / High</div>
-            <div className={`text-3xl font-bold ${stats.critical_high > 0 ? 'text-red-600' : 'text-gray-400'}`}>{stats.critical_high}</div>
-            <div className="text-xs text-gray-400 mt-1">{stats.by_criticality.critical || 0} critical, {stats.by_criticality.high || 0} high</div>
-          </div>
-          <div className="bg-white rounded-xl border border-gray-200 p-5">
-            <div className="text-xs text-gray-500 uppercase tracking-wider mb-1">Avg Risk Score</div>
-            <div className="text-3xl font-bold text-gray-900">{stats.avg_score > 0 ? `${stats.avg_score}/25` : '--'}</div>
-            <div className="w-full bg-gray-200 rounded-full h-1.5 mt-2">
-              <div className="h-1.5 rounded-full transition-all" style={{ width: `${(stats.avg_score / 25) * 100}%`, backgroundColor: stats.avg_score > 0 ? scoreColorHex(stats.avg_score) : '#d1d5db' }} />
-            </div>
-          </div>
-          <div className="bg-white rounded-xl border border-gray-200 p-5">
-            <div className="text-xs text-gray-500 uppercase tracking-wider mb-1">Overdue Assessments</div>
-            <div className={`text-3xl font-bold ${stats.overdue_assessments > 0 ? 'text-red-600' : 'text-green-600'}`}>{stats.overdue_assessments}</div>
-            <div className="text-xs text-gray-400 mt-1">{stats.expiring_contracts} contract{stats.expiring_contracts !== 1 ? 's' : ''} expiring</div>
-          </div>
+          <ChartMetricCard
+            title="Total Vendors"
+            value={String(stats.total)}
+            subtitle={`${stats.by_status.active || 0} active`}
+            accentColor={STATUS_COLORS.info}
+          />
+          <ChartMetricCard
+            title="Critical / High"
+            value={String(stats.critical_high)}
+            subtitle={`${stats.by_criticality.critical || 0} critical, ${stats.by_criticality.high || 0} high`}
+            accentColor={stats.critical_high > 0 ? STATUS_COLORS.danger : STATUS_COLORS.muted}
+          />
+          <ChartMetricCard
+            title="Avg Risk Score"
+            value={stats.avg_score > 0 ? `${stats.avg_score}/25` : '--'}
+            accentColor={stats.avg_score > 0 ? (stats.avg_score >= 21 ? STATUS_COLORS.success : stats.avg_score >= 16 ? STATUS_COLORS.warning : STATUS_COLORS.danger) : STATUS_COLORS.muted}
+          />
+          <ChartMetricCard
+            title="Overdue Assessments"
+            value={String(stats.overdue_assessments)}
+            subtitle={`${stats.expiring_contracts} contract${stats.expiring_contracts !== 1 ? 's' : ''} expiring`}
+            accentColor={stats.overdue_assessments > 0 ? STATUS_COLORS.danger : STATUS_COLORS.success}
+          />
         </div>
       )}
 
       {/* Filter Bar */}
-      <div className="flex flex-wrap items-center gap-2 mb-4">
-        <select value={filterCrit} onChange={(e) => setFilterCrit(e.target.value)} className="px-3 py-2 border border-gray-300 rounded-lg text-sm">
-          <option value="">All Criticality</option>
-          {CRITICALITIES.map((c) => <option key={c} value={c}>{c.charAt(0).toUpperCase() + c.slice(1)}</option>)}
-        </select>
-        <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} className="px-3 py-2 border border-gray-300 rounded-lg text-sm">
-          <option value="">All Status</option>
-          {STATUSES.map((s) => <option key={s} value={s}>{s.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase())}</option>)}
-        </select>
-        <select value={filterTier} onChange={(e) => setFilterTier(e.target.value)} className="px-3 py-2 border border-gray-300 rounded-lg text-sm">
-          <option value="">All Tiers</option>
-          {RISK_TIERS.map((t) => <option key={t} value={String(t)}>Tier {t}</option>)}
-        </select>
-        <select value={filterClass} onChange={(e) => setFilterClass(e.target.value)} className="px-3 py-2 border border-gray-300 rounded-lg text-sm">
-          <option value="">All Classifications</option>
-          {DATA_CLASSIFICATIONS.map((d) => <option key={d} value={d}>{d.charAt(0).toUpperCase() + d.slice(1)}</option>)}
-        </select>
-        <input type="text" placeholder="Search vendors..." value={search} onChange={(e) => setSearch(e.target.value)} className="px-3 py-2 border border-gray-300 rounded-lg text-sm flex-1 min-w-[180px]" />
-        <span className="text-sm text-gray-500">{filtered.length} vendor{filtered.length !== 1 ? 's' : ''}</span>
-      </div>
+      <FilterBar
+        filters={[
+          { type: 'select', key: 'criticality', label: 'All Criticality', options: CRITICALITIES.map(c => ({ value: c, label: c.charAt(0).toUpperCase() + c.slice(1) })) },
+          { type: 'select', key: 'status', label: 'All Status', options: STATUSES.map(s => ({ value: s, label: s.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase()) })) },
+          { type: 'select', key: 'tier', label: 'All Tiers', options: RISK_TIERS.map(t => ({ value: String(t), label: `Tier ${t}` })) },
+          { type: 'select', key: 'classification', label: 'All Classifications', options: DATA_CLASSIFICATIONS.map(d => ({ value: d, label: d.charAt(0).toUpperCase() + d.slice(1) })) },
+          { type: 'search', key: 'search', label: 'Search vendors...' },
+        ] as FilterField[]}
+        values={{ criticality: filterCrit, status: filterStatus, tier: filterTier, classification: filterClass, search }}
+        onChange={(key, val) => {
+          const v = val as string;
+          if (key === 'criticality') setFilterCrit(v);
+          else if (key === 'status') setFilterStatus(v);
+          else if (key === 'tier') setFilterTier(v);
+          else if (key === 'classification') setFilterClass(v);
+          else if (key === 'search') setSearch(v);
+        }}
+        onClear={() => { setFilterCrit(''); setFilterStatus(''); setFilterTier(''); setFilterClass(''); setSearch(''); }}
+        resultCount={total}
+        resultLabel="vendors"
+      />
 
       {/* Create Form */}
       {showCreate && (
-        <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
-          <h2 className="font-semibold text-gray-900 mb-4">New {t('vendor')}</h2>
+        <div className={`${CARDS.elevated} p-6 mb-6`}>
+          <h2 className={`${TYPOGRAPHY.sectionTitle} mb-4`}>New {t('vendor')}</h2>
           <form onSubmit={handleCreate} className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <input type="text" placeholder={`${t('vendor')} Name *`} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required className="px-4 py-2.5 border border-gray-300 rounded-lg" />
-              <input type="text" placeholder="Category" value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} className="px-4 py-2.5 border border-gray-300 rounded-lg" />
+              <FormField label={`${t('vendor')} Name`} name="vendor_name" value={form.name} onChange={v => setForm({ ...form, name: v })} required className="mb-0" />
+              <FormField label="Category" name="vendor_category" value={form.category} onChange={v => setForm({ ...form, category: v })} placeholder="Category" className="mb-0" />
             </div>
-            <textarea placeholder="Description" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} rows={2} className="w-full px-4 py-2.5 border border-gray-300 rounded-lg" />
+            <FormField label="Description" name="vendor_desc" type="textarea" value={form.description} onChange={v => setForm({ ...form, description: v })} rows={2} />
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <select value={form.criticality} onChange={(e) => setForm({ ...form, criticality: e.target.value })} className="px-4 py-2.5 border border-gray-300 rounded-lg text-sm">
+              <FormField label="Criticality" name="vendor_criticality" type="select" value={form.criticality} onChange={v => setForm({ ...form, criticality: v })} className="mb-0">
                 {CRITICALITIES.map((c) => <option key={c} value={c}>{c.charAt(0).toUpperCase() + c.slice(1)}</option>)}
-              </select>
-              <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })} className="px-4 py-2.5 border border-gray-300 rounded-lg text-sm">
+              </FormField>
+              <FormField label="Status" name="vendor_status" type="select" value={form.status} onChange={v => setForm({ ...form, status: v })} className="mb-0">
                 {STATUSES.map((s) => <option key={s} value={s}>{s.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase())}</option>)}
-              </select>
-              <input type="text" placeholder="Contact Name" value={form.contact_name} onChange={(e) => setForm({ ...form, contact_name: e.target.value })} className="px-4 py-2.5 border border-gray-300 rounded-lg" />
-              <input type="email" placeholder="Contact Email" value={form.contact_email} onChange={(e) => setForm({ ...form, contact_email: e.target.value })} className="px-4 py-2.5 border border-gray-300 rounded-lg" />
+              </FormField>
+              <FormField label="Contact Name" name="vendor_contact_name" value={form.contact_name} onChange={v => setForm({ ...form, contact_name: v })} placeholder="Contact Name" className="mb-0" />
+              <FormField label="Contact Email" name="vendor_contact_email" type="email" value={form.contact_email} onChange={v => setForm({ ...form, contact_email: v })} placeholder="Contact Email" validate={v => v && !/\S+@\S+\.\S+/.test(v) ? 'Invalid email' : null} className="mb-0" />
             </div>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div>
-                <label className="text-xs text-gray-500 mb-1 block">Contract Start</label>
-                <input type="date" value={form.contract_start} onChange={(e) => setForm({ ...form, contract_start: e.target.value })} className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm" />
-              </div>
-              <div>
-                <label className="text-xs text-gray-500 mb-1 block">Contract End</label>
-                <input type="date" value={form.contract_end} onChange={(e) => setForm({ ...form, contract_end: e.target.value })} className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm" />
-              </div>
-              <select value={form.data_classification} onChange={(e) => setForm({ ...form, data_classification: e.target.value })} className="px-4 py-2.5 border border-gray-300 rounded-lg text-sm">
+              <FormField label="Contract Start" name="vendor_contract_start" type="date" value={form.contract_start} onChange={v => setForm({ ...form, contract_start: v })} className="mb-0" />
+              <FormField label="Contract End" name="vendor_contract_end" type="date" value={form.contract_end} onChange={v => setForm({ ...form, contract_end: v })} className="mb-0" />
+              <FormField label="Data Classification" name="vendor_data_class" type="select" value={form.data_classification} onChange={v => setForm({ ...form, data_classification: v })} className="mb-0">
                 <option value="">Data Classification</option>
                 {DATA_CLASSIFICATIONS.map((d) => <option key={d} value={d}>{d.charAt(0).toUpperCase() + d.slice(1)}</option>)}
-              </select>
+              </FormField>
               {isHealthcare && (
                 <label className="flex items-center gap-2 text-sm">
                   <input type="checkbox" checked={form.has_baa === 1} onChange={(e) => setForm({ ...form, has_baa: e.target.checked ? 1 : 0 })} className="rounded" />
@@ -332,21 +312,19 @@ export function VendorsPage() {
               )}
             </div>
             <div className="flex gap-3">
-              <button type="submit" disabled={saving} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50">{saving ? 'Creating...' : 'Create'}</button>
-              <button type="button" onClick={() => setShowCreate(false)} className="px-4 py-2 text-gray-600 text-sm">Cancel</button>
+              <button type="submit" disabled={saving} className={BUTTONS.primary}>{saving ? 'Creating...' : 'Create'}</button>
+              <button type="button" onClick={() => setShowCreate(false)} className={BUTTONS.ghost}>Cancel</button>
             </div>
           </form>
         </div>
       )}
 
       {/* Vendor Cards */}
-      {filtered.length === 0 ? (
-        <div className="bg-white rounded-xl border border-gray-200 p-12 text-center">
-          <p className="text-gray-500">{vendors.length === 0 ? `No ${t('vendor').toLowerCase()}s added yet.` : 'No vendors match filters.'}</p>
-        </div>
+      {vendors.length === 0 ? (
+        <EmptyState title="No vendors found" subtitle="Add vendors to track third-party risk" icon="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
       ) : (
         <div className="space-y-3">
-          {filtered.map((v) => {
+          {vendors.map((v) => {
             const isExpanded = expandedId === v.id;
             const overdue = isOverdueAssessment(v);
             const expiring = isContractExpiring(v);
@@ -355,7 +333,7 @@ export function VendorsPage() {
             const assessments = (meta.assessments || []).slice(-3).reverse();
 
             return (
-              <div key={v.id} className={`bg-white rounded-xl border overflow-hidden ${overdue ? 'border-red-300' : 'border-gray-200'}`}>
+              <div key={v.id} className={`${CARDS.base} overflow-hidden ${overdue ? 'border-red-300' : ''}`}>
                 {/* Collapsed Row */}
                 <div className="p-5 cursor-pointer hover:bg-gray-50 transition-colors" onClick={() => handleExpand(v)}>
                   <div className="flex items-center justify-between">
@@ -365,27 +343,27 @@ export function VendorsPage() {
                       </svg>
                       <div>
                         <div className="flex items-center gap-2">
-                          <h3 className="font-semibold text-gray-900">{v.name}</h3>
-                          {overdue && <span className="text-xs px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-semibold uppercase">Overdue</span>}
-                          {expiring && <span className="text-xs px-1.5 py-0.5 rounded bg-orange-100 text-orange-700 font-semibold">Contract Expiring</span>}
+                          <h3 className={TYPOGRAPHY.cardTitle}>{v.name}</h3>
+                          {overdue && <span className={`${BADGES.base} ${BADGES.error} uppercase`}>Overdue</span>}
+                          {expiring && <span className={`${BADGES.base} ${BADGES.orange}`}>Contract Expiring</span>}
                         </div>
-                        <p className="text-xs text-gray-500 mt-0.5">
+                        <p className={`${TYPOGRAPHY.bodySmallMuted} mt-0.5`}>
                           {v.category && <span className="mr-2">{v.category}</span>}
                           {v.contact_name && <span className="mr-2">{v.contact_name}</span>}
                         </p>
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      <span className={`text-xs px-2 py-0.5 rounded font-medium ${critColor(v.criticality)}`}>{v.criticality}</span>
+                      <span className={`${BADGES.base} ${critColor(v.criticality)}`}>{v.criticality}</span>
                       {v.overall_risk_score !== null && (
-                        <span className={`text-xs px-2 py-0.5 rounded border font-bold ${scoreBadgeClass(v.overall_risk_score)}`}>{v.overall_risk_score}/25</span>
+                        <span className={`${BADGES.base} border font-bold ${scoreBadgeClass(v.overall_risk_score)}`}>{v.overall_risk_score}/25</span>
                       )}
                       {v.risk_tier !== null && (
-                        <span className={`text-xs px-2 py-0.5 rounded font-medium ${tierColor(v.risk_tier)}`}>{tierLabel(v.risk_tier)}</span>
+                        <span className={`${BADGES.base} ${tierColor(v.risk_tier)}`}>{tierLabel(v.risk_tier)}</span>
                       )}
-                      <span className={`text-xs px-2 py-0.5 rounded font-medium ${statusColor(v.status)}`}>{v.status.replace('_', ' ')}</span>
+                      <span className={`${BADGES.base} ${statusColor(v.status)}`}>{v.status.replace('_', ' ')}</span>
                       {isHealthcare && v.has_baa ? (
-                        <span className="text-xs px-1.5 py-0.5 rounded bg-green-100 text-green-700">BAA</span>
+                        <span className={`${BADGES.base} ${BADGES.success}`}>BAA</span>
                       ) : null}
                     </div>
                   </div>
@@ -401,78 +379,78 @@ export function VendorsPage() {
                           <>
                             <div className="grid grid-cols-2 gap-3">
                               <div>
-                                <label className="text-xs text-gray-500 mb-1 block">Name</label>
-                                <input type="text" value={editFields.name || ''} onChange={(e) => setEditFields({ ...editFields, name: e.target.value })} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+                                <label className={FORMS.label}>Name</label>
+                                <input type="text" value={editFields.name || ''} onChange={(e) => setEditFields({ ...editFields, name: e.target.value })} className={FORMS.input} />
                               </div>
                               <div>
-                                <label className="text-xs text-gray-500 mb-1 block">Category</label>
-                                <input type="text" value={editFields.category || ''} onChange={(e) => setEditFields({ ...editFields, category: e.target.value })} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+                                <label className={FORMS.label}>Category</label>
+                                <input type="text" value={editFields.category || ''} onChange={(e) => setEditFields({ ...editFields, category: e.target.value })} className={FORMS.input} />
                               </div>
                             </div>
                             <div>
-                              <label className="text-xs text-gray-500 mb-1 block">Description</label>
-                              <textarea value={editFields.description || ''} onChange={(e) => setEditFields({ ...editFields, description: e.target.value })} rows={2} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+                              <label className={FORMS.label}>Description</label>
+                              <textarea value={editFields.description || ''} onChange={(e) => setEditFields({ ...editFields, description: e.target.value })} rows={2} className={FORMS.textarea} />
                             </div>
                             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                               <div>
-                                <label className="text-xs text-gray-500 mb-1 block">Criticality</label>
-                                <select value={editFields.criticality} onChange={(e) => setEditFields({ ...editFields, criticality: e.target.value })} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm">
+                                <label className={FORMS.label}>Criticality</label>
+                                <select value={editFields.criticality} onChange={(e) => setEditFields({ ...editFields, criticality: e.target.value })} className={FORMS.select}>
                                   {CRITICALITIES.map((c) => <option key={c} value={c}>{c.charAt(0).toUpperCase() + c.slice(1)}</option>)}
                                 </select>
                               </div>
                               <div>
-                                <label className="text-xs text-gray-500 mb-1 block">Status</label>
-                                <select value={editFields.status} onChange={(e) => setEditFields({ ...editFields, status: e.target.value })} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm">
+                                <label className={FORMS.label}>Status</label>
+                                <select value={editFields.status} onChange={(e) => setEditFields({ ...editFields, status: e.target.value })} className={FORMS.select}>
                                   {STATUSES.map((s) => <option key={s} value={s}>{s.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase())}</option>)}
                                 </select>
                               </div>
                               <div>
-                                <label className="text-xs text-gray-500 mb-1 block">Contact Name</label>
-                                <input type="text" value={editFields.contact_name || ''} onChange={(e) => setEditFields({ ...editFields, contact_name: e.target.value })} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+                                <label className={FORMS.label}>Contact Name</label>
+                                <input type="text" value={editFields.contact_name || ''} onChange={(e) => setEditFields({ ...editFields, contact_name: e.target.value })} className={FORMS.input} />
                               </div>
                               <div>
-                                <label className="text-xs text-gray-500 mb-1 block">Contact Email</label>
-                                <input type="email" value={editFields.contact_email || ''} onChange={(e) => setEditFields({ ...editFields, contact_email: e.target.value })} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+                                <label className={FORMS.label}>Contact Email</label>
+                                <input type="email" value={editFields.contact_email || ''} onChange={(e) => setEditFields({ ...editFields, contact_email: e.target.value })} className={FORMS.input} />
                               </div>
                             </div>
                             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                               <div>
-                                <label className="text-xs text-gray-500 mb-1 block">Contract Start</label>
-                                <input type="date" value={editFields.contract_start || ''} onChange={(e) => setEditFields({ ...editFields, contract_start: e.target.value })} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+                                <label className={FORMS.label}>Contract Start</label>
+                                <input type="date" value={editFields.contract_start || ''} onChange={(e) => setEditFields({ ...editFields, contract_start: e.target.value })} className={FORMS.input} />
                               </div>
                               <div>
-                                <label className="text-xs text-gray-500 mb-1 block">Contract End</label>
-                                <input type="date" value={editFields.contract_end || ''} onChange={(e) => setEditFields({ ...editFields, contract_end: e.target.value })} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+                                <label className={FORMS.label}>Contract End</label>
+                                <input type="date" value={editFields.contract_end || ''} onChange={(e) => setEditFields({ ...editFields, contract_end: e.target.value })} className={FORMS.input} />
                               </div>
                               <div>
-                                <label className="text-xs text-gray-500 mb-1 block">Data Classification</label>
-                                <select value={editFields.data_classification || ''} onChange={(e) => setEditFields({ ...editFields, data_classification: e.target.value })} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm">
+                                <label className={FORMS.label}>Data Classification</label>
+                                <select value={editFields.data_classification || ''} onChange={(e) => setEditFields({ ...editFields, data_classification: e.target.value })} className={FORMS.select}>
                                   <option value="">None</option>
                                   {DATA_CLASSIFICATIONS.map((d) => <option key={d} value={d}>{d.charAt(0).toUpperCase() + d.slice(1)}</option>)}
                                 </select>
                               </div>
                               {isHealthcare && (
                                 <label className="flex items-center gap-2 text-sm mt-5">
-                                  <input type="checkbox" checked={editFields.has_baa === 1} onChange={(e) => setEditFields({ ...editFields, has_baa: e.target.checked ? 1 : 0 })} className="rounded" />
+                                  <input type="checkbox" checked={editFields.has_baa === 1} onChange={(e) => setEditFields({ ...editFields, has_baa: e.target.checked ? 1 : 0 })} className={FORMS.checkbox} />
                                   BAA in Place
                                 </label>
                               )}
                             </div>
                             <div className="flex items-center gap-3 pt-2">
-                              <button onClick={() => handleSaveEdit(v.id)} disabled={savingEdit} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
+                              <button onClick={() => handleSaveEdit(v.id)} disabled={savingEdit} className={BUTTONS.primary}>
                                 {savingEdit ? 'Saving...' : 'Save Changes'}
                               </button>
-                              <button onClick={() => exportVendorAssessmentDoc(v, '')} className="px-3 py-2 border border-gray-300 text-gray-700 rounded-lg text-xs font-medium hover:bg-gray-50">
+                              <button onClick={() => exportVendorAssessmentDoc(v, '')} className={BUTTONS.secondary}>
                                 Export DOCX
                               </button>
                               {deleteConfirm === v.id ? (
                                 <div className="flex items-center gap-2 ml-auto">
                                   <span className="text-xs text-red-600 font-medium">Delete this vendor?</span>
-                                  <button onClick={() => handleDelete(v.id)} className="px-3 py-1.5 bg-red-600 text-white rounded-lg text-xs font-medium hover:bg-red-700">Yes, Delete</button>
-                                  <button onClick={() => setDeleteConfirm(null)} className="px-3 py-1.5 text-gray-600 text-xs">Cancel</button>
+                                  <button onClick={() => handleDelete(v.id)} className={`${BUTTONS.danger} ${BUTTONS.sm}`}>Yes, Delete</button>
+                                  <button onClick={() => setDeleteConfirm(null)} className={`${BUTTONS.ghost} ${BUTTONS.sm}`}>Cancel</button>
                                 </div>
                               ) : (
-                                <button onClick={() => setDeleteConfirm(v.id)} className="ml-auto px-3 py-1.5 text-red-600 text-xs hover:text-red-700">Delete</button>
+                                <button onClick={() => setDeleteConfirm(v.id)} className="ml-auto text-red-600 text-xs hover:text-red-700">Delete</button>
                               )}
                             </div>
                           </>
@@ -492,12 +470,17 @@ export function VendorsPage() {
 
                       {/* Right: Assessment Panel */}
                       <div className="space-y-4">
-                        <div className="bg-white rounded-lg border border-gray-200 p-4">
+                        <div className="bg-white rounded-lg border border-blue-200 p-4">
                           <div className="flex items-center gap-3 mb-3">
                             {v.overall_risk_score !== null ? (
-                              <RiskScoreDonut score={v.overall_risk_score} />
+                              <ScoreRadialChart
+                                score={Math.round((v.overall_risk_score / 25) * 100)}
+                                size={64}
+                                thickness={6}
+                                showLabel={false}
+                              />
                             ) : (
-                              <div className="w-16 h-16 rounded-full border-4 border-gray-200 flex items-center justify-center text-gray-400 text-xs">N/A</div>
+                              <div className="w-16 h-16 rounded-full border-4 border-blue-200 flex items-center justify-center text-gray-400 text-xs">N/A</div>
                             )}
                             <div>
                               <div className="text-sm font-medium text-gray-900">
@@ -512,7 +495,7 @@ export function VendorsPage() {
                         </div>
 
                         {canManage && (
-                          <div className="bg-white rounded-lg border border-gray-200 p-4">
+                          <div className="bg-white rounded-lg border border-blue-200 p-4">
                             <h4 className="text-sm font-medium text-gray-900 mb-3">Risk Assessment</h4>
                             <div className="space-y-3">
                               {ASSESSMENT_CATEGORIES.map((cat) => (
@@ -548,7 +531,7 @@ export function VendorsPage() {
                         )}
 
                         {assessments.length > 0 && (
-                          <div className="bg-white rounded-lg border border-gray-200 p-4">
+                          <div className="bg-white rounded-lg border border-blue-200 p-4">
                             <h4 className="text-sm font-medium text-gray-700 mb-2">Assessment History</h4>
                             <div className="space-y-2">
                               {assessments.map((a: any, i: number) => (
@@ -575,6 +558,7 @@ export function VendorsPage() {
           })}
         </div>
       )}
+      <Pagination page={page} totalPages={Math.ceil(total / limit)} total={total} limit={limit} onPageChange={setPage} onLimitChange={setLimit} showLimitSelector />
     </div>
   );
 }

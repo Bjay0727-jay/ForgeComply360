@@ -3,6 +3,11 @@ import { useExperience } from '../hooks/useExperience';
 import { useAuth } from '../hooks/useAuth';
 import { api } from '../utils/api';
 import { ActivityTimeline } from '../components/ActivityTimeline';
+import { PageHeader } from '../components/PageHeader';
+import { SkeletonListItem } from '../components/Skeleton';
+import { EmptyState } from '../components/EmptyState';
+import { exportSystemsCSV } from '../utils/exportHelpers';
+import { TYPOGRAPHY, BUTTONS, FORMS, CARDS, BADGES } from '../utils/typography';
 
 export function SystemsPage() {
   const { t, nav } = useExperience();
@@ -30,46 +35,46 @@ export function SystemsPage() {
     } catch { } finally { setSaving(false); }
   };
 
-  const impactColor = (level: string) => level === 'high' ? 'bg-red-100 text-red-700' : level === 'moderate' ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700';
-  const statusColor = (s: string) => s === 'authorized' ? 'bg-green-100 text-green-700' : s === 'denied' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700';
+  const impactColor = (level: string) => level === 'high' ? BADGES.error : level === 'moderate' ? BADGES.warning : BADGES.success;
+  const statusColor = (s: string) => s === 'authorized' ? BADGES.success : s === 'denied' ? BADGES.error : BADGES.info;
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">{nav('systems')}</h1>
-          <p className="text-gray-500 text-sm mt-1">Manage your {t('system').toLowerCase()}s</p>
-        </div>
+      <PageHeader title={nav('systems')} subtitle={`Manage your ${t('system').toLowerCase()}s`}>
+        <button onClick={() => exportSystemsCSV(systems)} className="px-4 py-2 bg-white text-gray-900 rounded-lg text-sm font-medium hover:bg-white/90 flex items-center gap-1.5">
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+          CSV
+        </button>
         {canManage && (
-          <button onClick={() => setShowCreate(true)} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">
+          <button onClick={() => setShowCreate(true)} className="px-4 py-2 bg-white text-gray-900 rounded-lg text-sm font-medium hover:bg-white/90">
             + New {t('system')}
           </button>
         )}
-      </div>
+      </PageHeader>
 
       {showCreate && (
-        <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
-          <h2 className="font-semibold text-gray-900 mb-4">Create {t('system')}</h2>
+        <div className={`${CARDS.base} p-6 mb-6`}>
+          <h2 className={`${TYPOGRAPHY.sectionTitle} mb-4`}>Create {t('system')}</h2>
           <form onSubmit={handleCreate} className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <input type="text" placeholder="System Name *" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required className="px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" />
-              <input type="text" placeholder="Acronym" value={form.acronym} onChange={(e) => setForm({ ...form, acronym: e.target.value.toUpperCase() })} maxLength={10} className="px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" />
+              <input type="text" placeholder="System Name *" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required className={FORMS.input} />
+              <input type="text" placeholder="Acronym" value={form.acronym} onChange={(e) => setForm({ ...form, acronym: e.target.value.toUpperCase() })} maxLength={10} className={FORMS.input} />
             </div>
-            <textarea placeholder="Description" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} rows={2} className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" />
+            <textarea placeholder="Description" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} rows={2} className={FORMS.textarea} />
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <select value={form.impact_level} onChange={(e) => setForm({ ...form, impact_level: e.target.value })} className="px-4 py-2.5 border border-gray-300 rounded-lg">
+              <select value={form.impact_level} onChange={(e) => setForm({ ...form, impact_level: e.target.value })} className={FORMS.select}>
                 <option value="low">Low Impact</option>
                 <option value="moderate">Moderate Impact</option>
                 <option value="high">High Impact</option>
               </select>
-              <select value={form.deployment_model} onChange={(e) => setForm({ ...form, deployment_model: e.target.value })} className="px-4 py-2.5 border border-gray-300 rounded-lg">
+              <select value={form.deployment_model} onChange={(e) => setForm({ ...form, deployment_model: e.target.value })} className={FORMS.select}>
                 <option value="">Deployment Model</option>
                 <option value="cloud">Cloud</option>
                 <option value="on_premises">On-Premises</option>
                 <option value="hybrid">Hybrid</option>
                 <option value="government_cloud">Government Cloud</option>
               </select>
-              <select value={form.service_model} onChange={(e) => setForm({ ...form, service_model: e.target.value })} className="px-4 py-2.5 border border-gray-300 rounded-lg">
+              <select value={form.service_model} onChange={(e) => setForm({ ...form, service_model: e.target.value })} className={FORMS.select}>
                 <option value="">Service Model</option>
                 <option value="IaaS">IaaS</option>
                 <option value="PaaS">PaaS</option>
@@ -77,19 +82,17 @@ export function SystemsPage() {
               </select>
             </div>
             <div className="flex gap-3">
-              <button type="submit" disabled={saving} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50">{saving ? 'Creating...' : 'Create'}</button>
-              <button type="button" onClick={() => setShowCreate(false)} className="px-4 py-2 text-gray-600 text-sm">Cancel</button>
+              <button type="submit" disabled={saving} className={BUTTONS.primary}>{saving ? 'Creating...' : 'Create'}</button>
+              <button type="button" onClick={() => setShowCreate(false)} className={BUTTONS.ghost}>Cancel</button>
             </div>
           </form>
         </div>
       )}
 
       {loading ? (
-        <div className="flex justify-center py-12"><div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" /></div>
+        <SkeletonListItem />
       ) : systems.length === 0 ? (
-        <div className="bg-white rounded-xl border border-gray-200 p-12 text-center">
-          <p className="text-gray-500">No {t('system').toLowerCase()}s yet. Create your first one to get started.</p>
-        </div>
+        <EmptyState title="No systems yet" subtitle="Create your first system to get started" icon="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {systems.map((sys) => {
@@ -97,7 +100,7 @@ export function SystemsPage() {
             return (
               <React.Fragment key={sys.id}>
                 <div
-                  className={`bg-white rounded-xl border ${isExpanded ? 'border-blue-300 ring-1 ring-blue-100' : 'border-gray-200'} p-5 hover:border-blue-200 transition-colors cursor-pointer`}
+                  className={`bg-white rounded-xl border ${isExpanded ? 'border-forge-navy ring-2 ring-forge-navy/10' : 'border-gray-200'} p-5 hover:border-gray-300 transition-colors cursor-pointer`}
                   onClick={() => setExpandedId(isExpanded ? null : sys.id)}
                 >
                   <div className="flex items-start justify-between mb-3">
@@ -120,7 +123,7 @@ export function SystemsPage() {
                 </div>
 
                 {isExpanded && (
-                  <div className="col-span-full bg-white rounded-xl border border-blue-300 ring-1 ring-blue-100 p-5 -mt-2">
+                  <div className="col-span-full bg-white rounded-xl border border-forge-navy ring-2 ring-forge-navy/10 p-5 -mt-2">
                     <div className="flex items-start justify-between mb-4">
                       <div>
                         <h3 className="font-semibold text-gray-900">{sys.name}</h3>

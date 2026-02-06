@@ -24,7 +24,7 @@ binding = "AI"
 
 [vars]
 ENVIRONMENT = "development"
-CORS_ORIGIN = "http://localhost:5173"
+CORS_ORIGIN = "https://forgecomply360.pages.dev"
 
 # ============================================================================
 # PRODUCTION
@@ -65,7 +65,7 @@ CORS_ORIGIN = "https://forgecomply360.pages.dev"
 # CRON TRIGGERS - Evidence Scheduling, Reminders & Email Digests
 # ============================================================================
 [triggers]
-crons = ["0 6 * * *"]
+crons = ["0 6 * * *", "0 8 * * 1"]
 
 [env.production.triggers]
-crons = ["0 6 * * *"]
+crons = ["0 6 * * *", "0 8 * * 1"]

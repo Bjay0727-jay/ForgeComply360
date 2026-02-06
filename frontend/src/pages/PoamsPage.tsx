@@ -4,6 +4,14 @@ import { useAuth } from '../hooks/useAuth';
 import { api } from '../utils/api';
 import { exportPoamsCSV } from '../utils/exportHelpers';
 import { ActivityTimeline } from '../components/ActivityTimeline';
+import { PageHeader } from '../components/PageHeader';
+import { FilterBar, FilterField } from '../components/FilterBar';
+import { SkeletonMetricCards, SkeletonListItem } from '../components/Skeleton';
+import { EmptyState } from '../components/EmptyState';
+import { FormField } from '../components/FormField';
+import { Pagination } from '../components/Pagination';
+import { useToast } from '../components/Toast';
+import { TYPOGRAPHY, BUTTONS, FORMS, CARDS, MODALS, BADGES } from '../utils/typography';
 
 const STATUS_LABELS: Record<string, string> = {
   draft: 'Draft', open: 'Open', in_progress: 'In Progress',
@@ -12,7 +20,7 @@ const STATUS_LABELS: Record<string, string> = {
 };
 const STATUS_COLORS: Record<string, string> = {
   draft: 'bg-gray-100 text-gray-600', open: 'bg-red-100 text-red-700',
-  in_progress: 'bg-yellow-100 text-yellow-700', verification: 'bg-blue-100 text-blue-700',
+  in_progress: 'bg-yellow-100 text-yellow-700', verification: 'bg-forge-navy/10 text-forge-navy-700',
   completed: 'bg-green-100 text-green-700', accepted: 'bg-emerald-100 text-emerald-700',
   deferred: 'bg-gray-100 text-gray-500',
 };
@@ -45,6 +53,7 @@ function relativeTime(iso: string): string {
 export function PoamsPage() {
   const { t, nav, isFederal } = useExperience();
   const { canEdit, canManage } = useAuth();
+  const { addToast } = useToast();
 
   const [poams, setPoams] = useState<any[]>([]);
   const [systems, setSystems] = useState<any[]>([]);
@@ -56,6 +65,9 @@ export function PoamsPage() {
   const [filterStatus, setFilterStatus] = useState('');
   const [filterRisk, setFilterRisk] = useState('');
   const [filterOverdue, setFilterOverdue] = useState(false);
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [limit, setLimit] = useState(50);
 
   // Create form
   const [showCreate, setShowCreate] = useState(false);
@@ -63,6 +75,7 @@ export function PoamsPage() {
   const [saving, setSaving] = useState(false);
 
   // Expanded view
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null as string|null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [editFields, setEditFields] = useState<Record<string, any>>({});
   const [savingEdit, setSavingEdit] = useState('');
@@ -82,24 +95,28 @@ export function PoamsPage() {
 
   const loadPoams = useCallback(() => {
     const params = new URLSearchParams();
+    params.set('page', String(page));
+    params.set('limit', String(limit));
     if (filterSystem) params.set('system_id', filterSystem);
     if (filterStatus) params.set('status', filterStatus);
     if (filterRisk) params.set('risk_level', filterRisk);
     if (filterOverdue) params.set('overdue', '1');
-    api(`/api/v1/poams?${params.toString()}`).then((d) => setPoams(d.poams || []));
-  }, [filterSystem, filterStatus, filterRisk, filterOverdue]);
+    api(`/api/v1/poams?${params.toString()}`).then((d) => { setPoams(d.poams || []); setTotal(d.total || (d.poams || []).length); });
+  }, [filterSystem, filterStatus, filterRisk, filterOverdue, page, limit]);
 
   useEffect(() => {
-    Promise.all([api('/api/v1/poams'), api('/api/v1/systems'), api('/api/v1/org-members')])
+    Promise.all([api('/api/v1/poams?page=1&limit=50'), api('/api/v1/systems'), api('/api/v1/org-members')])
       .then(([p, s, m]) => {
         setPoams(p.poams || []);
+        setTotal(p.total || (p.poams || []).length);
         setSystems(s.systems || []);
         setMembers(m.members || []);
         if (s.systems?.length > 0) setForm((f) => ({ ...f, system_id: s.systems[0].id }));
       }).finally(() => setLoading(false));
   }, []);
 
-  useEffect(() => { if (!loading) loadPoams(); }, [filterSystem, filterStatus, filterRisk, filterOverdue]);
+  useEffect(() => { if (!loading) loadPoams(); }, [filterSystem, filterStatus, filterRisk, filterOverdue, page, limit]);
+  useEffect(() => { setPage(1); }, [filterSystem, filterStatus, filterRisk, filterOverdue]);
 
   const loadDetail = (poamId: string) => {
     api(`/api/v1/poams/${poamId}/milestones`).then((d) => setMilestones(d.milestones || [])).catch(() => {});
@@ -159,9 +176,10 @@ export function PoamsPage() {
     } catch { } finally { setSavingEdit(''); }
   };
 
-  const deletePoam = async (id: string, name: string) => {
-    if (!confirm(`Delete POA&M "${name}"? This cannot be undone.`)) return;
-    try { await api(`/api/v1/poams/${id}`, { method: 'DELETE' }); setExpandedId(null); loadPoams(); } catch { }
+  const deletePoam = async (id: string) => {
+    try {
+      await api(`/api/v1/poams/${id}`, { method: 'DELETE' }); setExpandedId(null); setConfirmDeleteId(null); loadPoams(); addToast({ type: 'success', title: 'POA&M Deleted' });
+    } catch { addToast({ type: 'error', title: 'Delete Failed', message: 'Could not delete POA&M' }); }
   };
 
   const addMilestone = async (poamId: string) => {
@@ -189,39 +207,38 @@ export function PoamsPage() {
 
   const title = isFederal ? 'POA&M Tracker' : nav('poams');
 
-  if (loading) return <div className="flex justify-center py-12"><div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" /></div>;
+  if (loading) return <div><SkeletonMetricCards /><SkeletonListItem count={5} /></div>;
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
-        <div><h1 className="text-2xl font-bold text-gray-900">{title}</h1><p className="text-gray-500 text-sm mt-1">Track {isFederal ? 'weaknesses, milestones, and remediation' : 'findings and remediation'}</p></div>
-        {canEdit && <button onClick={() => setShowCreate(true)} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">+ New {t('milestone')}</button>}
-      </div>
+      <PageHeader title={title} subtitle={`Track ${isFederal ? 'weaknesses, milestones, and remediation' : 'findings and remediation'}`}>
+        {canEdit && <button onClick={() => setShowCreate(true)} className="px-4 py-2 bg-white text-gray-900 rounded-lg text-sm font-medium hover:bg-white/90">+ New {t('milestone')}</button>}
+      </PageHeader>
 
       {/* Create Form */}
       {showCreate && (
         <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
           <form onSubmit={handleCreate} className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <select value={form.system_id} onChange={(e) => setForm({ ...form, system_id: e.target.value })} required className="px-4 py-2.5 border border-gray-300 rounded-lg text-sm">
+              <FormField label="System" name="poam_system" type="select" value={form.system_id} onChange={v => setForm({ ...form, system_id: v })} required className="mb-0">
                 {systems.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-              </select>
-              <select value={form.risk_level} onChange={(e) => setForm({ ...form, risk_level: e.target.value })} className="px-4 py-2.5 border border-gray-300 rounded-lg text-sm">
+              </FormField>
+              <FormField label="Risk Level" name="poam_risk_level" type="select" value={form.risk_level} onChange={v => setForm({ ...form, risk_level: v })} className="mb-0">
                 <option value="low">Low Risk</option><option value="moderate">Moderate Risk</option><option value="high">High Risk</option><option value="critical">Critical Risk</option>
-              </select>
-              <select value={form.assigned_to} onChange={(e) => setForm({ ...form, assigned_to: e.target.value })} className="px-4 py-2.5 border border-gray-300 rounded-lg text-sm">
+              </FormField>
+              <FormField label="Assigned To" name="poam_assigned_to" type="select" value={form.assigned_to} onChange={v => setForm({ ...form, assigned_to: v })} className="mb-0">
                 <option value="">Unassigned</option>
                 {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-              </select>
+              </FormField>
             </div>
-            <input type="text" placeholder={`${t('finding')} Name *`} value={form.weakness_name} onChange={(e) => setForm({ ...form, weakness_name: e.target.value })} required className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm" />
-            <textarea placeholder="Description" value={form.weakness_description} onChange={(e) => setForm({ ...form, weakness_description: e.target.value })} rows={2} className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm" />
+            <FormField label={`${t('finding')} Name`} name="poam_weakness_name" value={form.weakness_name} onChange={v => setForm({ ...form, weakness_name: v })} required placeholder={`${t('finding')} Name`} />
+            <FormField label="Description" name="poam_desc" type="textarea" value={form.weakness_description} onChange={v => setForm({ ...form, weakness_description: v })} rows={2} />
             <div className="grid grid-cols-2 gap-4">
-              <input type="date" value={form.scheduled_completion} onChange={(e) => setForm({ ...form, scheduled_completion: e.target.value })} className="px-4 py-2.5 border border-gray-300 rounded-lg text-sm" />
-              <input type="text" placeholder="Responsible Party" value={form.responsible_party} onChange={(e) => setForm({ ...form, responsible_party: e.target.value })} className="px-4 py-2.5 border border-gray-300 rounded-lg text-sm" />
+              <FormField label="Scheduled Completion" name="poam_scheduled_completion" type="date" value={form.scheduled_completion} onChange={v => setForm({ ...form, scheduled_completion: v })} className="mb-0" />
+              <FormField label="Responsible Party" name="poam_responsible_party" value={form.responsible_party} onChange={v => setForm({ ...form, responsible_party: v })} placeholder="Responsible Party" className="mb-0" />
             </div>
             <div className="flex gap-3">
-              <button type="submit" disabled={saving} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50">{saving ? 'Creating...' : 'Create'}</button>
+              <button type="submit" disabled={saving} className="px-4 py-2 bg-forge-navy-900 text-white rounded-lg text-sm font-medium hover:bg-forge-navy-800 disabled:opacity-50">{saving ? 'Creating...' : 'Create'}</button>
               <button type="button" onClick={() => setShowCreate(false)} className="px-4 py-2 text-gray-600 text-sm">Cancel</button>
             </div>
           </form>
@@ -229,46 +246,43 @@ export function PoamsPage() {
       )}
 
       {/* Filter Bar */}
-      <div className="bg-white rounded-xl border border-gray-200 p-4 mb-6">
-        <div className="flex flex-wrap items-center gap-3">
-          <select value={filterSystem} onChange={(e) => setFilterSystem(e.target.value)} className="px-3 py-2 border border-gray-300 rounded-lg text-sm">
-            <option value="">All Systems</option>
-            {systems.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-          </select>
-          <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} className="px-3 py-2 border border-gray-300 rounded-lg text-sm">
-            <option value="">All Statuses</option>
-            {Object.entries(STATUS_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-          </select>
-          <select value={filterRisk} onChange={(e) => setFilterRisk(e.target.value)} className="px-3 py-2 border border-gray-300 rounded-lg text-sm">
-            <option value="">All Risk Levels</option>
-            <option value="critical">Critical</option><option value="high">High</option><option value="moderate">Moderate</option><option value="low">Low</option>
-          </select>
-          <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
-            <input type="checkbox" checked={filterOverdue} onChange={(e) => setFilterOverdue(e.target.checked)} className="rounded border-gray-300 text-blue-600" />
-            Overdue only
-          </label>
-          <div className="ml-auto flex items-center gap-2">
-            <span className="text-sm text-gray-400">{poams.length} item{poams.length !== 1 ? 's' : ''}</span>
-            <button onClick={() => exportPoamsCSV(poams)} className="px-3 py-2 border border-gray-300 rounded-lg text-xs font-medium text-gray-700 hover:bg-gray-50 flex items-center gap-1">
-              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
-              CSV
-            </button>
-          </div>
-        </div>
-      </div>
+      <FilterBar
+        filters={[
+          { type: 'select', key: 'system', label: 'All Systems', options: systems.map(s => ({ value: s.id, label: s.name })) },
+          { type: 'select', key: 'status', label: 'All Statuses', options: Object.entries(STATUS_LABELS).map(([k, v]) => ({ value: k, label: v })) },
+          { type: 'select', key: 'risk', label: 'All Risk Levels', options: [{ value: 'critical', label: 'Critical' }, { value: 'high', label: 'High' }, { value: 'moderate', label: 'Moderate' }, { value: 'low', label: 'Low' }] },
+          { type: 'toggle', key: 'overdue', label: 'Overdue only' },
+        ] as FilterField[]}
+        values={{ system: filterSystem, status: filterStatus, risk: filterRisk, overdue: filterOverdue }}
+        onChange={(key, val) => {
+          if (key === 'system') setFilterSystem(val as string);
+          else if (key === 'status') setFilterStatus(val as string);
+          else if (key === 'risk') setFilterRisk(val as string);
+          else if (key === 'overdue') setFilterOverdue(val as boolean);
+        }}
+        onClear={() => { setFilterSystem(''); setFilterStatus(''); setFilterRisk(''); setFilterOverdue(false); }}
+        resultCount={poams.length}
+        resultLabel="items"
+        actions={
+          <button onClick={() => exportPoamsCSV(poams)} className="px-3 py-2 border border-gray-300 rounded-lg text-xs font-medium text-gray-700 hover:bg-gray-50 flex items-center gap-1">
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+            CSV
+          </button>
+        }
+      />
 
       {/* POA&M List */}
       {poams.length === 0 ? (
-        <div className="bg-white rounded-xl border border-gray-200 p-12 text-center"><p className="text-gray-500">No {t('milestone').toLowerCase()}s found.</p></div>
+        <EmptyState title="No POA&Ms found" subtitle="Create a plan of action to remediate findings" icon="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
       ) : (
         <div className="space-y-2">
           {poams.map((p) => {
             const isExpanded = expandedId === p.id;
             const ef = editFields[p.id];
             return (
-              <div key={p.id} className={`bg-white rounded-lg border transition-all ${isExpanded ? 'border-blue-300 ring-1 ring-blue-100' : 'border-gray-200'}`}>
+              <div key={p.id} className={`bg-white rounded-lg border transition-all ${isExpanded ? 'border-forge-navy ring-2 ring-forge-navy/10' : 'border-gray-200'}`}>
                 {/* Card Header */}
-                <div className="p-4 cursor-pointer" onClick={() => toggleExpand(p)}>
+                <div className="p-4 cursor-pointer" role="button" aria-expanded={isExpanded} tabIndex={0} onClick={() => toggleExpand(p)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpand(p); } }}>
                   <div className="flex items-start justify-between gap-4">
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-1 flex-wrap">
@@ -319,11 +333,11 @@ export function PoamsPage() {
                         const isPast = stepIdx < idx;
                         return (
                           <React.Fragment key={step}>
-                            <div className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium ${isCurrent ? 'bg-blue-600 text-white' : isPast ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-400'}`}>
+                            <div className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium ${isCurrent ? 'bg-forge-navy-900 text-white' : isPast ? 'bg-forge-green-100 text-forge-green-700' : 'bg-gray-100 text-gray-400'}`}>
                               {isPast && <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>}
                               {STATUS_LABELS[step]}
                             </div>
-                            {i < WORKFLOW_STEPS.length - 1 && <div className={`w-4 h-0.5 ${stepIdx < idx ? 'bg-blue-400' : 'bg-gray-200'}`} />}
+                            {i < WORKFLOW_STEPS.length - 1 && <div className={`w-4 h-0.5 ${stepIdx < idx ? 'bg-forge-green-500' : 'bg-gray-200'}`} />}
                           </React.Fragment>
                         );
                       })}
@@ -380,11 +394,19 @@ export function PoamsPage() {
                         </div>
                         {canEdit && (
                           <div className="flex items-center gap-2 pt-2">
-                            <button onClick={() => saveEdit(p.id)} disabled={savingEdit === p.id} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
+                            <button onClick={() => saveEdit(p.id)} disabled={savingEdit === p.id} className="px-4 py-2 bg-forge-navy-900 text-white rounded-lg text-sm font-medium hover:bg-forge-navy-800 disabled:opacity-50">
                               {savingEdit === p.id ? 'Saving...' : 'Save Changes'}
                             </button>
                             {canManage && (
-                              <button onClick={() => deletePoam(p.id, p.weakness_name)} className="px-4 py-2 bg-red-50 text-red-600 rounded-lg text-sm font-medium hover:bg-red-100 border border-red-200">Delete</button>
+                              confirmDeleteId === p.id ? (
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xs text-red-600">Delete this POA&M?</span>
+                                  <button onClick={() => deletePoam(p.id)} className="px-3 py-1.5 bg-red-600 text-white rounded-lg text-xs font-medium hover:bg-red-700">Yes, Delete</button>
+                                  <button onClick={() => setConfirmDeleteId(null)} className="px-3 py-1.5 text-gray-500 text-xs hover:text-gray-700">Cancel</button>
+                                </div>
+                              ) : (
+                                <button onClick={() => setConfirmDeleteId(p.id)} className="px-4 py-2 bg-red-50 text-red-600 rounded-lg text-sm font-medium hover:bg-red-100 border border-red-200">Delete</button>
+                              )
                             )}
                           </div>
                         )}
@@ -424,7 +446,7 @@ export function PoamsPage() {
                             <div className="flex items-center gap-2 mt-2">
                               <input type="text" placeholder="Milestone title" value={newMs.title} onChange={(e) => setNewMs({ ...newMs, title: e.target.value })} className="flex-1 px-2 py-1.5 border border-gray-300 rounded-lg text-xs" />
                               <input type="date" value={newMs.target_date} onChange={(e) => setNewMs({ ...newMs, target_date: e.target.value })} className="px-2 py-1.5 border border-gray-300 rounded-lg text-xs" />
-                              <button onClick={() => addMilestone(p.id)} className="px-2.5 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-medium hover:bg-blue-700">Add</button>
+                              <button onClick={() => addMilestone(p.id)} className="px-2.5 py-1.5 bg-forge-navy-900 text-white rounded-lg text-xs font-medium hover:bg-forge-navy-800">Add</button>
                             </div>
                           )}
                         </div>
@@ -450,7 +472,7 @@ export function PoamsPage() {
                           {canEdit && (
                             <div className="flex items-center gap-2 mt-2">
                               <input type="text" placeholder="Add a comment..." value={newComment} onChange={(e) => setNewComment(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && addComment(p.id)} className="flex-1 px-2 py-1.5 border border-gray-300 rounded-lg text-xs" />
-                              <button onClick={() => addComment(p.id)} className="px-2.5 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-medium hover:bg-blue-700">Post</button>
+                              <button onClick={() => addComment(p.id)} className="px-2.5 py-1.5 bg-forge-navy-900 text-white rounded-lg text-xs font-medium hover:bg-forge-navy-800">Post</button>
                             </div>
                           )}
                         </div>
@@ -466,30 +488,33 @@ export function PoamsPage() {
           })}
         </div>
       )}
+      <Pagination page={page} totalPages={Math.ceil(total / limit)} total={total} limit={limit} onPageChange={setPage} onLimitChange={setLimit} showLimitSelector />
       {/* Approval Request Modal */}
       {showApprovalModal && approvalTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4 p-6">
-            <h2 className="text-lg font-bold text-gray-900 mb-1">Request Approval</h2>
-            <p className="text-sm text-gray-500 mb-4">Closing a POA&M requires manager approval.</p>
-            <div className="bg-gray-50 rounded-lg p-3 mb-4">
-              <p className="font-medium text-gray-900 text-sm">{approvalTarget.name}</p>
+        <div className={MODALS.backdrop}>
+          <div className={`${MODALS.container} max-w-md`} role="dialog" aria-modal="true" aria-labelledby="poam-approval-modal-title">
+            <div className={MODALS.body}>
+              <h2 id="poam-approval-modal-title" className={`${TYPOGRAPHY.modalTitle} mb-1`}>Request Approval</h2>
+              <p className={`${TYPOGRAPHY.bodyMuted} mb-4`}>Closing a POA&M requires manager approval.</p>
+              <div className="bg-gray-50 rounded-lg p-3 mb-4">
+                <p className={TYPOGRAPHY.body}>{approvalTarget.name}</p>
+              </div>
+              <label className={FORMS.label}>Justification (required)</label>
+              <textarea
+                value={approvalJustification}
+                onChange={(e) => setApprovalJustification(e.target.value)}
+                className={FORMS.textarea}
+                rows={3}
+                placeholder="Explain why this POA&M should be closed..."
+              />
+              {approvalError && <p className={FORMS.errorText}>{approvalError}</p>}
             </div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Justification (required)</label>
-            <textarea
-              value={approvalJustification}
-              onChange={(e) => setApprovalJustification(e.target.value)}
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              rows={3}
-              placeholder="Explain why this POA&M should be closed..."
-            />
-            {approvalError && <p className="text-sm text-red-600 mt-2">{approvalError}</p>}
-            <div className="flex items-center justify-end gap-2 mt-4">
-              <button onClick={() => { setShowApprovalModal(false); setApprovalTarget(null); }} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800" disabled={requestingApproval}>Cancel</button>
+            <div className={MODALS.footer}>
+              <button onClick={() => { setShowApprovalModal(false); setApprovalTarget(null); }} className={BUTTONS.ghost} disabled={requestingApproval}>Cancel</button>
               <button
                 onClick={submitApprovalRequest}
                 disabled={requestingApproval || !approvalJustification.trim()}
-                className="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg disabled:opacity-50"
+                className={BUTTONS.primary}
               >
                 {requestingApproval ? 'Submitting...' : 'Submit for Approval'}
               </button>

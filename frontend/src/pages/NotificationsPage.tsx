@@ -1,6 +1,9 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../utils/api';
+import { PageHeader } from '../components/PageHeader';
+import { SkeletonListItem } from '../components/Skeleton';
+import { EmptyState } from '../components/EmptyState';
 
 const TYPE_COLORS: Record<string, string> = {
   poam_update: 'bg-blue-100 text-blue-700',
@@ -123,24 +126,20 @@ export function NotificationsPage() {
   return (
     <div>
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Notifications</h1>
-          <p className="text-gray-500 text-sm mt-1">Stay updated on compliance events and changes</p>
-        </div>
+      <PageHeader title="Notifications" subtitle="Stay updated on compliance events and changes">
         {hasUnread && (
           <button
             onClick={markAllAsRead}
             disabled={markingAll}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+            className="px-4 py-2 bg-white text-gray-900 hover:bg-white/90 rounded-lg text-sm font-medium disabled:opacity-50"
           >
             {markingAll ? 'Marking...' : 'Mark All as Read'}
           </button>
         )}
-      </div>
+      </PageHeader>
 
       {/* Filters */}
-      <div className="bg-white rounded-xl border border-gray-200 p-4 mb-6">
+      <div className="bg-white rounded-xl border border-blue-200 p-4 mb-6">
         <div className="flex flex-wrap items-center gap-3">
           <select
             value={typeFilter}
@@ -167,16 +166,9 @@ export function NotificationsPage() {
 
       {/* Notifications list */}
       {loading ? (
-        <div className="flex justify-center py-12">
-          <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
-        </div>
+        <SkeletonListItem />
       ) : notifications.length === 0 ? (
-        <div className="bg-white rounded-xl border border-gray-200 p-12 text-center">
-          <svg className="w-12 h-12 mx-auto text-gray-300 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
-          </svg>
-          <p className="text-gray-500">No notifications yet.</p>
-        </div>
+        <EmptyState title="No notifications yet" subtitle="You're all caught up" icon="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
       ) : (
         <div className="space-y-2">
           {notifications.map((n) => (
@@ -184,7 +176,7 @@ export function NotificationsPage() {
               key={n.id}
               onClick={() => handleClick(n)}
               className={`bg-white rounded-xl border p-4 cursor-pointer transition-colors hover:bg-gray-50 ${
-                n.is_read ? 'border-gray-200' : 'border-blue-200 bg-blue-50/30'
+                n.is_read ? 'border-blue-200' : 'border-blue-200 bg-blue-50/30'
               }`}
             >
               <div className="flex items-start gap-3">

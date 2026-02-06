@@ -1,7 +1,22 @@
 import React, { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useExperience } from '../hooks/useExperience';
 import { useAuth } from '../hooks/useAuth';
 import { api } from '../utils/api';
+import { validatedApi } from '../utils/validatedApi';
+import { DashboardStatsResponseSchema, MonitoringResponseSchema } from '../types/api/dashboard';
+import type { Activity, AlertSummary, ExecutiveSummary } from '../types/api';
+import { PageHeader } from '../components/PageHeader';
+import {
+  TrendAreaChart,
+  ScoreRadialChart,
+  HorizontalBarList,
+  StackedStatusBar,
+  MetricCard as ChartMetricCard,
+} from '../components/charts';
+import { STATUS_COLORS, GRADE_COLORS } from '../utils/chartTheme';
+import { DashboardSkeleton } from '../components/Skeleton';
+import { TYPOGRAPHY } from '../utils/typography';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -86,14 +101,6 @@ interface ComplianceScoresResponse {
   org_score: ComplianceScoreResult;
 }
 
-const GRADE_COLORS: Record<string, { text: string; bg: string; border: string; ring: string }> = {
-  A: { text: 'text-green-700', bg: 'bg-green-100', border: 'border-green-200', ring: 'stroke-green-500' },
-  B: { text: 'text-blue-700', bg: 'bg-blue-100', border: 'border-blue-200', ring: 'stroke-blue-500' },
-  C: { text: 'text-yellow-700', bg: 'bg-yellow-100', border: 'border-yellow-200', ring: 'stroke-yellow-500' },
-  D: { text: 'text-orange-700', bg: 'bg-orange-100', border: 'border-orange-200', ring: 'stroke-orange-500' },
-  F: { text: 'text-red-700', bg: 'bg-red-100', border: 'border-red-200', ring: 'stroke-red-500' },
-};
-
 const DIMENSION_META: Record<string, { label: string; icon: string; href: string }> = {
   control: { label: 'Controls', icon: 'M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z', href: '/controls' },
   poam: { label: 'POA&Ms', icon: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2', href: '/poams' },
@@ -113,7 +120,6 @@ export function DashboardPage() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // New data sources
   const [frameworkStats, setFrameworkStats] = useState<FrameworkStat[]>([]);
   const [gapAnalysis, setGapAnalysis] = useState<GapItem[]>([]);
   const [monitoring, setMonitoring] = useState<MonitoringDashboard | null>(null);
@@ -124,17 +130,20 @@ export function DashboardPage() {
   const [auditScore, setAuditScore] = useState<{ score: number; passed_checks: number; total_checks: number } | null>(null);
   const [myWork, setMyWork] = useState<MyWorkData | null>(null);
   const [pendingApprovalCount, setPendingApprovalCount] = useState<number | null>(null);
+  const [activities, setActivities] = useState<Activity[]>([]);
   const [compScores, setCompScores] = useState<ComplianceScoresResponse | null>(null);
-  const [alertSummary, setAlertSummary] = useState<{ poams_overdue: number; poams_upcoming: number; ato_expiring: number; vendor_assessments_due: number; vendor_contracts_ending: number; risks_overdue: number; policies_review_due: number; total: number } | null>(null);
+  const [alertSummary, setAlertSummary] = useState<AlertSummary | null>(null);
+
+  // Executive summary (manager+)
+  const [execSummary, setExecSummary] = useState<ExecutiveSummary | null>(null);
 
   useEffect(() => {
-    // Core dashboard stats (always loaded)
-    api<{ stats: DashboardStats }>('/api/v1/dashboard/stats')
+    // Use validatedApi for dashboard stats - ensures all fields have defaults
+    validatedApi('/api/v1/dashboard/stats', DashboardStatsResponseSchema)
       .then((d) => setStats(d.stats))
       .catch(() => {})
       .finally(() => setLoading(false));
 
-    // Framework-level compliance stats (always loaded)
     api<{ frameworks: FrameworkStat[]; gap_analysis: GapItem[] }>('/api/v1/dashboard/framework-stats')
       .then((d) => {
         setFrameworkStats(d.frameworks || []);
@@ -142,46 +151,23 @@ export function DashboardPage() {
       })
       .catch(() => {});
 
-    // Analyst+ data
     if (canEdit) {
-      // Compliance alert summary
-      api<any>('/api/v1/alerts/summary')
-        .then((d) => setAlertSummary(d))
-        .catch(() => {});
-
-      // Compliance scores (weighted scoring engine)
-      api<ComplianceScoresResponse>('/api/v1/compliance/scores')
-        .then((d) => setCompScores(d))
-        .catch(() => {});
-
-      // Compliance trends
-      api<{ trends: TrendPoint[] }>('/api/v1/compliance/trends?days=30')
-        .then((d) => setTrends(d.trends || []))
-        .catch(() => {});
-
-      // My Work (personal items)
-      api<MyWorkData>('/api/v1/dashboard/my-work')
-        .then((d) => setMyWork(d))
-        .catch(() => {});
+      api<any>('/api/v1/alerts/summary').then((d) => setAlertSummary(d)).catch(() => {});
+      api<ComplianceScoresResponse>('/api/v1/compliance/scores').then((d) => setCompScores(d)).catch(() => {});
+      api<{ trends: TrendPoint[] }>('/api/v1/compliance/trends?days=30').then((d) => setTrends(d.trends || [])).catch(() => {});
+      api<MyWorkData>('/api/v1/dashboard/my-work').then((d) => setMyWork(d)).catch(() => {});
+      api('/api/v1/activity/recent?limit=15').then((d: any) => setActivities(d.activities || [])).catch(() => {});
     }
 
-    // Manager+ data
     if (canManage) {
-      api<MonitoringDashboard>('/api/v1/monitoring/dashboard')
-        .then((d) => setMonitoring(d))
+      // Use validatedApi for monitoring - ensures health_score has a default
+      validatedApi('/api/v1/monitoring/dashboard', MonitoringResponseSchema)
+        .then((d) => setMonitoring(d.dashboard))
         .catch(() => {});
-
-      api<{ stats: { total: number; overdue: number; due_this_week: number; due_this_month: number } }>('/api/v1/evidence/schedules/stats')
-        .then((d) => setScheduleStats(d.stats))
-        .catch(() => {});
-
-      api<{ readiness: { score: number; passed_checks: number; total_checks: number } }>('/api/v1/audit-prep/readiness')
-        .then((d) => setAuditScore(d.readiness))
-        .catch(() => {});
-
-      api<{ count: number }>('/api/v1/approvals/pending/count')
-        .then((d) => setPendingApprovalCount(d.count))
-        .catch(() => {});
+      api<{ stats: { total: number; overdue: number; due_this_week: number; due_this_month: number } }>('/api/v1/evidence/schedules/stats').then((d) => setScheduleStats(d.stats)).catch(() => {});
+      api<{ readiness: { score: number; passed_checks: number; total_checks: number } }>('/api/v1/audit-prep/readiness').then((d) => setAuditScore(d.readiness)).catch(() => {});
+      api<{ count: number }>('/api/v1/approvals/pending/count').then((d) => setPendingApprovalCount(d.count)).catch(() => {});
+      api('/api/v1/dashboard/executive-summary').then(d => setExecSummary(d)).catch(() => {});
     }
   }, [canEdit, canManage]);
 
@@ -191,9 +177,7 @@ export function DashboardPage() {
     try {
       await api('/api/v1/compliance/snapshot', { method: 'POST' });
       setSnapshotMsg('Snapshot saved successfully.');
-      api<{ trends: TrendPoint[] }>('/api/v1/compliance/trends?days=30')
-        .then((d) => setTrends(d.trends || []))
-        .catch(() => {});
+      api<{ trends: TrendPoint[] }>('/api/v1/compliance/trends?days=30').then((d) => setTrends(d.trends || [])).catch(() => {});
     } catch {
       setSnapshotMsg('Failed to take snapshot.');
     } finally {
@@ -201,30 +185,19 @@ export function DashboardPage() {
     }
   };
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
-      </div>
-    );
-  }
+  if (loading) return <DashboardSkeleton />;
 
   const s = stats;
   const compPct = s?.compliance_percentage || 0;
-  const compColor =
-    compPct >= 80 ? 'text-green-600' : compPct >= 50 ? 'text-yellow-600' : 'text-red-600';
-
   const today = new Date().toISOString().split('T')[0];
+  const orgScore = compScores?.org_score;
+  const trend = orgScore?.previous_score !== null && orgScore?.previous_score !== undefined
+    ? orgScore.score - orgScore.previous_score
+    : null;
 
   return (
     <div>
-      {/* Header */}
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">{nav('dashboard')}</h1>
-        <p className="text-gray-500 text-sm mt-1">
-          {t('compliance')} overview for your organization
-        </p>
-      </div>
+      <PageHeader title={nav('dashboard')} subtitle={`${t('compliance')} overview for your organization`} />
 
       {/* Compliance Alert Banner */}
       {alertSummary && alertSummary.total > 0 && (
@@ -269,76 +242,183 @@ export function DashboardPage() {
                 <span className="w-1.5 h-1.5 bg-purple-500 rounded-full" />{alertSummary.policies_review_due} policy review{alertSummary.policies_review_due !== 1 ? 's' : ''} due
               </a>
             )}
+            {alertSummary.evidence_expired > 0 && (
+              <a href="/evidence" className="inline-flex items-center gap-1.5 px-3 py-1 bg-red-100 text-red-700 rounded-full text-xs font-medium hover:bg-red-200 transition-colors">
+                <span className="w-1.5 h-1.5 bg-red-500 rounded-full" />{alertSummary.evidence_expired} evidence expired
+              </a>
+            )}
+            {alertSummary.evidence_expiring > 0 && (
+              <a href="/evidence" className="inline-flex items-center gap-1.5 px-3 py-1 bg-orange-100 text-orange-700 rounded-full text-xs font-medium hover:bg-orange-200 transition-colors">
+                <span className="w-1.5 h-1.5 bg-orange-500 rounded-full" />{alertSummary.evidence_expiring} evidence expiring
+              </a>
+            )}
           </div>
         </div>
       )}
 
-      {/* Key Metrics — all roles */}
+      {/* ================================================================ */}
+      {/* KEY METRICS — Dark MetricCards with sparklines */}
+      {/* ================================================================ */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-        {/* Compliance Score — enhanced with letter grade when available */}
-        {compScores?.org_score ? (
-          <ComplianceScoreCard score={compScores.org_score} label={`${t('compliance')} Score`} />
-        ) : (
-          <MetricCard
-            title={`${t('compliance')} Score`}
-            value={`${compPct}%`}
-            subtitle={`${s?.controls.implemented || 0} of ${s?.controls.total || 0} ${t('control').toLowerCase()}s`}
-            color={compColor}
+        <Link to="/controls" className="block group hover:shadow-md transition-shadow rounded-xl">
+          {orgScore ? (
+            <ChartMetricCard
+              title={`${t('compliance')} Score`}
+              value={`${orgScore.grade}`}
+              subtitle={`${orgScore.score}/100 — ${s?.controls.implemented || 0} of ${s?.controls.total || 0} ${t('control').toLowerCase()}s`}
+              trend={trend !== null ? { value: trend, label: ' pts' } : undefined}
+              accentColor={GRADE_COLORS[orgScore.grade] || STATUS_COLORS.info}
+            />
+          ) : (
+            <ChartMetricCard
+              title={`${t('compliance')} Score`}
+              value={`${compPct}%`}
+              subtitle={`${s?.controls.implemented || 0} of ${s?.controls.total || 0} ${t('control').toLowerCase()}s`}
+              accentColor={compPct >= 80 ? STATUS_COLORS.success : compPct >= 50 ? STATUS_COLORS.warning : STATUS_COLORS.danger}
+            />
+          )}
+        </Link>
+        <Link to="/systems" className="block group hover:shadow-md transition-shadow rounded-xl">
+          <ChartMetricCard
+            title={nav('systems')}
+            value={String(s?.systems || 0)}
+            subtitle="Active information systems"
+            accentColor={STATUS_COLORS.info}
           />
-        )}
-        <MetricCard
-          title={nav('systems')}
-          value={String(s?.systems || 0)}
-          subtitle="Active information systems"
-          color="text-blue-600"
-        />
-        <MetricCard
-          title={isFederal ? 'POA&M Items' : t('milestone') + 's'}
-          value={String(s?.poams.open || 0)}
-          subtitle={`${s?.poams.in_progress || 0} in progress`}
-          color="text-orange-600"
-        />
-        <MetricCard
-          title={t('evidence')}
-          value={String(s?.evidence_count || 0)}
-          subtitle="Documents uploaded"
-          color="text-purple-600"
-        />
+        </Link>
+        <Link to="/poams" className="block group hover:shadow-md transition-shadow rounded-xl">
+          <ChartMetricCard
+            title={isFederal ? 'POA&M Items' : t('milestone') + 's'}
+            value={String(s?.poams.open || 0)}
+            subtitle={`${s?.poams.in_progress || 0} in progress`}
+            accentColor={STATUS_COLORS.orange}
+          />
+        </Link>
+        <Link to="/evidence" className="block group hover:shadow-md transition-shadow rounded-xl">
+          <ChartMetricCard
+            title={t('evidence')}
+            value={String(s?.evidence_count || 0)}
+            subtitle="Documents uploaded"
+            accentColor="#8b5cf6"
+          />
+        </Link>
       </div>
 
-      {/* Per-Framework Compliance Donuts — all roles */}
+      {/* Executive Summary — Manager+ */}
+      {canManage && execSummary && (
+        <div className="bg-white rounded-xl border border-gray-200 p-6 mb-8">
+          <h2 className="text-sm font-semibold text-gray-900 mb-4 flex items-center gap-2">
+            <svg className="w-4 h-4 text-forge-navy-700" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>
+            Weekly Executive Summary
+          </h2>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+            <div className="text-center p-3 bg-gray-50 rounded-lg">
+              <div className="flex items-center justify-center gap-1">
+                <span className="text-2xl font-bold text-gray-900">{execSummary.current_score}%</span>
+                {execSummary.score_delta !== 0 && (
+                  <span className={`text-xs font-semibold px-1.5 py-0.5 rounded ${execSummary.score_delta > 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                    {execSummary.score_delta > 0 ? '\u2191' : '\u2193'}{Math.abs(execSummary.score_delta)}
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-gray-500 mt-1">Compliance Score</p>
+            </div>
+            <div className="text-center p-3 bg-gray-50 rounded-lg">
+              <p className="text-2xl font-bold text-green-600">{execSummary.poams_closed}</p>
+              <p className="text-xs text-gray-500 mt-1">POA&Ms Closed</p>
+            </div>
+            <div className="text-center p-3 bg-gray-50 rounded-lg">
+              <p className="text-2xl font-bold text-amber-600">{execSummary.new_risks}</p>
+              <p className="text-xs text-gray-500 mt-1">New Risks</p>
+            </div>
+            <div className="text-center p-3 bg-gray-50 rounded-lg">
+              <p className="text-2xl font-bold text-forge-navy-700">{execSummary.evidence_uploaded}</p>
+              <p className="text-xs text-gray-500 mt-1">Evidence Uploaded</p>
+            </div>
+          </div>
+          {execSummary.team_activity && execSummary.team_activity.length > 0 && (
+            <div>
+              <p className="text-xs font-medium text-gray-500 mb-2">Team Activity (Past 7 Days)</p>
+              <div className="space-y-1.5">
+                {execSummary.team_activity.slice(0, 5).map((ta: any) => {
+                  const maxActions = Math.max(...execSummary.team_activity.map((t: any) => t.actions_count));
+                  return (
+                    <div key={ta.user_id} className="flex items-center gap-3">
+                      <span className="text-xs text-gray-700 w-28 truncate">{ta.name}</span>
+                      <div className="flex-1 bg-gray-100 rounded-full h-2">
+                        <div className="bg-forge-green-500 h-2 rounded-full" style={{ width: `${(ta.actions_count / maxActions) * 100}%` }} />
+                      </div>
+                      <span className="text-xs text-gray-500 w-8 text-right">{ta.actions_count}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ================================================================ */}
+      {/* PER-FRAMEWORK COMPLIANCE — Radial charts */}
+      {/* ================================================================ */}
       {frameworkStats.length > 0 && (
         <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
-          <h2 className="font-semibold text-gray-900 mb-4">
+          <h2 className={`${TYPOGRAPHY.sectionTitle} mb-4`}>
             {t('compliance')} by Framework
           </h2>
           <div className="flex flex-wrap gap-8 justify-center">
             {frameworkStats.map((fw) => {
               const compliant = fw.implemented + fw.not_applicable;
               const pct = fw.total > 0 ? Math.round((compliant / fw.total) * 100) : 0;
-              // Find the best matching score entry for this framework (aggregate across systems)
-              const fwScores = compScores?.scores.filter(s => s.framework_id === fw.framework_id) || [];
+              const fwScores = compScores?.scores.filter(sc => sc.framework_id === fw.framework_id) || [];
               const avgScore = fwScores.length > 0
-                ? Math.round(fwScores.reduce((sum, s) => sum + s.score, 0) / fwScores.length)
+                ? Math.round(fwScores.reduce((sum, sc) => sum + sc.score, 0) / fwScores.length)
                 : null;
               const grade = avgScore !== null
                 ? (avgScore >= 90 ? 'A' : avgScore >= 80 ? 'B' : avgScore >= 70 ? 'C' : avgScore >= 60 ? 'D' : 'F')
-                : null;
+                : undefined;
               return (
-                <DonutChart
-                  key={fw.framework_id}
-                  label={fw.framework_name}
-                  percentage={pct}
-                  grade={grade}
-                />
+                <div key={fw.framework_id} className="flex flex-col items-center">
+                  <ScoreRadialChart
+                    score={pct}
+                    size={100}
+                    grade={grade}
+                    thickness={8}
+                  />
+                  <p className="text-xs text-gray-600 font-medium text-center max-w-[120px] truncate mt-2">
+                    {fw.framework_name}
+                  </p>
+                </div>
               );
             })}
           </div>
         </div>
       )}
 
+      {/* Welcome Card — Viewers Only */}
+      {!canEdit && (
+        <div className="bg-white rounded-xl border border-gray-200 p-6 mb-8">
+          <h2 className={`${TYPOGRAPHY.sectionTitle} mb-2`}>Welcome to ForgeComply 360</h2>
+          <p className="text-sm text-gray-600 mb-4">You have view-only access to your organization's compliance posture. Contact an administrator to request elevated permissions.</p>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <Link to="/controls" className="flex items-center gap-3 p-3 bg-forge-navy-50 rounded-lg hover:bg-forge-navy-100 transition-colors">
+              <svg className="w-5 h-5 text-forge-navy-700" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" /></svg>
+              <div><p className="text-sm font-medium text-forge-navy-900">Browse Controls</p><p className="text-xs text-forge-navy-700">View implementation status</p></div>
+            </Link>
+            <Link to="/risks" className="flex items-center gap-3 p-3 bg-amber-50 rounded-lg hover:bg-amber-100 transition-colors">
+              <svg className="w-5 h-5 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+              <div><p className="text-sm font-medium text-amber-900">Risk Register</p><p className="text-xs text-amber-600">Review organizational risks</p></div>
+            </Link>
+            <Link to="/policies" className="flex items-center gap-3 p-3 bg-green-50 rounded-lg hover:bg-green-100 transition-colors">
+              <svg className="w-5 h-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+              <div><p className="text-sm font-medium text-green-900">Policies</p><p className="text-xs text-green-600">Read compliance policies</p></div>
+            </Link>
+          </div>
+        </div>
+      )}
+
       {/* ================================================================ */}
-      {/* MY WORK — analyst+ (personal items assigned to current user)     */}
+      {/* MY WORK — analyst+ */}
       {/* ================================================================ */}
       {canEdit && myWork && (myWork.counts.poams > 0 || myWork.counts.evidence_due > 0 || myWork.counts.audit_tasks > 0) && (
         <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
@@ -348,7 +428,7 @@ export function DashboardPage() {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
               </svg>
             </div>
-            <h2 className="font-semibold text-gray-900">My Work</h2>
+            <h2 className={TYPOGRAPHY.cardTitle}>My Work</h2>
             {(myWork.counts.overdue_poams > 0 || myWork.counts.evidence_due > 0) && (
               <span className="ml-auto px-2 py-0.5 bg-red-100 text-red-700 text-xs font-medium rounded-full">
                 {myWork.counts.overdue_poams + myWork.counts.evidence_due} overdue
@@ -356,7 +436,6 @@ export function DashboardPage() {
             )}
           </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {/* My POA&Ms */}
             <div className="border border-gray-100 rounded-lg p-4">
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-medium text-gray-700">{isFederal ? 'My POA&Ms' : `My ${t('milestone')}s`}</h3>
@@ -368,7 +447,7 @@ export function DashboardPage() {
                     <div key={p.id} className="flex items-start justify-between text-xs">
                       <span className="text-gray-700 truncate flex-1 mr-2">{p.title}</span>
                       <span className={`whitespace-nowrap ${p.scheduled_completion && p.scheduled_completion < today ? 'text-red-600 font-semibold' : 'text-gray-400'}`}>
-                        {p.scheduled_completion ? new Date(p.scheduled_completion).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—'}
+                        {p.scheduled_completion ? new Date(p.scheduled_completion).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '\u2014'}
                       </span>
                     </div>
                   ))}
@@ -376,10 +455,9 @@ export function DashboardPage() {
               ) : (
                 <p className="text-xs text-gray-400">No assigned items</p>
               )}
-              <a href="/poams" className="block mt-3 text-xs text-blue-600 hover:text-blue-800 font-medium">View All &rarr;</a>
+              <a href="/poams" className="block mt-3 text-xs text-forge-green-600 hover:text-forge-green-700 font-medium">View All &rarr;</a>
             </div>
 
-            {/* My Evidence Schedules */}
             <div className="border border-gray-100 rounded-lg p-4">
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-medium text-gray-700">My Evidence</h3>
@@ -395,7 +473,7 @@ export function DashboardPage() {
                     <div key={e.id} className="flex items-start justify-between text-xs">
                       <span className="text-gray-700 truncate flex-1 mr-2">{e.title}</span>
                       <span className={`whitespace-nowrap ${e.next_due_date && e.next_due_date <= today ? 'text-red-600 font-semibold' : 'text-gray-400'}`}>
-                        {e.next_due_date ? new Date(e.next_due_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—'}
+                        {e.next_due_date ? new Date(e.next_due_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '\u2014'}
                       </span>
                     </div>
                   ))}
@@ -403,10 +481,9 @@ export function DashboardPage() {
               ) : (
                 <p className="text-xs text-gray-400">No evidence schedules</p>
               )}
-              <a href="/evidence/schedules" className="block mt-3 text-xs text-blue-600 hover:text-blue-800 font-medium">View All &rarr;</a>
+              <a href="/evidence/schedules" className="block mt-3 text-xs text-forge-green-600 hover:text-forge-green-700 font-medium">View All &rarr;</a>
             </div>
 
-            {/* My Audit Tasks */}
             <div className="border border-gray-100 rounded-lg p-4">
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-medium text-gray-700">My Audit Tasks</h3>
@@ -414,11 +491,11 @@ export function DashboardPage() {
               </div>
               {myWork.my_audit_tasks.length > 0 ? (
                 <div className="space-y-2">
-                  {myWork.my_audit_tasks.map((t) => (
-                    <div key={t.id} className="flex items-start justify-between text-xs">
-                      <span className="text-gray-700 truncate flex-1 mr-2">{t.title}</span>
-                      <span className={`whitespace-nowrap ${t.due_date && t.due_date < today ? 'text-red-600 font-semibold' : 'text-gray-400'}`}>
-                        {t.due_date ? new Date(t.due_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—'}
+                  {myWork.my_audit_tasks.map((task) => (
+                    <div key={task.id} className="flex items-start justify-between text-xs">
+                      <span className="text-gray-700 truncate flex-1 mr-2">{task.title}</span>
+                      <span className={`whitespace-nowrap ${task.due_date && task.due_date < today ? 'text-red-600 font-semibold' : 'text-gray-400'}`}>
+                        {task.due_date ? new Date(task.due_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '\u2014'}
                       </span>
                     </div>
                   ))}
@@ -426,38 +503,41 @@ export function DashboardPage() {
               ) : (
                 <p className="text-xs text-gray-400">No assigned tasks</p>
               )}
-              <a href="/audit-prep" className="block mt-3 text-xs text-blue-600 hover:text-blue-800 font-medium">View All &rarr;</a>
+              <a href="/audit-prep" className="block mt-3 text-xs text-forge-green-600 hover:text-forge-green-700 font-medium">View All &rarr;</a>
             </div>
           </div>
         </div>
       )}
 
       {/* ================================================================ */}
-      {/* COMPLIANCE TREND — analyst+ */}
+      {/* COMPLIANCE TREND — Recharts area chart */}
       {/* ================================================================ */}
       {canEdit && (
         <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="font-semibold text-gray-900">Compliance Trend (30 Days)</h2>
+            <h2 className={TYPOGRAPHY.cardTitle}>Compliance Trend (30 Days)</h2>
             {canManage && (
               <button
                 onClick={handleSnapshot}
                 disabled={snapshotLoading}
-                className="px-3 py-1.5 text-xs font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                className="px-3 py-1.5 text-xs font-medium bg-forge-navy-900 text-white rounded-lg hover:bg-forge-navy-800 disabled:opacity-50 transition-colors"
               >
                 {snapshotLoading ? 'Saving...' : 'Take Snapshot'}
               </button>
             )}
           </div>
           {snapshotMsg && (
-            <p
-              className={`text-xs mb-3 ${snapshotMsg.includes('success') ? 'text-green-600' : 'text-red-600'}`}
-            >
+            <p className={`text-xs mb-3 ${snapshotMsg.includes('success') ? 'text-green-600' : 'text-red-600'}`}>
               {snapshotMsg}
             </p>
           )}
           {trends.length >= 2 ? (
-            <TrendChart data={trends} />
+            <TrendAreaChart
+              data={trends.map((tp) => ({ date: tp.date, value: tp.compliance_percentage }))}
+              height={240}
+              valueLabel="Compliance"
+              valueSuffix="%"
+            />
           ) : (
             <p className="text-gray-500 text-sm">
               Take a snapshot to start tracking compliance trends over time.
@@ -472,9 +552,26 @@ export function DashboardPage() {
       {canManage && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
           <div className="lg:col-span-2 bg-white rounded-xl border border-gray-200 p-6">
-            <h2 className="font-semibold text-gray-900 mb-4">Gap Analysis</h2>
+            <h2 className={`${TYPOGRAPHY.cardTitle} mb-4`}>Gap Analysis</h2>
             {gapAnalysis.length > 0 ? (
-              <GapAnalysisPanel gaps={gapAnalysis} />
+              <>
+                <p className="text-xs text-gray-500 mb-3">
+                  Top control families with unimplemented controls
+                </p>
+                <HorizontalBarList
+                  data={[...gapAnalysis]
+                    .sort((a, b) => b.count - a.count)
+                    .slice(0, 10)
+                    .map((gap) => ({
+                      name: gap.family,
+                      value: gap.count,
+                      sublabel: gap.framework_name || undefined,
+                      suffix: ' gaps',
+                      color: STATUS_COLORS.danger,
+                    }))}
+                  barColor={STATUS_COLORS.danger}
+                />
+              </>
             ) : (
               <p className="text-gray-500 text-sm">
                 No gap data available yet. Implement controls to see gap analysis.
@@ -483,15 +580,27 @@ export function DashboardPage() {
           </div>
 
           <div className="bg-white rounded-xl border border-gray-200 p-6 flex flex-col">
-            <h2 className="font-semibold text-gray-900 mb-4">Monitoring Health</h2>
+            <h2 className={`${TYPOGRAPHY.cardTitle} mb-4`}>Monitoring Health</h2>
             {monitoring ? (
-              <MonitoringHealthWidget data={monitoring} />
+              <div className="flex flex-col items-center justify-center flex-1">
+                <ScoreRadialChart
+                  score={monitoring.health_score}
+                  size={140}
+                  label="Health"
+                  thickness={14}
+                />
+                <div className="flex gap-4 text-xs text-gray-500 mt-3">
+                  <span>{monitoring.active_rules} active rules</span>
+                  <span>{monitoring.recent_alerts} recent alerts</span>
+                </div>
+                <a href="/monitoring" className="mt-3 text-xs text-forge-navy-700 hover:underline font-medium">
+                  View Monitoring Dashboard
+                </a>
+              </div>
             ) : (
               <p className="text-gray-500 text-sm">
                 Monitoring data unavailable.{' '}
-                <a href="/monitoring" className="text-blue-600 hover:underline">
-                  Configure monitoring
-                </a>
+                <a href="/monitoring" className="text-forge-navy-700 hover:underline">Configure monitoring</a>
               </p>
             )}
           </div>
@@ -502,118 +611,122 @@ export function DashboardPage() {
       {/* TWO-COLUMN GRID — role-filtered widgets */}
       {/* ================================================================ */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Score Breakdown — analyst+ (shows when scoring engine data available) */}
+        {/* Score Breakdown — Recharts horizontal bars */}
         {canEdit && compScores?.org_score && (
           <div className="bg-white rounded-xl border border-gray-200 p-6">
-            <h2 className="font-semibold text-gray-900 mb-4">Score Breakdown</h2>
-            <div className="space-y-3">
-              {Object.entries(compScores.org_score.dimensions).map(([key, dim]) => {
-                const meta = DIMENSION_META[key];
-                if (!meta) return null;
-                const barColor = dim.score >= 80 ? 'bg-green-500' : dim.score >= 60 ? 'bg-yellow-500' : dim.score >= 40 ? 'bg-orange-500' : 'bg-red-500';
-                return (
-                  <a key={key} href={meta.href} className="block group">
-                    <div className="flex items-center justify-between text-sm mb-1">
-                      <div className="flex items-center gap-2">
-                        <svg className="w-3.5 h-3.5 text-gray-400 group-hover:text-blue-500 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={meta.icon} />
-                        </svg>
-                        <span className="text-gray-700 group-hover:text-blue-600 transition-colors">{meta.label}</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-gray-400">{Math.round(dim.weight * 100)}%</span>
-                        <span className="text-gray-900 font-semibold w-8 text-right">{dim.score}</span>
-                      </div>
-                    </div>
-                    <div className="w-full bg-gray-100 rounded-full h-2">
-                      <div className={`${barColor} h-2 rounded-full transition-all`} style={{ width: `${dim.score}%` }} />
-                    </div>
-                  </a>
-                );
-              })}
-            </div>
-            <p className="text-xs text-gray-400 mt-3">Click a dimension to view details</p>
+            <h2 className={`${TYPOGRAPHY.cardTitle} mb-4`}>Score Breakdown</h2>
+            <HorizontalBarList
+              data={Object.entries(compScores.org_score.dimensions)
+                .filter(([key]) => DIMENSION_META[key])
+                .map(([key, dim]) => ({
+                  name: DIMENSION_META[key].label,
+                  value: dim.score,
+                  suffix: ` (${Math.round(dim.weight * 100)}%)`,
+                }))}
+              maxValue={100}
+              colorByScore
+              barSize={16}
+              onBarClick={(item) => {
+                const entry = Object.entries(DIMENSION_META).find(([, m]) => m.label === item.name);
+                if (entry) window.location.href = entry[1].href;
+              }}
+            />
+            <p className="text-xs text-gray-400 mt-2">Click a bar for details</p>
           </div>
         )}
 
-        {/* Control Implementation Status — analyst+ (fallback when no scores) */}
+        {/* Control Implementation Status — Stacked bar */}
         {canEdit && !compScores?.org_score && (
-          <div className="bg-white rounded-xl border border-gray-200 p-6">
-            <h2 className="font-semibold text-gray-900 mb-4">
-              {t('control')} Implementation Status
-            </h2>
-            {s && s.controls.total > 0 ? (
-              <div className="space-y-3">
-                <StatusBar label="Implemented" count={s.controls.implemented} total={s.controls.total} color="bg-green-500" />
-                <StatusBar label="Partially Implemented" count={s.controls.partially_implemented} total={s.controls.total} color="bg-yellow-500" />
-                <StatusBar label="Planned" count={s.controls.planned} total={s.controls.total} color="bg-blue-500" />
-                <StatusBar label="Not Implemented" count={s.controls.not_implemented} total={s.controls.total} color="bg-red-500" />
-                <StatusBar label="Not Applicable" count={s.controls.not_applicable} total={s.controls.total} color="bg-gray-400" />
-              </div>
-            ) : (
-              <p className="text-gray-500 text-sm">
-                No controls initialized yet. Select a system and framework to begin.
-              </p>
-            )}
-          </div>
-        )}
-
-        {/* Risk Overview — manager+ */}
-        {canManage && (
-          <div className="bg-white rounded-xl border border-gray-200 p-6">
-            <h2 className="font-semibold text-gray-900 mb-4">{t('risk')} Overview</h2>
-            {s && s.risks.critical + s.risks.high + s.risks.moderate + s.risks.low > 0 ? (
-              <div className="grid grid-cols-2 gap-4">
-                <RiskBadge level="Critical" count={s.risks.critical} color="bg-red-100 text-red-800 border-red-200" />
-                <RiskBadge level="High" count={s.risks.high} color="bg-orange-100 text-orange-800 border-orange-200" />
-                <RiskBadge level="Moderate" count={s.risks.moderate} color="bg-yellow-100 text-yellow-800 border-yellow-200" />
-                <RiskBadge level="Low" count={s.risks.low} color="bg-green-100 text-green-800 border-green-200" />
-              </div>
-            ) : (
-              <p className="text-gray-500 text-sm">
-                No risks recorded yet. Use the {t('risk')} module to track organizational risks.
-              </p>
-            )}
-          </div>
-        )}
-
-        {/* POA&M Summary — manager+ */}
-        {canManage && (
-          <div className="bg-white rounded-xl border border-gray-200 p-6">
-            <h2 className="font-semibold text-gray-900 mb-4">
-              {isFederal ? 'POA&M' : t('milestone')} Summary
-            </h2>
-            {s && s.poams.total > 0 ? (
-              <div className="space-y-3">
-                <StatusBar label="Open" count={s.poams.open} total={s.poams.total} color="bg-red-500" />
-                <StatusBar label="In Progress" count={s.poams.in_progress} total={s.poams.total} color="bg-yellow-500" />
-                <StatusBar label="Completed" count={s.poams.completed} total={s.poams.total} color="bg-green-500" />
-              </div>
-            ) : (
-              <p className="text-gray-500 text-sm">
-                No {t('milestone').toLowerCase()}s created yet.
-              </p>
-            )}
-          </div>
-        )}
-
-        {/* Audit Readiness — manager+ */}
-        {canManage && auditScore && (
-          <div className={`bg-white rounded-xl border p-6 ${auditScore.score >= 90 ? 'border-green-200' : auditScore.score >= 70 ? 'border-amber-200' : 'border-red-200'}`}>
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="font-semibold text-gray-900">Audit Readiness</h2>
-              <a href="/audit-prep" className="text-sm text-blue-600 hover:text-blue-800">View Checklist &rarr;</a>
+          <Link to="/controls" className="block group hover:shadow-md transition-shadow rounded-xl">
+            <div className="bg-white rounded-xl border border-gray-200 p-5">
+              <h2 className={`${TYPOGRAPHY.cardTitle} mb-3`}>
+                {t('control')} Implementation Status
+              </h2>
+              {s && s.controls.total > 0 ? (
+                <StackedStatusBar
+                  segments={[
+                    { key: 'implemented', label: 'Implemented', value: s.controls.implemented, color: STATUS_COLORS.success },
+                    { key: 'partial', label: 'Partially Implemented', value: s.controls.partially_implemented, color: STATUS_COLORS.warning },
+                    { key: 'planned', label: 'Planned', value: s.controls.planned, color: STATUS_COLORS.info },
+                    { key: 'not_impl', label: 'Not Implemented', value: s.controls.not_implemented, color: STATUS_COLORS.danger },
+                    { key: 'na', label: 'Not Applicable', value: s.controls.not_applicable, color: STATUS_COLORS.muted },
+                  ]}
+                />
+              ) : (
+                <p className="text-gray-500 text-sm">
+                  No controls initialized yet. Select a system and framework to begin.
+                </p>
+              )}
             </div>
-            <div className="flex items-center gap-4">
-              <span className={`text-3xl font-bold ${auditScore.score >= 90 ? 'text-green-600' : auditScore.score >= 70 ? 'text-amber-600' : 'text-red-600'}`}>
-                {auditScore.score}%
-              </span>
-              <div className="flex-1">
-                <div className="w-full bg-gray-200 rounded-full h-2">
-                  <div className={`h-2 rounded-full ${auditScore.score >= 90 ? 'bg-green-500' : auditScore.score >= 70 ? 'bg-amber-500' : 'bg-red-500'}`}
-                    style={{ width: `${auditScore.score}%` }} />
-                </div>
-                <p className="text-xs text-gray-500 mt-1">{auditScore.passed_checks}/{auditScore.total_checks} checks passed</p>
+          </Link>
+        )}
+
+        {/* Risk Overview — Horizontal bars */}
+        {canManage && (
+          <Link to="/risks" className="block group hover:shadow-md transition-shadow rounded-xl">
+            <div className="bg-white rounded-xl border border-gray-200 p-5">
+              <h2 className={`${TYPOGRAPHY.cardTitle} mb-3`}>{t('risk')} Overview</h2>
+              {s && s.risks.critical + s.risks.high + s.risks.moderate + s.risks.low > 0 ? (
+                <HorizontalBarList
+                  data={[
+                    { name: 'Critical', value: s.risks.critical, color: STATUS_COLORS.danger },
+                    { name: 'High', value: s.risks.high, color: STATUS_COLORS.orange },
+                    { name: 'Moderate', value: s.risks.moderate, color: STATUS_COLORS.warning },
+                    { name: 'Low', value: s.risks.low, color: STATUS_COLORS.success },
+                  ]}
+                />
+              ) : (
+                <p className="text-gray-500 text-sm">
+                  No risks recorded yet. Use the {t('risk')} module to track organizational risks.
+                </p>
+              )}
+            </div>
+          </Link>
+        )}
+
+        {/* POA&M Summary — Stacked bar */}
+        {canManage && (
+          <Link to="/poams" className="block group hover:shadow-md transition-shadow rounded-xl">
+            <div className="bg-white rounded-xl border border-gray-200 p-5">
+              <h2 className={`${TYPOGRAPHY.cardTitle} mb-3`}>
+                {isFederal ? 'POA&M' : t('milestone')} Summary
+              </h2>
+              {s && s.poams.total > 0 ? (
+                <StackedStatusBar
+                  segments={[
+                    { key: 'open', label: 'Open', value: s.poams.open, color: STATUS_COLORS.danger },
+                    { key: 'in_progress', label: 'In Progress', value: s.poams.in_progress, color: STATUS_COLORS.warning },
+                    { key: 'completed', label: 'Completed', value: s.poams.completed, color: STATUS_COLORS.success },
+                  ]}
+                />
+              ) : (
+                <p className="text-gray-500 text-sm">
+                  No {t('milestone').toLowerCase()}s created yet.
+                </p>
+              )}
+            </div>
+          </Link>
+        )}
+
+        {/* Audit Readiness — Radial chart */}
+        {canManage && auditScore && (
+          <div className="bg-white rounded-xl border border-gray-200 p-6">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className={TYPOGRAPHY.cardTitle}>Audit Readiness</h2>
+              <a href="/audit-prep" className="text-sm text-forge-green-600 hover:text-forge-green-700">View Checklist &rarr;</a>
+            </div>
+            <div className="flex items-center gap-6">
+              <ScoreRadialChart
+                score={auditScore.score}
+                size={100}
+                label="Ready"
+                thickness={10}
+              />
+              <div>
+                <p className="text-sm text-gray-600">{auditScore.passed_checks}/{auditScore.total_checks} checks passed</p>
+                <p className="text-xs text-gray-400 mt-1">
+                  {auditScore.score >= 90 ? 'Audit Ready' : auditScore.score >= 70 ? 'Needs Attention' : 'Not Ready'}
+                </p>
               </div>
             </div>
           </div>
@@ -623,8 +736,8 @@ export function DashboardPage() {
         {canManage && scheduleStats && (scheduleStats.total > 0 || scheduleStats.overdue > 0) && (
           <div className="bg-white rounded-xl border border-gray-200 p-6">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="font-semibold text-gray-900">Evidence Schedules</h2>
-              <a href="/evidence/schedules" className="text-sm text-blue-600 hover:text-blue-800">View All &rarr;</a>
+              <h2 className={TYPOGRAPHY.cardTitle}>Evidence Schedules</h2>
+              <a href="/evidence/schedules" className="text-sm text-forge-green-600 hover:text-forge-green-700">View All &rarr;</a>
             </div>
             <div className="space-y-2">
               {scheduleStats.overdue > 0 && (
@@ -639,11 +752,11 @@ export function DashboardPage() {
               </div>
               <div className="flex justify-between text-sm">
                 <span className="text-gray-600">Due This Month</span>
-                <span className="font-semibold text-blue-600">{scheduleStats.due_this_month}</span>
+                <span className="font-semibold text-forge-navy-700">{scheduleStats.due_this_month}</span>
               </div>
               <div className="flex justify-between text-sm pt-1 border-t border-gray-100">
                 <span className="text-gray-600">Total Active</span>
-                <span className="font-semibold text-gray-900">{scheduleStats.total}</span>
+                <span className={TYPOGRAPHY.cardTitle}>{scheduleStats.total}</span>
               </div>
             </div>
           </div>
@@ -651,10 +764,10 @@ export function DashboardPage() {
 
         {/* Pending Approvals — manager+ */}
         {canManage && pendingApprovalCount !== null && pendingApprovalCount > 0 && (
-          <div className="bg-white rounded-xl border border-amber-200 p-6">
+          <div className="bg-white rounded-xl border border-gray-200 p-6">
             <div className="flex items-center justify-between mb-3">
-              <h2 className="font-semibold text-gray-900">Pending Approvals</h2>
-              <a href="/approvals" className="text-sm text-blue-600 hover:text-blue-800">Review &rarr;</a>
+              <h2 className={TYPOGRAPHY.cardTitle}>Pending Approvals</h2>
+              <a href="/approvals" className="text-sm text-forge-green-600 hover:text-forge-green-700">Review &rarr;</a>
             </div>
             <div className="flex items-center gap-3">
               <div className="w-12 h-12 rounded-lg bg-amber-100 flex items-center justify-center">
@@ -667,46 +780,51 @@ export function DashboardPage() {
           </div>
         )}
 
-        {/* Quick Actions — all roles (filtered) */}
+        {/* Recent Activity Feed */}
+        {canEdit && (
+          <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-5 shadow-sm">
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
+              <svg className="w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+              Recent Activity
+            </h3>
+            {activities.length > 0 ? (
+              <div className="space-y-2 max-h-[300px] overflow-y-auto">
+                {activities.map((a) => (
+                  <div key={a.id} className="flex items-start gap-2 text-xs py-1.5 border-b border-gray-50 dark:border-gray-700 last:border-0">
+                    <span className={`mt-0.5 w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 text-[10px] font-bold ${ACTION_COLORS[a.action] || 'text-gray-600 bg-gray-100'}`}>
+                      {a.action === 'create' ? '+' : a.action === 'update' ? '~' : a.action === 'delete' ? '×' : a.action === 'upload' ? '↑' : '•'}
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-gray-700 dark:text-gray-300 truncate">
+                        <span className="font-medium">{a.user_name || 'System'}</span>{' '}
+                        <span className="text-gray-500 dark:text-gray-400">{actionLabel(a.action, a.resource_type).toLowerCase()}</span>
+                      </p>
+                    </div>
+                    <span className="text-gray-400 dark:text-gray-500 whitespace-nowrap flex-shrink-0">{timeAgo(a.created_at)}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-gray-400 dark:text-gray-500 py-4 text-center">No recent activity</p>
+            )}
+          </div>
+        )}
+        {/* Quick Actions */}
         <div className="bg-white rounded-xl border border-gray-200 p-6">
-          <h2 className="font-semibold text-gray-900 mb-4">Quick Actions</h2>
+          <h2 className={`${TYPOGRAPHY.cardTitle} mb-4`}>Quick Actions</h2>
           <div className="space-y-2">
-            <QuickAction
-              href="/controls"
-              label={`Review ${t('control')}s`}
-              description={`Browse and assess ${t('control').toLowerCase()}s`}
-            />
-            <QuickAction
-              href="/crosswalks"
-              label="View Crosswalks"
-              description="Map controls across frameworks"
-            />
+            <QuickAction href="/controls" label={`Review ${t('control')}s`} description={`Browse and assess ${t('control').toLowerCase()}s`} />
+            <QuickAction href="/crosswalks" label="View Crosswalks" description="Map controls across frameworks" />
             {canEdit && (
               <>
-                <QuickAction
-                  href="/evidence"
-                  label={`Upload ${t('evidence')}`}
-                  description="Add supporting documentation"
-                />
-                <QuickAction
-                  href="/poams"
-                  label={isFederal ? 'View POA&Ms' : `View ${t('milestone')}s`}
-                  description="Track remediation items"
-                />
+                <QuickAction href="/evidence" label={`Upload ${t('evidence')}`} description="Add supporting documentation" />
+                <QuickAction href="/poams" label={isFederal ? 'View POA&Ms' : `View ${t('milestone')}s`} description="Track remediation items" />
               </>
             )}
             {canManage && (
               <>
-                <QuickAction
-                  href="/ssp"
-                  label={`Generate ${t('documentShort')}`}
-                  description={`Create ${t('document').toLowerCase()} package`}
-                />
-                <QuickAction
-                  href="/reports"
-                  label="Generate Reports"
-                  description="Export compliance reports"
-                />
+                <QuickAction href="/ssp" label={`Generate ${t('documentShort')}`} description={`Create ${t('document').toLowerCase()} package`} />
+                <QuickAction href="/reports" label="Generate Reports" description="Export compliance reports" />
               </>
             )}
           </div>
@@ -717,360 +835,36 @@ export function DashboardPage() {
 }
 
 // ---------------------------------------------------------------------------
-// Sub-components
+// Sub-components (non-chart)
 // ---------------------------------------------------------------------------
 
-function MetricCard({
-  title,
-  value,
-  subtitle,
-  color,
-}: {
-  title: string;
-  value: string;
-  subtitle: string;
-  color: string;
-}) {
-  return (
-    <div className="bg-white rounded-xl border border-gray-200 p-5">
-      <p className="text-sm font-medium text-gray-500 mb-1">{title}</p>
-      <p className={`text-3xl font-bold ${color}`}>{value}</p>
-      <p className="text-xs text-gray-400 mt-1">{subtitle}</p>
-    </div>
-  );
+function timeAgo(dateStr: string): string {
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  return `${days}d ago`;
 }
-
-function StatusBar({
-  label,
-  count,
-  total,
-  color,
-}: {
-  label: string;
-  count: number;
-  total: number;
-  color: string;
-}) {
-  const pct = total > 0 ? (count / total) * 100 : 0;
-  return (
-    <div>
-      <div className="flex justify-between text-sm mb-1">
-        <span className="text-gray-700">{label}</span>
-        <span className="text-gray-500">
-          {count} ({Math.round(pct)}%)
-        </span>
-      </div>
-      <div className="w-full bg-gray-100 rounded-full h-2">
-        <div
-          className={`${color} h-2 rounded-full transition-all`}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-    </div>
-  );
+function actionLabel(action: string, resourceType: string): string {
+  const verb = action === 'create' ? 'Created' : action === 'update' ? 'Updated' : action === 'delete' ? 'Deleted' : action === 'upload' ? 'Uploaded' : action.charAt(0).toUpperCase() + action.slice(1);
+  const resource = resourceType.replace(/_/g, ' ');
+  return `${verb} ${resource}`;
 }
-
-function RiskBadge({
-  level,
-  count,
-  color,
-}: {
-  level: string;
-  count: number;
-  color: string;
-}) {
+const ACTION_COLORS: Record<string, string> = {
+  create: 'text-green-600 bg-green-100',
+  update: 'text-forge-navy-700 bg-forge-navy-100',
+  delete: 'text-red-600 bg-red-100',
+  upload: 'text-purple-600 bg-purple-100',
+  login: 'text-gray-600 bg-gray-100',
+};
+function QuickAction({ href, label, description }: { href: string; label: string; description: string }) {
   return (
-    <div className={`rounded-lg border p-3 text-center ${color}`}>
-      <p className="text-2xl font-bold">{count}</p>
-      <p className="text-xs font-medium">{level}</p>
-    </div>
-  );
-}
-
-function QuickAction({
-  href,
-  label,
-  description,
-}: {
-  href: string;
-  label: string;
-  description: string;
-}) {
-  return (
-    <a
-      href={href}
-      className="block p-3 rounded-lg border border-gray-100 hover:border-blue-200 hover:bg-blue-50 transition-colors"
-    >
+    <a href={href} className="block p-3 rounded-lg border border-gray-100 hover:border-gray-200 hover:bg-forge-navy-50 transition-colors">
       <p className="text-sm font-medium text-gray-900">{label}</p>
       <p className="text-xs text-gray-500">{description}</p>
     </a>
   );
-}
-
-// ---------------------------------------------------------------------------
-// Compliance Score Card (letter grade hero card)
-// ---------------------------------------------------------------------------
-
-function ComplianceScoreCard({ score, label }: { score: ComplianceScoreResult; label: string }) {
-  const gc = GRADE_COLORS[score.grade] || GRADE_COLORS.F;
-  const trend = score.previous_score !== null ? score.score - score.previous_score : null;
-
-  return (
-    <div className={`bg-white rounded-xl border ${gc.border} p-5`}>
-      <p className="text-sm font-medium text-gray-500 mb-2">{label}</p>
-      <div className="flex items-center gap-3">
-        <div className={`w-14 h-14 rounded-xl ${gc.bg} flex items-center justify-center`}>
-          <span className={`text-2xl font-black ${gc.text}`}>{score.grade}</span>
-        </div>
-        <div>
-          <p className={`text-2xl font-bold ${gc.text}`}>{score.score}<span className="text-sm font-normal text-gray-400">/100</span></p>
-          {trend !== null && (
-            <p className={`text-xs font-medium ${trend > 0 ? 'text-green-600' : trend < 0 ? 'text-red-600' : 'text-gray-400'}`}>
-              {trend > 0 ? '↑' : trend < 0 ? '↓' : '→'} {Math.abs(trend)} pts
-            </p>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Donut Chart for per-framework compliance
-// ---------------------------------------------------------------------------
-
-function DonutChart({ label, percentage, grade }: { label: string; percentage: number; grade?: string | null }) {
-  const size = 100;
-  const strokeWidth = 10;
-  const radius = (size - strokeWidth) / 2;
-  const circumference = 2 * Math.PI * radius;
-  const offset = circumference - (percentage / 100) * circumference;
-
-  const strokeColor =
-    percentage >= 80 ? '#16a34a' : percentage >= 50 ? '#ca8a04' : '#dc2626';
-
-  return (
-    <div className="flex flex-col items-center">
-      <svg width={size} height={size} className="transform -rotate-90">
-        <circle
-          cx={size / 2}
-          cy={size / 2}
-          r={radius}
-          fill="none"
-          stroke="#e5e7eb"
-          strokeWidth={strokeWidth}
-        />
-        <circle
-          cx={size / 2}
-          cy={size / 2}
-          r={radius}
-          fill="none"
-          stroke={strokeColor}
-          strokeWidth={strokeWidth}
-          strokeDasharray={circumference}
-          strokeDashoffset={offset}
-          strokeLinecap="round"
-          className="transition-all duration-700"
-        />
-      </svg>
-      <div className="flex items-center gap-1 -mt-16 mb-8">
-        <span className="text-lg font-bold" style={{ color: strokeColor }}>
-          {percentage}%
-        </span>
-        {grade && (
-          <span className={`text-xs font-bold px-1 py-0.5 rounded ${GRADE_COLORS[grade]?.bg || 'bg-gray-100'} ${GRADE_COLORS[grade]?.text || 'text-gray-600'}`}>
-            {grade}
-          </span>
-        )}
-      </div>
-      <p className="text-xs text-gray-600 font-medium text-center max-w-[120px] truncate">
-        {label}
-      </p>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Gap Analysis Panel
-// ---------------------------------------------------------------------------
-
-function GapAnalysisPanel({ gaps }: { gaps: GapItem[] }) {
-  const sorted = [...gaps].sort((a, b) => b.count - a.count).slice(0, 10);
-  const maxCount = sorted.length > 0 ? sorted[0].count : 1;
-
-  return (
-    <div className="space-y-3">
-      <p className="text-xs text-gray-500 mb-2">
-        Top control families with unimplemented controls
-      </p>
-      {sorted.map((gap, idx) => {
-        const widthPct = Math.max((gap.count / maxCount) * 100, 4);
-        return (
-          <div key={idx}>
-            <div className="flex justify-between text-xs mb-1">
-              <span className="text-gray-700 font-medium truncate mr-2">
-                {gap.family}
-                {gap.framework_name ? (
-                  <span className="text-gray-400 ml-1">({gap.framework_name})</span>
-                ) : null}
-              </span>
-              <span className="text-gray-500 whitespace-nowrap">{gap.count} gaps</span>
-            </div>
-            <div className="w-full bg-gray-100 rounded-full h-2">
-              <div
-                className="bg-red-400 h-2 rounded-full transition-all"
-                style={{ width: `${widthPct}%` }}
-              />
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Monitoring Health Widget
-// ---------------------------------------------------------------------------
-
-function MonitoringHealthWidget({ data }: { data: MonitoringDashboard }) {
-  const score = data.health_score;
-  const scoreColor =
-    score >= 80 ? 'text-green-600' : score >= 50 ? 'text-yellow-600' : 'text-red-600';
-  const bgColor =
-    score >= 80 ? 'bg-green-50' : score >= 50 ? 'bg-yellow-50' : 'bg-red-50';
-
-  return (
-    <div className="flex flex-col items-center justify-center flex-1">
-      <div className={`rounded-full w-24 h-24 flex items-center justify-center ${bgColor} mb-3`}>
-        <span className={`text-3xl font-bold ${scoreColor}`}>{score}%</span>
-      </div>
-      <p className="text-sm text-gray-600 mb-1">Health Score</p>
-      <div className="flex gap-4 text-xs text-gray-500 mt-2">
-        <span>{data.active_rules} active rules</span>
-        <span>{data.recent_alerts} recent alerts</span>
-      </div>
-      <a
-        href="/monitoring"
-        className="mt-3 text-xs text-blue-600 hover:underline font-medium"
-      >
-        View Monitoring Dashboard
-      </a>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Compliance Trend Chart (simple SVG line chart)
-// ---------------------------------------------------------------------------
-
-function TrendChart({ data }: { data: TrendPoint[] }) {
-  const width = 600;
-  const height = 160;
-  const paddingX = 40;
-  const paddingY = 20;
-  const chartW = width - paddingX * 2;
-  const chartH = height - paddingY * 2;
-
-  const minVal = Math.min(...data.map((d) => d.compliance_percentage));
-  const maxVal = Math.max(...data.map((d) => d.compliance_percentage));
-  const range = maxVal - minVal || 1;
-
-  const points = data.map((d, i) => {
-    const x = paddingX + (i / (data.length - 1)) * chartW;
-    const y = paddingY + chartH - ((d.compliance_percentage - minVal) / range) * chartH;
-    return { x, y, ...d };
-  });
-
-  const pathD = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
-
-  const areaD =
-    pathD +
-    ` L ${points[points.length - 1].x} ${paddingY + chartH} L ${points[0].x} ${paddingY + chartH} Z`;
-
-  return (
-    <div className="w-full overflow-x-auto">
-      <svg
-        viewBox={`0 0 ${width} ${height}`}
-        className="w-full max-w-[600px]"
-        preserveAspectRatio="xMidYMid meet"
-      >
-        <defs>
-          <linearGradient id="trendGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.3" />
-            <stop offset="100%" stopColor="#3b82f6" stopOpacity="0.02" />
-          </linearGradient>
-        </defs>
-
-        <text x={paddingX - 4} y={paddingY + 4} fontSize="9" fill="#9ca3af" textAnchor="end">
-          {maxVal}%
-        </text>
-        <text
-          x={paddingX - 4}
-          y={paddingY + chartH + 4}
-          fontSize="9"
-          fill="#9ca3af"
-          textAnchor="end"
-        >
-          {minVal}%
-        </text>
-
-        <line
-          x1={paddingX}
-          y1={paddingY}
-          x2={paddingX + chartW}
-          y2={paddingY}
-          stroke="#e5e7eb"
-          strokeDasharray="4 2"
-        />
-        <line
-          x1={paddingX}
-          y1={paddingY + chartH}
-          x2={paddingX + chartW}
-          y2={paddingY + chartH}
-          stroke="#e5e7eb"
-          strokeDasharray="4 2"
-        />
-
-        <path d={areaD} fill="url(#trendGrad)" />
-        <path d={pathD} fill="none" stroke="#3b82f6" strokeWidth="2" strokeLinecap="round" />
-
-        {points.map((p, i) => (
-          <circle key={i} cx={p.x} cy={p.y} r="3" fill="#3b82f6" />
-        ))}
-
-        {points.length > 0 && (
-          <>
-            <text
-              x={points[0].x}
-              y={paddingY + chartH + 14}
-              fontSize="8"
-              fill="#9ca3af"
-              textAnchor="middle"
-            >
-              {formatShortDate(points[0].date)}
-            </text>
-            <text
-              x={points[points.length - 1].x}
-              y={paddingY + chartH + 14}
-              fontSize="8"
-              fill="#9ca3af"
-              textAnchor="middle"
-            >
-              {formatShortDate(points[points.length - 1].date)}
-            </text>
-          </>
-        )}
-      </svg>
-    </div>
-  );
-}
-
-function formatShortDate(dateStr: string): string {
-  try {
-    const d = new Date(dateStr);
-    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-  } catch {
-    return dateStr;
-  }
 }

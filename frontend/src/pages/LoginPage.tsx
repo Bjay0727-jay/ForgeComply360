@@ -1,5 +1,4 @@
 import React, { useState } from 'react';
-import { Link } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 
 export function LoginPage() {
@@ -8,11 +7,13 @@ export function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const sessionExpired = new URLSearchParams(window.location.search).get('expired') === '1';
 
   // MFA state
   const [mfaRequired, setMfaRequired] = useState(false);
   const [mfaToken, setMfaToken] = useState('');
   const [mfaCode, setMfaCode] = useState('');
+  const [showForgotMsg, setShowForgotMsg] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -55,7 +56,7 @@ export function LoginPage() {
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-blue-900 to-gray-900 flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
-          <img src="/logo.png" alt="ForgeComply 360" className="w-24 h-24 mx-auto mb-4 drop-shadow-2xl" />
+          <img src="/logo.png" alt="ForgeComply 360" className="w-48 h-48 mx-auto mb-4 drop-shadow-2xl" />
           <h1 className="text-2xl font-bold text-white">ForgeComply 360</h1>
           <p className="text-blue-200 mt-1">Enterprise GRC Platform</p>
         </div>
@@ -110,6 +111,13 @@ export function LoginPage() {
           <form onSubmit={handleSubmit} className="bg-white rounded-xl shadow-2xl p-8">
             <h2 className="text-xl font-semibold text-gray-900 mb-6">Sign in to your account</h2>
 
+            {sessionExpired && (
+              <div className="bg-amber-50 border border-amber-200 text-amber-700 px-4 py-3 rounded-lg mb-4 text-sm flex items-center gap-2">
+                <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                Your session has expired due to inactivity. Please sign in again.
+              </div>
+            )}
+
             {error && (
               <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4 text-sm">
                 {error}
@@ -141,25 +149,40 @@ export function LoginPage() {
               </div>
             </div>
 
+            <div className="flex justify-end mt-2">
+              <button
+                type="button"
+                onClick={() => setShowForgotMsg(!showForgotMsg)}
+                className="text-sm text-blue-600 hover:text-blue-700 font-medium"
+              >
+                Forgot password?
+              </button>
+            </div>
+
+            {showForgotMsg && (
+              <div className="mt-2 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                <p className="text-sm text-blue-800">
+                  Please contact your administrator to reset your password.
+                </p>
+              </div>
+            )}
+
             <button
               type="submit"
               disabled={loading}
-              className="w-full mt-6 py-2.5 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
+              className="w-full mt-4 py-2.5 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
             >
               {loading ? 'Signing in...' : 'Sign In'}
             </button>
 
-            <p className="mt-4 text-center text-sm text-gray-600">
-              Don't have an account?{' '}
-              <Link to="/register" className="text-blue-600 hover:text-blue-700 font-medium">
-                Start free trial
-              </Link>
+            <p className="mt-4 text-center text-sm text-gray-500">
+              Need an account? Contact your administrator.
             </p>
           </form>
         )}
 
         <p className="text-center text-xs text-blue-200/60 mt-6">
-          Forge Cyber Defense - Service-Disabled Veteran-Owned Small Business (SDVOSB)
+          Forge Cyber Defense - Veteran-Owned Business
         </p>
       </div>
     </div>

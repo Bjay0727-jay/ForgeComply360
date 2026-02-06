@@ -2,6 +2,10 @@ import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { api } from '../utils/api';
+import { PageHeader } from '../components/PageHeader';
+import { ScoreRadialChart } from '../components/charts';
+import { useToast } from '../components/Toast';
+import { BUTTONS, FORMS, CARDS, BADGES } from '../utils/typography';
 
 const CATEGORY_META: Record<string, { label: string; icon: string; color: string }> = {
   controls: { label: 'Controls', icon: 'M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z', color: 'blue' },
@@ -33,6 +37,7 @@ function scoreLabel(score: number): string {
 
 export function AuditPrepPage() {
   const { canEdit, canManage, user } = useAuth();
+  const { addToast } = useToast();
   const [readiness, setReadiness] = useState<any>(null);
   const [users, setUsers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -42,6 +47,7 @@ export function AuditPrepPage() {
   const [taskAssignee, setTaskAssignee] = useState('');
   const [taskDueDate, setTaskDueDate] = useState('');
   const [saving, setSaving] = useState(false);
+  const [confirmDeleteTask, setConfirmDeleteTask] = useState(null as string|null);
   const [toggling, setToggling] = useState<string | null>(null);
 
   const load = () => {
@@ -83,11 +89,11 @@ export function AuditPrepPage() {
   };
 
   const handleDeleteTask = async (id: string) => {
-    if (!confirm('Delete this task?')) return;
     try {
       await api(`/api/v1/audit-prep/items/${id}`, { method: 'DELETE' });
-      load();
-    } catch { }
+      setConfirmDeleteTask(null); load();
+      addToast({ type: 'success', title: 'Task Deleted' });
+    } catch { addToast({ type: 'error', title: 'Delete Failed', message: 'Could not delete task' }); }
   };
 
   if (loading) return <div className="flex justify-center py-12"><div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" /></div>;
@@ -99,13 +105,9 @@ export function AuditPrepPage() {
   return (
     <div>
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Audit Preparation Checklist</h1>
-          <p className="text-gray-500 text-sm mt-1">Track audit readiness across controls, POA&Ms, evidence, SSP, and monitoring</p>
-        </div>
-        <Link to="/reports" className="px-3 py-2 text-sm text-gray-600 hover:text-gray-800 border border-gray-300 rounded-lg">Reports &rarr;</Link>
-      </div>
+      <PageHeader title="Audit Preparation Checklist" subtitle="Track audit readiness across controls, POA&Ms, evidence, SSP, and monitoring">
+        <Link to="/reports" className={BUTTONS.secondary}>Reports</Link>
+      </PageHeader>
 
       {/* Readiness Score */}
       <div className={`rounded-xl border-2 p-6 mb-6 ${scoreBg(score)}`}>
@@ -118,16 +120,13 @@ export function AuditPrepPage() {
             </div>
             <p className="text-sm text-gray-600 mt-2">{passed_checks} of {total_checks} checks passed</p>
           </div>
-          {/* Progress ring */}
-          <div className="relative w-24 h-24">
-            <svg className="w-24 h-24 -rotate-90" viewBox="0 0 100 100">
-              <circle cx="50" cy="50" r="42" fill="none" stroke="#e5e7eb" strokeWidth="8" />
-              <circle cx="50" cy="50" r="42" fill="none" stroke={score >= 90 ? '#16a34a' : score >= 70 ? '#d97706' : '#dc2626'}
-                strokeWidth="8" strokeLinecap="round"
-                strokeDasharray={`${score * 2.64} ${264 - score * 2.64}`} />
-            </svg>
-            <span className={`absolute inset-0 flex items-center justify-center text-lg font-bold ${scoreColor(score)}`}>{passed_checks}/{total_checks}</span>
-          </div>
+          {/* Progress ring — Recharts radial */}
+          <ScoreRadialChart
+            score={score}
+            size={100}
+            label={`${passed_checks}/${total_checks}`}
+            thickness={10}
+          />
         </div>
       </div>
 
@@ -140,7 +139,7 @@ export function AuditPrepPage() {
           const allPassed = cat.passed === cat.total;
 
           return (
-            <div key={catKey} className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+            <div key={catKey} className={`${CARDS.elevated} overflow-hidden`}>
               {/* Category Header */}
               <button onClick={() => toggleCollapse(catKey)} className="w-full flex items-center justify-between p-4 hover:bg-gray-50">
                 <div className="flex items-center gap-3">
@@ -148,7 +147,7 @@ export function AuditPrepPage() {
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={meta.icon} /></svg>
                   </div>
                   <span className="font-semibold text-gray-900">{meta.label}</span>
-                  <span className={`text-xs px-2 py-0.5 rounded font-medium ${allPassed ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
+                  <span className={`${BADGES.base} ${allPassed ? BADGES.success : BADGES.warning}`}>
                     {cat.passed}/{cat.total}
                   </span>
                 </div>
@@ -186,7 +185,7 @@ export function AuditPrepPage() {
         })}
 
         {/* Custom Tasks Section */}
-        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+        <div className={`${CARDS.elevated} overflow-hidden`}>
           <div className="flex items-center justify-between p-4">
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-orange-100 text-orange-600">
@@ -194,13 +193,13 @@ export function AuditPrepPage() {
               </div>
               <span className="font-semibold text-gray-900">Custom Tasks</span>
               {categories.custom && (
-                <span className={`text-xs px-2 py-0.5 rounded font-medium ${categories.custom.passed === categories.custom.total && categories.custom.total > 0 ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>
+                <span className={`${BADGES.base} ${categories.custom.passed === categories.custom.total && categories.custom.total > 0 ? BADGES.success : BADGES.neutral}`}>
                   {categories.custom.passed}/{categories.custom.total}
                 </span>
               )}
             </div>
             {canEdit && (
-              <button onClick={() => setShowAddTask(!showAddTask)} className="text-sm text-blue-600 hover:text-blue-800 font-medium">
+              <button onClick={() => setShowAddTask(!showAddTask)} className={BUTTONS.link}>
                 {showAddTask ? 'Cancel' : '+ Add Task'}
               </button>
             )}
@@ -211,25 +210,25 @@ export function AuditPrepPage() {
             <div className="border-t border-gray-100 p-4 bg-gray-50">
               <form onSubmit={handleAddTask} className="flex flex-wrap gap-3 items-end">
                 <div className="flex-1 min-w-[200px]">
-                  <label className="block text-xs text-gray-500 mb-1">Task *</label>
+                  <label className={FORMS.label}>Task *</label>
                   <input type="text" required value={taskTitle} onChange={(e) => setTaskTitle(e.target.value)}
                     placeholder="e.g., Schedule assessor interviews"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+                    className={FORMS.input} />
                 </div>
                 <div className="w-40">
-                  <label className="block text-xs text-gray-500 mb-1">Assignee</label>
+                  <label className={FORMS.label}>Assignee</label>
                   <select value={taskAssignee} onChange={(e) => setTaskAssignee(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm">
+                    className={FORMS.select}>
                     <option value="">Unassigned</option>
                     {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
                   </select>
                 </div>
                 <div className="w-40">
-                  <label className="block text-xs text-gray-500 mb-1">Due Date</label>
+                  <label className={FORMS.label}>Due Date</label>
                   <input type="date" value={taskDueDate} onChange={(e) => setTaskDueDate(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+                    className={FORMS.input} />
                 </div>
-                <button type="submit" disabled={saving} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
+                <button type="submit" disabled={saving} className={BUTTONS.primary}>
                   {saving ? '...' : 'Add'}
                 </button>
               </form>
@@ -267,7 +266,14 @@ export function AuditPrepPage() {
                     </div>
                   </div>
                   {canManage && (
-                    <button onClick={() => handleDeleteTask(task.id)} className="text-xs text-red-500 hover:text-red-700 shrink-0">Delete</button>
+                    confirmDeleteTask === task.id ? (
+                      <div className="flex items-center gap-1">
+                        <button onClick={() => handleDeleteTask(task.id)} className="text-xs text-red-600 font-medium hover:text-red-700">Confirm</button>
+                        <button onClick={() => setConfirmDeleteTask(null)} className="text-xs text-gray-400 hover:text-gray-600">Cancel</button>
+                      </div>
+                    ) : (
+                      <button onClick={() => setConfirmDeleteTask(task.id)} className="text-xs text-red-500 hover:text-red-700 shrink-0">Delete</button>
+                    )
                   )}
                 </div>
               );

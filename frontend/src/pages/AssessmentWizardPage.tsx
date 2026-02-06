@@ -2,6 +2,9 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { api } from '../utils/api';
+import { PageHeader } from '../components/PageHeader';
+import { useToast } from '../components/Toast';
+import { BUTTONS } from '../utils/typography';
 
 type WizardStep = 'select' | 'assess' | 'review' | 'complete';
 
@@ -20,6 +23,7 @@ const WIZARD_STEPS = ['Select', 'Assess by Family', 'Review', 'Complete'];
 
 export function AssessmentWizardPage() {
   const { canEdit } = useAuth();
+  const { addToast } = useToast();
 
   // Wizard navigation
   const [step, setStep] = useState<WizardStep>('select');
@@ -64,8 +68,8 @@ export function AssessmentWizardPage() {
         setSystems(s.systems || []);
         setFrameworks(f.frameworks || []);
       })
-      .catch(() => {});
-  }, []);
+      .catch(() => addToast({ type: 'error', title: 'Failed to load systems and frameworks' }));
+  }, [addToast]);
 
   // Preview stats when both selected
   useEffect(() => {
@@ -309,10 +313,9 @@ export function AssessmentWizardPage() {
       {/* ==================== SELECT STEP ==================== */}
       {step === 'select' && (
         <div>
-          <h1 className="text-2xl font-bold text-gray-900 mb-2">Framework Assessment Wizard</h1>
-          <p className="text-gray-500 text-sm mb-6">Quickly assess all controls in a framework for a specific system using keyboard shortcuts and bulk actions.</p>
+          <PageHeader title="Framework Assessment Wizard" subtitle="Quickly assess all controls in a framework for a specific system using keyboard shortcuts and bulk actions." />
 
-          <div className="bg-white rounded-xl border border-gray-200 p-6 max-w-lg">
+          <div className="bg-white rounded-xl border border-blue-200 p-6 max-w-lg">
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">System</label>
@@ -384,9 +387,9 @@ export function AssessmentWizardPage() {
           </div>
 
           {/* Two-column layout */}
-          <div className="flex gap-0 border border-gray-200 rounded-xl overflow-hidden bg-white" style={{ minHeight: '60vh' }}>
+          <div className="flex gap-0 border border-blue-200 rounded-xl overflow-hidden bg-white" style={{ minHeight: '60vh' }}>
             {/* Family sidebar */}
-            <div className="w-52 flex-shrink-0 border-r border-gray-200 overflow-y-auto bg-gray-50">
+            <div className="w-52 flex-shrink-0 border-r border-blue-200 overflow-y-auto bg-gray-50">
               {families.map((family, idx) => {
                 const stats = familyStats[family];
                 const isActive = idx === activeFamilyIndex;
@@ -413,7 +416,7 @@ export function AssessmentWizardPage() {
             {/* Main content area */}
             <div className="flex-1 flex flex-col min-w-0">
               {/* Family bulk bar */}
-              <div className="px-4 py-2.5 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
+              <div className="px-4 py-2.5 bg-gray-50 border-b border-blue-200 flex items-center justify-between">
                 <span className="text-sm font-medium text-gray-700">{families[activeFamilyIndex]} &middot; {familyControls.length} controls</span>
                 <div className="flex items-center gap-1.5">
                   <span className="text-xs text-gray-400 mr-2">Bulk:</span>
@@ -487,7 +490,7 @@ export function AssessmentWizardPage() {
 
                       {/* Expanded details */}
                       {isExpanded && (
-                        <div className="px-4 py-3 bg-gray-50 border-b border-gray-200">
+                        <div className="px-4 py-3 bg-gray-50 border-b border-blue-200">
                           {ctrl.description && <p className="text-xs text-gray-600 mb-2">{ctrl.description}</p>}
                           {ctrl.guidance && <p className="text-xs text-gray-400 mb-3 italic">{ctrl.guidance}</p>}
                           <div className="grid grid-cols-2 gap-3">
@@ -502,7 +505,7 @@ export function AssessmentWizardPage() {
                                 className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-xs" placeholder="e.g. System Administrator" />
                               {impl?.ai_narrative && (
                                 <div className="mt-2">
-                                  <label className="text-xs font-medium text-gray-700 mb-1 block">AI Narrative</label>
+                                  <label className="text-xs font-medium text-gray-700 mb-1 block">ForgeML Writer</label>
                                   <p className="text-xs text-gray-500 bg-white rounded border p-2 max-h-20 overflow-y-auto">{impl.ai_narrative}</p>
                                 </div>
                               )}
@@ -520,7 +523,7 @@ export function AssessmentWizardPage() {
               </div>
 
               {/* Keyboard legend */}
-              <div className="px-4 py-2 bg-gray-50 border-t border-gray-200 text-[10px] text-gray-400">
+              <div className="px-4 py-2 bg-gray-50 border-t border-blue-200 text-[10px] text-gray-400">
                 <span className="font-medium text-gray-500">Keyboard:</span>{' '}
                 <span className="font-mono">↑↓</span> or <span className="font-mono">j/k</span> navigate &middot;{' '}
                 <span className="font-mono">←→</span> switch family &middot;{' '}
@@ -548,7 +551,7 @@ export function AssessmentWizardPage() {
           </div>
 
           {/* Overall progress */}
-          <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
+          <div className="bg-white rounded-xl border border-blue-200 p-6 mb-6">
             <div className="flex items-center justify-between mb-3">
               <h2 className="font-semibold text-gray-900">Overall Progress</h2>
               <span className="text-2xl font-bold text-blue-700">{compliancePct}%</span>
@@ -561,7 +564,7 @@ export function AssessmentWizardPage() {
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
             {/* Status distribution */}
-            <div className="bg-white rounded-xl border border-gray-200 p-6">
+            <div className="bg-white rounded-xl border border-blue-200 p-6">
               <h2 className="font-semibold text-gray-900 mb-4">Status Distribution</h2>
               <div className="space-y-2">
                 {STATUS_OPTIONS.map(opt => {
@@ -581,7 +584,7 @@ export function AssessmentWizardPage() {
             </div>
 
             {/* Per-family completion */}
-            <div className="bg-white rounded-xl border border-gray-200 p-6">
+            <div className="bg-white rounded-xl border border-blue-200 p-6">
               <h2 className="font-semibold text-gray-900 mb-4">Per-Family Completion</h2>
               <div className="space-y-1.5 max-h-64 overflow-y-auto">
                 {families.map(f => {
@@ -603,7 +606,7 @@ export function AssessmentWizardPage() {
 
           {/* Gaps */}
           {gaps.length > 0 && (
-            <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
+            <div className="bg-white rounded-xl border border-blue-200 p-6 mb-6">
               <h2 className="font-semibold text-gray-900 mb-2">Gaps ({gaps.length} controls not assessed)</h2>
               <div className="space-y-1">
                 {(showAllGaps ? gaps : gaps.slice(0, 10)).map(c => (
@@ -619,10 +622,10 @@ export function AssessmentWizardPage() {
             </div>
           )}
 
-          {/* AI Narratives */}
+          {/* ForgeML Writers */}
           {missingNarratives.length > 0 && (
-            <div className="bg-white rounded-xl border border-gray-200 p-6">
-              <h2 className="font-semibold text-gray-900 mb-2">AI Narrative Generation</h2>
+            <div className="bg-white rounded-xl border border-blue-200 p-6">
+              <h2 className="font-semibold text-gray-900 mb-2">ForgeML Writer Generation</h2>
               <p className="text-sm text-gray-500 mb-3">{missingNarratives.length} implemented controls are missing narratives.</p>
               <button
                 onClick={generateMissingNarratives}
@@ -647,7 +650,7 @@ export function AssessmentWizardPage() {
           <h1 className="text-2xl font-bold text-gray-900 mb-2">Assessment Complete!</h1>
           <p className="text-gray-500 mb-6">{frameworkName} &middot; {systemName}</p>
 
-          <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
+          <div className="bg-white rounded-xl border border-blue-200 p-6 mb-6">
             <div className="grid grid-cols-3 gap-4 text-center">
               <div>
                 <p className="text-2xl font-bold text-green-600">{assessedControls}</p>
@@ -665,10 +668,10 @@ export function AssessmentWizardPage() {
           </div>
 
           <div className="flex items-center justify-center gap-3">
-            <Link to="/controls" className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-sm font-medium">View Controls</Link>
-            <Link to="/reports" className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-sm font-medium">Reports</Link>
+            <Link to="/controls" className={BUTTONS.secondary}>View Controls</Link>
+            <Link to="/reports" className={BUTTONS.secondary}>Reports</Link>
             <button onClick={() => { setStep('select'); setAllControls([]); setImplementations({}); setFamilies([]); }}
-              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium">
+              className={BUTTONS.primary}>
               Assess Another Framework
             </button>
           </div>

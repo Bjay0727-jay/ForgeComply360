@@ -154,7 +154,7 @@ export const IMPORT_CONFIGS: Record<string, ImportEntityConfig> = {
       { csvName: 'Status', fieldName: 'status', required: false },
       { csvName: 'Responsible Role', fieldName: 'responsible_role', required: false },
       { csvName: 'Implementation Description', fieldName: 'implementation_description', required: false },
-      { csvName: 'AI Narrative', fieldName: 'ai_narrative', required: false },
+      { csvName: 'ForgeML Writer', fieldName: 'ai_narrative', required: false },
     ],
     validators: {
       control_id: requiredValidator('Control ID'),

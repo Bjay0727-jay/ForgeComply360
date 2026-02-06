@@ -1,5 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../utils/api';
+import { PageHeader } from '../components/PageHeader';
+import { SkeletonTable } from '../components/Skeleton';
+import { EmptyState } from '../components/EmptyState';
+import { TYPOGRAPHY } from '../utils/typography';
 
 export function CrosswalksPage() {
   const [frameworks, setFrameworks] = useState<any[]>([]);
@@ -30,17 +34,14 @@ export function CrosswalksPage() {
   const typeColor = (t: string) => t === 'equivalent' ? 'bg-green-100 text-green-700' : t === 'partial' ? 'bg-yellow-100 text-yellow-700' : t === 'superset' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600';
   const confLabel = (c: number) => c >= 0.9 ? 'High' : c >= 0.7 ? 'Medium' : 'Low';
 
-  if (loading) return <div className="flex justify-center py-12"><div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" /></div>;
+  if (loading) return <div><SkeletonTable /></div>;
 
   return (
     <div>
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Crosswalk Engine</h1>
-        <p className="text-gray-500 text-sm mt-1">Map controls across compliance frameworks to reduce duplicate work</p>
-      </div>
+      <PageHeader title="Crosswalk Engine" subtitle="Map controls across compliance frameworks to reduce duplicate work" />
 
       {/* Framework selector */}
-      <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
+      <div className="bg-white rounded-xl border border-blue-200 p-6 mb-6">
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4 items-end">
           <div className="md:col-span-2">
             <label className="block text-sm font-medium text-gray-700 mb-1">Source Framework</label>
@@ -64,20 +65,18 @@ export function CrosswalksPage() {
       {searching ? (
         <div className="flex justify-center py-12"><div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" /></div>
       ) : crosswalks.length === 0 ? (
-        <div className="bg-white rounded-xl border border-gray-200 p-12 text-center">
-          <p className="text-gray-500">No crosswalk mappings found between these frameworks. Mappings are added as frameworks expand.</p>
-        </div>
+        <EmptyState title="No crosswalks available" subtitle="Crosswalks map controls between frameworks" />
       ) : (
-        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+        <div className="bg-white rounded-xl border border-blue-200 overflow-hidden">
           <div className="px-4 py-3 bg-gray-50 border-b">
             <p className="text-sm text-gray-600">{crosswalks.length} mapping{crosswalks.length !== 1 ? 's' : ''} found</p>
           </div>
           <table className="w-full text-sm">
             <thead className="bg-gray-50 border-b"><tr>
-              <th className="text-left px-4 py-3 font-medium text-gray-500">Source Control</th>
-              <th className="text-left px-4 py-3 font-medium text-gray-500">Target Control</th>
-              <th className="text-left px-4 py-3 font-medium text-gray-500">Mapping Type</th>
-              <th className="text-left px-4 py-3 font-medium text-gray-500">Confidence</th>
+              <th className={`text-left px-4 py-3 ${TYPOGRAPHY.tableHeader}`}>Source Control</th>
+              <th className={`text-left px-4 py-3 ${TYPOGRAPHY.tableHeader}`}>Target Control</th>
+              <th className={`text-left px-4 py-3 ${TYPOGRAPHY.tableHeader}`}>Mapping Type</th>
+              <th className={`text-left px-4 py-3 ${TYPOGRAPHY.tableHeader}`}>Confidence</th>
             </tr></thead>
             <tbody className="divide-y divide-gray-100">
               {crosswalks.map((cw) => (

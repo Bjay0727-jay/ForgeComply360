@@ -127,6 +127,18 @@ export async function exportAsDocx(title: string, content: string): Promise<void
     .page-break {
       page-break-before: always;
     }
+    .watermark {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%) rotate(-45deg);
+      font-size: 72pt;
+      color: rgba(200, 200, 200, 0.15);
+      font-weight: bold;
+      z-index: -1;
+      pointer-events: none;
+      white-space: nowrap;
+    }
   </style>
 </head>
 <body>
@@ -378,7 +390,7 @@ export function exportControlsCSV(
     'Status',
     'Responsible Role',
     'Implementation Description',
-    'AI Narrative',
+    'ForgeML Writer',
   ];
 
   const rows: string[] = [headers.map(csvCell).join(',')];
@@ -483,7 +495,128 @@ export function exportPoamsCSV(poams: any[]): void {
 }
 
 // ---------------------------------------------------------------------------
-// 7. Export compliance documents (ATO package) as formatted Word docs
+// 7. Markdown to HTML converter for Word export
+// ---------------------------------------------------------------------------
+
+function markdownToHtml(md: string): string {
+  let html = '';
+  const lines = md.split('\n');
+  let inTable = false;
+  let inList = false;
+  let tableHeaderDone = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    // Skip empty lines (close lists)
+    if (!trimmed) {
+      if (inList) { html += '</ul>'; inList = false; }
+      if (inTable) { html += '</table>'; inTable = false; tableHeaderDone = false; }
+      continue;
+    }
+
+    // Horizontal rule
+    if (/^---+$/.test(trimmed) || /^\*\*\*+$/.test(trimmed)) {
+      if (inList) { html += '</ul>'; inList = false; }
+      if (inTable) { html += '</table>'; inTable = false; tableHeaderDone = false; }
+      html += '<hr style="border:1px solid #cbd5e0; margin:16pt 0;"/>';
+      continue;
+    }
+
+    // Headings
+    if (/^###\s+/.test(trimmed)) {
+      if (inList) { html += '</ul>'; inList = false; }
+      if (inTable) { html += '</table>'; inTable = false; tableHeaderDone = false; }
+      html += `<h3>${inlineFormat(escapeHtml(trimmed.replace(/^###\s+/, '')))}</h3>`;
+      continue;
+    }
+    if (/^##\s+/.test(trimmed)) {
+      if (inList) { html += '</ul>'; inList = false; }
+      if (inTable) { html += '</table>'; inTable = false; tableHeaderDone = false; }
+      html += `<h2>${inlineFormat(escapeHtml(trimmed.replace(/^##\s+/, '')))}</h2>`;
+      continue;
+    }
+    if (/^#\s+/.test(trimmed)) {
+      if (inList) { html += '</ul>'; inList = false; }
+      if (inTable) { html += '</table>'; inTable = false; tableHeaderDone = false; }
+      html += `<h1 style="border:none;">${inlineFormat(escapeHtml(trimmed.replace(/^#\s+/, '')))}</h1>`;
+      continue;
+    }
+
+    // Table separator row (|---|---|)
+    if (/^\|[\s\-:|]+\|$/.test(trimmed)) {
+      tableHeaderDone = true;
+      continue;
+    }
+
+    // Table row
+    if (/^\|.*\|$/.test(trimmed)) {
+      if (!inTable) {
+        if (inList) { html += '</ul>'; inList = false; }
+        html += '<table border="1" cellpadding="5" cellspacing="0" style="border-collapse:collapse;border-color:#cbd5e0;width:100%;font-size:9pt;margin:8pt 0;">';
+        inTable = true;
+        tableHeaderDone = false;
+      }
+      const cells = trimmed.split('|').filter((c, idx, arr) => idx > 0 && idx < arr.length - 1).map(c => c.trim());
+      if (!tableHeaderDone) {
+        html += '<tr style="background:#1e3a5f;color:white;">';
+        cells.forEach(c => { html += `<th style="padding:6pt 8pt;font-weight:bold;">${inlineFormat(escapeHtml(c))}</th>`; });
+        html += '</tr>';
+      } else {
+        html += '<tr>';
+        cells.forEach(c => { html += `<td style="padding:6pt 8pt;">${inlineFormat(escapeHtml(c))}</td>`; });
+        html += '</tr>';
+      }
+      continue;
+    }
+
+    // Bullet list
+    if (/^[-*]\s+/.test(trimmed)) {
+      if (inTable) { html += '</table>'; inTable = false; tableHeaderDone = false; }
+      if (!inList) { html += '<ul style="margin-left:20pt;margin-bottom:8pt;">'; inList = true; }
+      html += `<li style="margin-bottom:3pt;">${inlineFormat(escapeHtml(trimmed.replace(/^[-*]\s+/, '')))}</li>`;
+      continue;
+    }
+
+    // Numbered list
+    if (/^\d+\.\s+/.test(trimmed)) {
+      if (inTable) { html += '</table>'; inTable = false; tableHeaderDone = false; }
+      if (inList) { html += '</ul>'; inList = false; }
+      // Detect numbered section headings (starts with capital letter after number)
+      if (/^\d+\.\s+[A-Z]/.test(trimmed) && trimmed.length < 100) {
+        html += `<h2>${inlineFormat(escapeHtml(trimmed))}</h2>`;
+      } else {
+        html += `<p style="margin-left:20pt;text-indent:-20pt;">${inlineFormat(escapeHtml(trimmed))}</p>`;
+      }
+      continue;
+    }
+
+    // Regular paragraph
+    if (inList) { html += '</ul>'; inList = false; }
+    if (inTable) { html += '</table>'; inTable = false; tableHeaderDone = false; }
+    html += `<p>${inlineFormat(escapeHtml(trimmed))}</p>`;
+  }
+
+  if (inList) html += '</ul>';
+  if (inTable) html += '</table>';
+  return html;
+}
+
+function inlineFormat(text: string): string {
+  // Bold: **text** or __text__
+  let result = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  result = result.replace(/__(.+?)__/g, '<strong>$1</strong>');
+  // Italic: *text* or _text_
+  result = result.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  result = result.replace(/_(.+?)_/g, '<em>$1</em>');
+  // Code: `text`
+  result = result.replace(/`(.+?)`/g, '<code style="background:#f0f0f0;padding:1pt 3pt;font-size:9pt;">$1</code>');
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// 8. Export compliance documents (ATO package) as formatted Word docs
 // ---------------------------------------------------------------------------
 
 export async function exportComplianceDoc(
@@ -524,21 +657,8 @@ export async function exportComplianceDoc(
     html += `</table><div class="page-break"></div>`;
   }
 
-  // Content body — convert plain text to HTML paragraphs
-  const paragraphs = content.split(/\n\n+/);
-  for (const para of paragraphs) {
-    const trimmed = para.trim();
-    if (!trimmed) continue;
-    // Detect numbered section headings (e.g., "1. Executive Summary")
-    if (/^\d+\.\s+[A-Z]/.test(trimmed)) {
-      const firstLine = trimmed.split('\n')[0];
-      const rest = trimmed.slice(firstLine.length).trim();
-      html += `<h2>${escapeHtml(firstLine)}</h2>`;
-      if (rest) html += `<p>${escapeHtml(rest).replace(/\n/g, '<br/>')}</p>`;
-    } else {
-      html += `<p>${escapeHtml(trimmed).replace(/\n/g, '<br/>')}</p>`;
-    }
-  }
+  // Content body — convert Markdown to HTML for professional formatting
+  html += markdownToHtml(content);
 
   await exportAsDocx(title || docType, html);
 }
@@ -778,15 +898,17 @@ export interface ReportData {
   trends: any[];
 }
 
-function reportCoverPage(title: string, subtitle: string, orgName: string): string {
+function reportCoverPage(title: string, subtitle: string, orgName: string, classification?: string): string {
   const now = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
   return `
   <div style="text-align:center; padding-top:120pt; padding-bottom:120pt;">
+    ${classification ? `<p style="font-size:14pt; color:#c0392b; font-weight:bold; text-transform:uppercase; letter-spacing:3pt; margin-bottom:24pt; border:2px solid #c0392b; display:inline-block; padding:4pt 16pt;">${escapeHtml(classification)}</p>` : ''}
     <h1 style="font-size:28pt; border:none; text-align:center;">${escapeHtml(title)}</h1>
     <h2 style="font-size:16pt; color:#333; text-align:center; border:none;">${escapeHtml(subtitle)}</h2>
     <p style="font-size:12pt; color:#777; margin-top:24pt;">${escapeHtml(orgName)}</p>
     <p style="font-size:11pt; color:#999; margin-top:16pt;">${escapeHtml(now)}</p>
     <p style="font-size:9pt; color:#aaa; margin-top:36pt;">Generated by ForgeComply 360</p>
+    ${classification ? `<p style="font-size:9pt; color:#c0392b; margin-top:48pt; font-weight:bold;">${escapeHtml(classification)} — ${escapeHtml(orgName)}</p>` : ''}
   </div>
   <div class="page-break"></div>`;
 }
@@ -830,7 +952,7 @@ function reportRecommendations(data: ReportData): string {
 }
 
 export async function exportExecutiveSummaryReport(data: ReportData, orgName: string): Promise<void> {
-  let html = reportCoverPage('Executive Summary Report', 'Compliance & Risk Overview', orgName);
+  let html = reportCoverPage('Executive Summary Report', 'Compliance & Risk Overview', orgName, 'CONFIDENTIAL');
 
   // Table of Contents
   html += `<h2>Table of Contents</h2>
@@ -936,12 +1058,27 @@ export async function exportExecutiveSummaryReport(data: ReportData, orgName: st
   <ul>${reportRecommendations(data)}</ul>`;
   html += `<p style="font-size:8pt;color:#a0aec0;margin-top:40pt;text-align:center;">Generated by ForgeComply 360 &mdash; Reporting &amp; Export Engine</p>`;
 
+  const metadataFooter1 = `
+<div style="margin-top:48pt; padding-top:12pt; border-top:1px solid #ccc; font-size:8pt; color:#999;">
+  <table style="width:100%; border:none;">
+    <tr style="border:none; background:none;">
+      <td style="border:none; padding:2pt;">Generated by ForgeComply 360</td>
+      <td style="border:none; padding:2pt; text-align:right;">Generated: ${new Date().toLocaleString()}</td>
+    </tr>
+    <tr style="border:none; background:none;">
+      <td style="border:none; padding:2pt;">Organization: ${escapeHtml(orgName)}</td>
+      <td style="border:none; padding:2pt; text-align:right;">Classification: CONFIDENTIAL</td>
+    </tr>
+  </table>
+</div>`;
+  html += metadataFooter1;
+
   const date = new Date().toISOString().split('T')[0];
   await exportAsDocx(`Executive Summary Report - ${date}`, html);
 }
 
 export async function exportCompliancePostureReport(data: ReportData, orgName: string): Promise<void> {
-  let html = reportCoverPage('Compliance Posture Report', 'Framework Analysis & Gap Assessment', orgName);
+  let html = reportCoverPage('Compliance Posture Report', 'Framework Analysis & Gap Assessment', orgName, 'CONFIDENTIAL');
 
   // Table of Contents
   html += `<h2>Table of Contents</h2>
@@ -1049,12 +1186,27 @@ export async function exportCompliancePostureReport(data: ReportData, orgName: s
   }
   html += `<p style="font-size:8pt;color:#a0aec0;margin-top:40pt;text-align:center;">Generated by ForgeComply 360 &mdash; Reporting &amp; Export Engine</p>`;
 
+  const metadataFooter2 = `
+<div style="margin-top:48pt; padding-top:12pt; border-top:1px solid #ccc; font-size:8pt; color:#999;">
+  <table style="width:100%; border:none;">
+    <tr style="border:none; background:none;">
+      <td style="border:none; padding:2pt;">Generated by ForgeComply 360</td>
+      <td style="border:none; padding:2pt; text-align:right;">Generated: ${new Date().toLocaleString()}</td>
+    </tr>
+    <tr style="border:none; background:none;">
+      <td style="border:none; padding:2pt;">Organization: ${escapeHtml(orgName)}</td>
+      <td style="border:none; padding:2pt; text-align:right;">Classification: CONFIDENTIAL</td>
+    </tr>
+  </table>
+</div>`;
+  html += metadataFooter2;
+
   const date = new Date().toISOString().split('T')[0];
   await exportAsDocx(`Compliance Posture Report - ${date}`, html);
 }
 
 export async function exportRiskSummaryReport(data: ReportData, orgName: string): Promise<void> {
-  let html = reportCoverPage('Risk Summary Report', 'Enterprise Risk & Vendor Risk Overview', orgName);
+  let html = reportCoverPage('Risk Summary Report', 'Enterprise Risk & Vendor Risk Overview', orgName, 'CONFIDENTIAL');
 
   // Table of Contents
   html += `<h2>Table of Contents</h2>
@@ -1150,6 +1302,21 @@ export async function exportRiskSummaryReport(data: ReportData, orgName: string)
   <ul>${reportRecommendations(data)}</ul>`;
   html += `<p style="font-size:8pt;color:#a0aec0;margin-top:40pt;text-align:center;">Generated by ForgeComply 360 &mdash; Reporting &amp; Export Engine</p>`;
 
+  const metadataFooter3 = `
+<div style="margin-top:48pt; padding-top:12pt; border-top:1px solid #ccc; font-size:8pt; color:#999;">
+  <table style="width:100%; border:none;">
+    <tr style="border:none; background:none;">
+      <td style="border:none; padding:2pt;">Generated by ForgeComply 360</td>
+      <td style="border:none; padding:2pt; text-align:right;">Generated: ${new Date().toLocaleString()}</td>
+    </tr>
+    <tr style="border:none; background:none;">
+      <td style="border:none; padding:2pt;">Organization: ${escapeHtml(orgName)}</td>
+      <td style="border:none; padding:2pt; text-align:right;">Classification: CONFIDENTIAL</td>
+    </tr>
+  </table>
+</div>`;
+  html += metadataFooter3;
+
   const date = new Date().toISOString().split('T')[0];
   await exportAsDocx(`Risk Summary Report - ${date}`, html);
 }
@@ -1159,3 +1326,68 @@ export async function exportAuditReadyPackage(data: ReportData, orgName: string)
   await exportCompliancePostureReport(data, orgName);
   await exportRiskSummaryReport(data, orgName);
 }
+
+// ---------------------------------------------------------------------------
+// Evidence CSV Export
+// ---------------------------------------------------------------------------
+
+export function exportEvidenceCSV(evidence: any[]): void {
+  const headers = ['Title', 'File Name', 'File Size', 'Uploaded By', 'Date', 'Status', 'Collection Date', 'Expiry Date'];
+  const formatSize = (bytes: number) => {
+    if (!bytes) return '';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+  const rows = evidence.map(ev => [
+    csvCell(ev.title || ''),
+    csvCell(ev.file_name || ''),
+    csvCell(formatSize(ev.file_size || 0)),
+    csvCell(ev.uploaded_by_name || 'Unknown'),
+    csvCell(ev.created_at ? new Date(ev.created_at).toLocaleDateString() : ''),
+    csvCell(ev.status || ''),
+    csvCell(ev.collection_date || ''),
+    csvCell(ev.expiry_date || ''),
+  ].join(','));
+  const csv = [headers.join(','), ...rows].join('\n');
+  downloadBlob(new Blob([csv], { type: 'text/csv' }), `evidence-export-${new Date().toISOString().split('T')[0]}.csv`);
+}
+
+// ---------------------------------------------------------------------------
+// Policies CSV Export
+// ---------------------------------------------------------------------------
+
+export function exportPoliciesCSV(policies: any[]): void {
+  const headers = ['Title', 'Category', 'Status', 'Version', 'Owner', 'Review Date', 'Created'];
+  const rows = policies.map(p => [
+    csvCell(p.title || ''),
+    csvCell(p.category || ''),
+    csvCell(p.status || ''),
+    csvCell(p.version || ''),
+    csvCell(p.owner || ''),
+    csvCell(p.review_date || ''),
+    csvCell(p.created_at ? new Date(p.created_at).toLocaleDateString() : ''),
+  ].join(','));
+  const csv = [headers.join(','), ...rows].join('\n');
+  downloadBlob(new Blob([csv], { type: 'text/csv' }), `policies-export-${new Date().toISOString().split('T')[0]}.csv`);
+}
+
+// ---------------------------------------------------------------------------
+// Systems CSV Export
+// ---------------------------------------------------------------------------
+
+export function exportSystemsCSV(systems: any[]): void {
+  const headers = ['Name', 'Acronym', 'ATO Status', 'ATO Date', 'Description', 'Owner', 'Created'];
+  const rows = systems.map(s => [
+    csvCell(s.name || ''),
+    csvCell(s.acronym || ''),
+    csvCell(s.ato_status || ''),
+    csvCell(s.ato_date || ''),
+    csvCell(s.description || ''),
+    csvCell(s.owner || ''),
+    csvCell(s.created_at ? new Date(s.created_at).toLocaleDateString() : ''),
+  ].join(','));
+  const csv = [headers.join(','), ...rows].join('\n');
+  downloadBlob(new Blob([csv], { type: 'text/csv' }), `systems-export-${new Date().toISOString().split('T')[0]}.csv`);
+}
+

@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { api, setTokens, clearTokens } from '../utils/api';
+import { setUserContext, clearUserContext } from '../utils/sentry';
 
 interface User {
   id: string;
@@ -36,6 +37,7 @@ interface AuthContextType {
   canEdit: boolean;
   canManage: boolean;
   isAdmin: boolean;
+  sessionTimeoutMinutes: number;
 }
 
 interface RegisterData {
@@ -53,16 +55,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [org, setOrg] = useState<Org | null>(null);
   const [loading, setLoading] = useState(true);
+  const [sessionTimeoutMinutes, setSessionTimeoutMinutes] = useState(30);
 
   const refreshUser = useCallback(async () => {
     try {
       const data = await api('/api/v1/auth/me');
       setUser(data.user);
       setOrg(data.org);
+      if (data.session_timeout_minutes) setSessionTimeoutMinutes(data.session_timeout_minutes);
+      // Set Sentry user context on session restore
+      setUserContext({ id: data.user.id, email: data.user.email, orgId: data.org.id });
     } catch {
       clearTokens();
       setUser(null);
       setOrg(null);
+      clearUserContext();
     }
   }, []);
 
@@ -86,6 +93,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setTokens(data.access_token, data.refresh_token);
     setUser(data.user);
     setOrg(data.org);
+    // Set Sentry user context for error tracking
+    setUserContext({ id: data.user.id, email: data.user.email, orgId: data.org.id });
     return {};
   };
 
@@ -97,6 +106,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setTokens(data.access_token, data.refresh_token);
     setUser(data.user);
     setOrg(data.org);
+    // Set Sentry user context for error tracking
+    setUserContext({ id: data.user.id, email: data.user.email, orgId: data.org.id });
   };
 
   const register = async (regData: RegisterData) => {
@@ -107,6 +118,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setTokens(data.access_token, data.refresh_token);
     setUser(data.user);
     setOrg(data.org);
+    // Set Sentry user context for error tracking
+    setUserContext({ id: data.user.id, email: data.user.email, orgId: data.org.id });
   };
 
   const logout = () => {
@@ -114,6 +127,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     clearTokens();
     setUser(null);
     setOrg(null);
+    // Clear Sentry user context
+    clearUserContext();
   };
 
   const canEdit = ['analyst', 'manager', 'admin', 'owner'].includes(user?.role || '');
@@ -121,7 +136,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const isAdmin = ['admin', 'owner'].includes(user?.role || '');
 
   return (
-    <AuthContext.Provider value={{ user, org, loading, login, verifyMFA, register, logout, refreshUser, canEdit, canManage, isAdmin }}>
+    <AuthContext.Provider value={{ user, org, loading, login, verifyMFA, register, logout, refreshUser, canEdit, canManage, isAdmin, sessionTimeoutMinutes }}>
       {children}
     </AuthContext.Provider>
   );

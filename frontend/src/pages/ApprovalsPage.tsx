@@ -1,6 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { api } from '../utils/api';
+import { PageHeader } from '../components/PageHeader';
+import { SkeletonListItem } from '../components/Skeleton';
+import { EmptyState } from '../components/EmptyState';
 
 const TYPE_CONFIG: Record<string, { label: string; color: string; icon: string }> = {
   poam_closure:    { label: 'POA&M Closure',    color: 'bg-blue-100 text-blue-700',    icon: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4' },
@@ -139,15 +142,7 @@ export function ApprovalsPage() {
   return (
     <div className="p-6 max-w-5xl mx-auto">
       {/* Header */}
-      <div className="mb-6">
-        <div className="flex items-center gap-3 mb-2">
-          <h1 className="text-2xl font-bold text-gray-900">Approvals</h1>
-          {!statusFilter && pendingCount > 0 && (
-            <span className="bg-yellow-100 text-yellow-700 text-xs font-bold px-2 py-0.5 rounded-full">{pendingCount} pending</span>
-          )}
-        </div>
-        <p className="text-gray-500 text-sm">Review and act on approval requests for sensitive operations.</p>
-      </div>
+      <PageHeader title="Approvals" subtitle="Review and act on approval requests for sensitive operations." />
 
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-3 mb-6">
@@ -177,26 +172,15 @@ export function ApprovalsPage() {
 
       {/* Loading */}
       {loading ? (
-        <div className="text-center py-12">
-          <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-          <p className="text-gray-500 text-sm">Loading approvals...</p>
-        </div>
+        <SkeletonListItem />
       ) : approvals.length === 0 ? (
-        <div className="text-center py-12">
-          <div className="mx-auto w-14 h-14 bg-gray-100 rounded-full flex items-center justify-center mb-3">
-            <svg className="w-7 h-7 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-          </div>
-          <p className="text-gray-500 font-medium">No approval requests found</p>
-          <p className="text-gray-400 text-sm mt-1">Approval requests will appear here when sensitive actions require review.</p>
-        </div>
+        <EmptyState title="No pending approvals" subtitle="All items have been reviewed" icon="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
       ) : (
         <div className="space-y-3">
           {approvals.map(a => {
             const tc = TYPE_CONFIG[a.request_type] || { label: a.request_type, color: 'bg-gray-100 text-gray-600', icon: '' };
             return (
-              <div key={a.id} className="bg-white rounded-xl border border-gray-200 p-5 hover:border-gray-300 transition-colors">
+              <div key={a.id} className="bg-white rounded-xl border border-blue-200 p-5 hover:border-gray-300 transition-colors">
                 <div className="flex items-start gap-4">
                   {/* Icon */}
                   <div className={`w-10 h-10 rounded-lg flex items-center justify-center shrink-0 ${tc.color}`}>

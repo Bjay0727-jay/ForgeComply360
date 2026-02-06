@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { useExperience } from '../hooks/useExperience';
 import { useAuth } from '../hooks/useAuth';
 import { api } from '../utils/api';
+import { PageHeader } from '../components/PageHeader';
+import { TYPOGRAPHY } from '../utils/typography';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -178,35 +180,30 @@ export function SystemComparisonPage() {
   return (
     <div className="p-6 max-w-7xl mx-auto">
       {/* Header */}
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">{t('system')} Comparison</h1>
-        <p className="text-gray-500 text-sm mt-1">
-          Cross-system {t('compliance').toLowerCase()} posture, risk landscape, and readiness metrics
-        </p>
-      </div>
+      <PageHeader title={`${t('system')} Comparison`} subtitle={`Cross-system ${t('compliance').toLowerCase()} posture, risk landscape, and readiness metrics`} />
 
       {/* Aggregate Summary */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-        <div className="bg-white rounded-xl border border-gray-200 p-5">
+        <div className="bg-white rounded-xl border border-blue-200 p-5">
           <p className="text-sm font-medium text-gray-500 mb-1">Total {t('system')}s</p>
           <p className="text-3xl font-bold text-blue-600">{totalSystems}</p>
         </div>
-        <div className="bg-white rounded-xl border border-gray-200 p-5">
+        <div className="bg-white rounded-xl border border-blue-200 p-5">
           <p className="text-sm font-medium text-gray-500 mb-1">Avg {t('compliance')}</p>
           <p className={`text-3xl font-bold ${compColor(avgCompliance)}`}>{avgCompliance}%</p>
         </div>
-        <div className="bg-white rounded-xl border border-gray-200 p-5">
+        <div className="bg-white rounded-xl border border-blue-200 p-5">
           <p className="text-sm font-medium text-gray-500 mb-1">Open Risks</p>
           <p className={`text-3xl font-bold ${totalOpenRisks > 0 ? 'text-red-600' : 'text-green-600'}`}>{totalOpenRisks}</p>
         </div>
-        <div className="bg-white rounded-xl border border-gray-200 p-5">
+        <div className="bg-white rounded-xl border border-blue-200 p-5">
           <p className="text-sm font-medium text-gray-500 mb-1">Overdue {isFederal ? 'POA&Ms' : t('milestone') + 's'}</p>
           <p className={`text-3xl font-bold ${totalOverduePoams > 0 ? 'text-red-600' : 'text-green-600'}`}>{totalOverduePoams}</p>
         </div>
       </div>
 
       {/* Compliance Bar Chart */}
-      <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
+      <div className="bg-white rounded-xl border border-blue-200 p-6 mb-6">
         <h2 className="font-semibold text-gray-900 mb-4">{t('compliance')} by {t('system')}</h2>
         <div className="space-y-3">
           {[...systems].sort((a, b) => a.compliance_percentage - b.compliance_percentage).map((sys) => (
@@ -230,35 +227,35 @@ export function SystemComparisonPage() {
       </div>
 
       {/* Detailed Comparison Table */}
-      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden mb-6">
+      <div className="bg-white rounded-xl border border-blue-200 overflow-hidden mb-6">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-gray-50 border-b">
               <tr>
-                <th className="text-left px-4 py-3 font-medium text-gray-500 cursor-pointer select-none" onClick={() => toggleSort('name')}>
+                <th className={`text-left px-4 py-3 cursor-pointer select-none ${TYPOGRAPHY.tableHeader}`} onClick={() => toggleSort('name')}>
                   {t('system')} <SortIcon field="name" />
                 </th>
-                <th className="text-center px-3 py-3 font-medium text-gray-500 cursor-pointer select-none" onClick={() => toggleSort('score')}>
+                <th className={`text-center px-3 py-3 cursor-pointer select-none ${TYPOGRAPHY.tableHeader}`} onClick={() => toggleSort('score')}>
                   Grade <SortIcon field="score" />
                 </th>
-                <th className="text-center px-3 py-3 font-medium text-gray-500 cursor-pointer select-none" onClick={() => toggleSort('compliance_percentage')}>
+                <th className={`text-center px-3 py-3 cursor-pointer select-none ${TYPOGRAPHY.tableHeader}`} onClick={() => toggleSort('compliance_percentage')}>
                   {t('compliance')} <SortIcon field="compliance_percentage" />
                 </th>
-                <th className="text-center px-3 py-3 font-medium text-gray-500">{t('control')}s</th>
-                <th className="text-center px-3 py-3 font-medium text-gray-500 cursor-pointer select-none" onClick={() => toggleSort('poams')}>
+                <th className={`text-center px-3 py-3 ${TYPOGRAPHY.tableHeader}`}>{t('control')}s</th>
+                <th className={`text-center px-3 py-3 cursor-pointer select-none ${TYPOGRAPHY.tableHeader}`} onClick={() => toggleSort('poams')}>
                   {isFederal ? 'POA&Ms' : t('milestone') + 's'} <SortIcon field="poams" />
                 </th>
-                <th className="text-center px-3 py-3 font-medium text-gray-500 cursor-pointer select-none" onClick={() => toggleSort('risks')}>
+                <th className={`text-center px-3 py-3 cursor-pointer select-none ${TYPOGRAPHY.tableHeader}`} onClick={() => toggleSort('risks')}>
                   Risks <SortIcon field="risks" />
                 </th>
-                <th className="text-center px-3 py-3 font-medium text-gray-500 cursor-pointer select-none" onClick={() => toggleSort('evidence_count')}>
+                <th className={`text-center px-3 py-3 cursor-pointer select-none ${TYPOGRAPHY.tableHeader}`} onClick={() => toggleSort('evidence_count')}>
                   Evidence <SortIcon field="evidence_count" />
                 </th>
-                <th className="text-center px-3 py-3 font-medium text-gray-500 cursor-pointer select-none" onClick={() => toggleSort('monitoring')}>
+                <th className={`text-center px-3 py-3 cursor-pointer select-none ${TYPOGRAPHY.tableHeader}`} onClick={() => toggleSort('monitoring')}>
                   Monitoring <SortIcon field="monitoring" />
                 </th>
-                <th className="text-center px-3 py-3 font-medium text-gray-500">Status</th>
-                <th className="text-right px-4 py-3 font-medium text-gray-500"></th>
+                <th className={`text-center px-3 py-3 ${TYPOGRAPHY.tableHeader}`}>Status</th>
+                <th className={`text-right px-4 py-3 ${TYPOGRAPHY.tableHeader}`}></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
@@ -334,7 +331,7 @@ export function SystemComparisonPage() {
       </div>
 
       {/* Risk Heatmap */}
-      <div className="bg-white rounded-xl border border-gray-200 p-6">
+      <div className="bg-white rounded-xl border border-blue-200 p-6">
         <h2 className="font-semibold text-gray-900 mb-4">Risk Heatmap by {t('system')}</h2>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">

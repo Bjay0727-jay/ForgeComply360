@@ -1,6 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { api } from '../utils/api';
+import { PageHeader } from '../components/PageHeader';
+import { SkeletonListItem } from '../components/Skeleton';
+import { EmptyState } from '../components/EmptyState';
+import { useToast } from '../components/Toast';
+import { exportPoliciesCSV } from '../utils/exportHelpers';
+import { TYPOGRAPHY, BADGES, STATUS_BADGE_COLORS, BUTTONS, FORMS, CARDS, MODALS } from '../utils/typography';
 
 interface Policy {
   id: string;
@@ -77,6 +83,7 @@ function requireRole(userRole: string, minRole: string): boolean {
 export function PoliciesPage() {
   const { user } = useAuth();
   const userRole = (user as any)?.role || 'viewer';
+  const { addToast } = useToast();
 
   // List view state
   const [policies, setPolicies] = useState<Policy[]>([]);
@@ -95,6 +102,7 @@ export function PoliciesPage() {
   const [editForm, setEditForm] = useState({ title: '', category: 'security', description: '', content: '', review_date: '' });
 
   // Create modal
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [createForm, setCreateForm] = useState({ title: '', category: 'security', description: '', review_date: '' });
   const [saving, setSaving] = useState(false);
@@ -283,10 +291,11 @@ export function PoliciesPage() {
   };
 
   const handleDelete = async () => {
-    if (!activePolicy || !confirm('Delete this policy?')) return;
-    await api(`/api/v1/policies/${activePolicy.id}`, { method: 'DELETE' });
-    setView('list');
-    loadPolicies();
+    if (!activePolicy) return;
+    try {
+      await api(`/api/v1/policies/${activePolicy.id}`, { method: 'DELETE' });
+      setView('list'); setConfirmDelete(false); loadPolicies(); addToast({ type: 'success', title: 'Policy Deleted' });
+    } catch { addToast({ type: 'error', title: 'Delete Failed', message: 'Could not delete policy' }); }
   };
 
   const openLinkModal = async () => {
@@ -316,17 +325,17 @@ export function PoliciesPage() {
   if (view === 'list') {
     return (
       <div className="space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">Policy & Procedure Library</h1>
-            <p className="text-sm text-gray-500 mt-1">{total} {total === 1 ? 'policy' : 'policies'}</p>
-          </div>
+        <PageHeader title="Policy & Procedure Library" subtitle={`${total} ${total === 1 ? 'policy' : 'policies'}`}>
+          <button onClick={() => exportPoliciesCSV(policies)} className="px-4 py-2 bg-white text-gray-900 rounded-lg text-sm font-medium hover:bg-white/90 flex items-center gap-1.5">
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+            CSV
+          </button>
           {requireRole(userRole, 'analyst') && (
-            <button onClick={() => setShowCreate(true)} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium">
+            <button onClick={() => setShowCreate(true)} className="px-4 py-2 bg-white text-gray-900 rounded-lg hover:bg-white/90 text-sm font-medium">
               + New Policy
             </button>
           )}
-        </div>
+        </PageHeader>
 
         {/* Filters */}
         <div className="flex flex-wrap gap-3">
@@ -346,23 +355,20 @@ export function PoliciesPage() {
 
         {/* Table */}
         {loading ? (
-          <div className="flex justify-center py-12"><div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" /></div>
+          <div><SkeletonListItem count={5} /></div>
         ) : policies.length === 0 ? (
-          <div className="text-center py-16 bg-white rounded-xl border">
-            <svg className="mx-auto h-12 w-12 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
-            <p className="mt-4 text-gray-500">No policies found</p>
-          </div>
+          <EmptyState title="No policies found" subtitle="Upload or create compliance policies" icon="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
         ) : (
           <div className="bg-white rounded-xl border overflow-hidden">
             <table className="w-full text-sm">
               <thead className="bg-gray-50 border-b">
                 <tr>
-                  <th className="text-left px-4 py-3 font-medium text-gray-700">Title</th>
-                  <th className="text-left px-4 py-3 font-medium text-gray-700">Category</th>
-                  <th className="text-left px-4 py-3 font-medium text-gray-700">Status</th>
-                  <th className="text-left px-4 py-3 font-medium text-gray-700">Version</th>
-                  <th className="text-left px-4 py-3 font-medium text-gray-700">Owner</th>
-                  <th className="text-left px-4 py-3 font-medium text-gray-700">Review Date</th>
+                  <th className={`text-left px-4 py-3 ${TYPOGRAPHY.tableHeader}`}>Title</th>
+                  <th className={`text-left px-4 py-3 ${TYPOGRAPHY.tableHeader}`}>Category</th>
+                  <th className={`text-left px-4 py-3 ${TYPOGRAPHY.tableHeader}`}>Status</th>
+                  <th className={`text-left px-4 py-3 ${TYPOGRAPHY.tableHeader}`}>Version</th>
+                  <th className={`text-left px-4 py-3 ${TYPOGRAPHY.tableHeader}`}>Owner</th>
+                  <th className={`text-left px-4 py-3 ${TYPOGRAPHY.tableHeader}`}>Review Date</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
@@ -405,8 +411,8 @@ export function PoliciesPage() {
         {/* Create Modal */}
         {showCreate && (
           <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50" onClick={() => setShowCreate(false)}>
-            <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-lg" onClick={e => e.stopPropagation()}>
-              <h2 className="text-lg font-semibold mb-4">Create New Policy</h2>
+            <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-lg" role="dialog" aria-modal="true" aria-labelledby="create-policy-modal-title" onClick={e => e.stopPropagation()}>
+              <h2 id="create-policy-modal-title" className="text-lg font-semibold mb-4">Create New Policy</h2>
               <div className="space-y-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Title *</label>
@@ -432,9 +438,8 @@ export function PoliciesPage() {
                 </div>
               </div>
               <div className="flex justify-end gap-3 mt-6">
-                <button onClick={() => setShowCreate(false)} className="px-4 py-2 border rounded-lg text-sm">Cancel</button>
-                <button onClick={handleCreate} disabled={!createForm.title.trim() || saving}
-                  className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50">
+                <button onClick={() => setShowCreate(false)} className={BUTTONS.secondary}>Cancel</button>
+                <button onClick={handleCreate} disabled={!createForm.title.trim() || saving} className={BUTTONS.primary}>
                   {saving ? 'Creating...' : 'Create Policy'}
                 </button>
               </div>
@@ -488,7 +493,15 @@ export function PoliciesPage() {
             <button onClick={() => handleStatusChange('archived')} className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm text-gray-600">Archive</button>
           )}
           {['draft', 'archived'].includes(activePolicy.status) && requireRole(userRole, 'admin') && (
-            <button onClick={handleDelete} className="px-3 py-1.5 border border-red-200 text-red-600 rounded-lg text-sm hover:bg-red-50">Delete</button>
+            confirmDelete ? (
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-red-600">Delete this policy?</span>
+                <button onClick={handleDelete} className="px-3 py-1.5 bg-red-600 text-white rounded-lg text-xs font-medium hover:bg-red-700">Yes, Delete</button>
+                <button onClick={() => setConfirmDelete(false)} className="px-3 py-1.5 text-gray-500 text-xs hover:text-gray-700">Cancel</button>
+              </div>
+            ) : (
+              <button onClick={() => setConfirmDelete(true)} className="px-3 py-1.5 border border-red-200 text-red-600 rounded-lg text-sm hover:bg-red-50">Delete</button>
+            )
           )}
         </div>
       </div>
@@ -506,9 +519,11 @@ export function PoliciesPage() {
       </div>
 
       {/* Tabs */}
-      <div className="border-b flex gap-1">
+      <div className="border-b flex gap-1" role="tablist">
         {(['content', 'attestations', 'controls'] as const).map(tab => (
           <button key={tab} onClick={() => setActiveTab(tab)}
+            role="tab"
+            aria-selected={activeTab === tab}
             className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${activeTab === tab ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
             {tab === 'content' ? 'Content' : tab === 'attestations' ? `Attestations (${attestTotal})` : `Controls (${linkedControls.length})`}
           </button>
@@ -550,8 +565,8 @@ export function PoliciesPage() {
                   className="w-full px-3 py-2 border rounded-lg text-sm font-mono" rows={20} />
               </div>
               <div className="flex justify-end gap-3">
-                <button onClick={() => setEditing(false)} className="px-4 py-2 border rounded-lg text-sm">Cancel</button>
-                <button onClick={handleSaveEdit} disabled={saving} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50">
+                <button onClick={() => setEditing(false)} className={BUTTONS.secondary}>Cancel</button>
+                <button onClick={handleSaveEdit} disabled={saving} className={BUTTONS.primary}>
                   {saving ? 'Saving...' : 'Save Changes'}
                 </button>
               </div>
@@ -629,7 +644,7 @@ export function PoliciesPage() {
           <div className="flex justify-between items-center">
             <h3 className="text-sm font-medium text-gray-700">Attestation Records</h3>
             {activePolicy.status === 'published' && requireRole(userRole, 'manager') && (
-              <button onClick={() => setShowAttestModal(true)} className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700">
+              <button onClick={() => setShowAttestModal(true)} className={`${BUTTONS.sm} ${BUTTONS.primary}`}>
                 Request Attestations
               </button>
             )}
@@ -643,12 +658,12 @@ export function PoliciesPage() {
               <table className="w-full text-sm">
                 <thead className="bg-gray-50 border-b">
                   <tr>
-                    <th className="text-left px-4 py-3 font-medium text-gray-700">User</th>
-                    <th className="text-left px-4 py-3 font-medium text-gray-700">Role</th>
-                    <th className="text-left px-4 py-3 font-medium text-gray-700">Version</th>
-                    <th className="text-left px-4 py-3 font-medium text-gray-700">Status</th>
-                    <th className="text-left px-4 py-3 font-medium text-gray-700">Due Date</th>
-                    <th className="text-left px-4 py-3 font-medium text-gray-700">Attested</th>
+                    <th className={`text-left px-4 py-3 ${TYPOGRAPHY.tableHeader}`}>User</th>
+                    <th className={`text-left px-4 py-3 ${TYPOGRAPHY.tableHeader}`}>Role</th>
+                    <th className={`text-left px-4 py-3 ${TYPOGRAPHY.tableHeader}`}>Version</th>
+                    <th className={`text-left px-4 py-3 ${TYPOGRAPHY.tableHeader}`}>Status</th>
+                    <th className={`text-left px-4 py-3 ${TYPOGRAPHY.tableHeader}`}>Due Date</th>
+                    <th className={`text-left px-4 py-3 ${TYPOGRAPHY.tableHeader}`}>Attested</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
@@ -658,7 +673,7 @@ export function PoliciesPage() {
                       <td className="px-4 py-3 capitalize text-gray-500">{a.user_role}</td>
                       <td className="px-4 py-3 text-gray-500">v{a.policy_version}</td>
                       <td className="px-4 py-3">
-                        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${a.status === 'attested' ? 'bg-green-100 text-green-700' : a.status === 'overdue' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'}`}>
+                        <span className={`${BADGES.pill} ${a.status === 'attested' ? STATUS_BADGE_COLORS.completed : a.status === 'overdue' ? STATUS_BADGE_COLORS.overdue : STATUS_BADGE_COLORS.pending}`}>
                           {a.status}
                         </span>
                       </td>
@@ -689,10 +704,10 @@ export function PoliciesPage() {
               <table className="w-full text-sm">
                 <thead className="bg-gray-50 border-b">
                   <tr>
-                    <th className="text-left px-4 py-3 font-medium text-gray-700">Control</th>
-                    <th className="text-left px-4 py-3 font-medium text-gray-700">Framework</th>
-                    <th className="text-left px-4 py-3 font-medium text-gray-700">System</th>
-                    <th className="text-left px-4 py-3 font-medium text-gray-700">Status</th>
+                    <th className={`text-left px-4 py-3 ${TYPOGRAPHY.tableHeader}`}>Control</th>
+                    <th className={`text-left px-4 py-3 ${TYPOGRAPHY.tableHeader}`}>Framework</th>
+                    <th className={`text-left px-4 py-3 ${TYPOGRAPHY.tableHeader}`}>System</th>
+                    <th className={`text-left px-4 py-3 ${TYPOGRAPHY.tableHeader}`}>Status</th>
                     <th className="px-4 py-3"></th>
                   </tr>
                 </thead>
@@ -706,7 +721,7 @@ export function PoliciesPage() {
                       <td className="px-4 py-3 text-gray-600">{c.framework_name}</td>
                       <td className="px-4 py-3 text-gray-600">{c.system_name}</td>
                       <td className="px-4 py-3">
-                        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${c.status === 'implemented' ? 'bg-green-100 text-green-700' : c.status === 'partially_implemented' ? 'bg-yellow-100 text-yellow-700' : 'bg-gray-100 text-gray-600'}`}>
+                        <span className={`${BADGES.pill} ${c.status === 'implemented' ? STATUS_BADGE_COLORS.implemented : c.status === 'partially_implemented' ? STATUS_BADGE_COLORS.partially_implemented : BADGES.neutral}`}>
                           {c.status?.replace(/_/g, ' ')}
                         </span>
                       </td>
@@ -727,18 +742,18 @@ export function PoliciesPage() {
       {/* Publication Request Modal */}
       {statusAction === 'publish' && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50" onClick={() => setStatusAction(null)}>
-          <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md" onClick={e => e.stopPropagation()}>
-            <h2 className="text-lg font-semibold mb-4">Request Publication Approval</h2>
+          <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md" role="dialog" aria-modal="true" aria-labelledby="publication-modal-title" onClick={e => e.stopPropagation()}>
+            <h2 id="publication-modal-title" className="text-lg font-semibold mb-4">Request Publication Approval</h2>
             <p className="text-sm text-gray-600 mb-4">This will create an approval request for an admin to review and publish the policy.</p>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Justification *</label>
               <textarea value={approvalJustification} onChange={e => setApprovalJustification(e.target.value)}
                 className="w-full px-3 py-2 border rounded-lg text-sm" rows={3} placeholder="Why should this policy be published?" />
             </div>
-            <div className="flex justify-end gap-3 mt-4">
-              <button onClick={() => setStatusAction(null)} className="px-4 py-2 border rounded-lg text-sm">Cancel</button>
+            <div className={MODALS.footer}>
+              <button onClick={() => setStatusAction(null)} className={BUTTONS.secondary}>Cancel</button>
               <button onClick={handleRequestPublication} disabled={!approvalJustification.trim() || saving}
-                className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm hover:bg-emerald-700 disabled:opacity-50">
+                className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm font-medium hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed">
                 {saving ? 'Submitting...' : 'Submit Request'}
               </button>
             </div>
@@ -749,18 +764,17 @@ export function PoliciesPage() {
       {/* New Version Modal */}
       {showVersionModal && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50" onClick={() => setShowVersionModal(false)}>
-          <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md" onClick={e => e.stopPropagation()}>
-            <h2 className="text-lg font-semibold mb-4">Create New Version</h2>
+          <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md" role="dialog" aria-modal="true" aria-labelledby="version-modal-title" onClick={e => e.stopPropagation()}>
+            <h2 id="version-modal-title" className="text-lg font-semibold mb-4">Create New Version</h2>
             <p className="text-sm text-gray-600 mb-4">This will create v{(parseFloat(activePolicy.version) + 0.1).toFixed(1)} and reset the policy to draft status for editing.</p>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Version Summary</label>
               <input type="text" value={versionSummary} onChange={e => setVersionSummary(e.target.value)}
                 className="w-full px-3 py-2 border rounded-lg text-sm" placeholder="What changed in this version?" />
             </div>
-            <div className="flex justify-end gap-3 mt-4">
-              <button onClick={() => setShowVersionModal(false)} className="px-4 py-2 border rounded-lg text-sm">Cancel</button>
-              <button onClick={handleCreateVersion} disabled={saving}
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50">
+            <div className={MODALS.footer}>
+              <button onClick={() => setShowVersionModal(false)} className={BUTTONS.secondary}>Cancel</button>
+              <button onClick={handleCreateVersion} disabled={saving} className={BUTTONS.primary}>
                 {saving ? 'Creating...' : 'Create Version'}
               </button>
             </div>
@@ -771,8 +785,8 @@ export function PoliciesPage() {
       {/* Request Attestations Modal */}
       {showAttestModal && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50" onClick={() => setShowAttestModal(false)}>
-          <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md" onClick={e => e.stopPropagation()}>
-            <h2 className="text-lg font-semibold mb-4">Request Attestations</h2>
+          <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md" role="dialog" aria-modal="true" aria-labelledby="attest-modal-title" onClick={e => e.stopPropagation()}>
+            <h2 id="attest-modal-title" className="text-lg font-semibold mb-4">Request Attestations</h2>
             <p className="text-sm text-gray-600 mb-4">All users at or above the selected role will receive an attestation request.</p>
             <div className="space-y-4">
               <div>
@@ -790,10 +804,9 @@ export function PoliciesPage() {
                   className="w-full px-3 py-2 border rounded-lg text-sm" />
               </div>
             </div>
-            <div className="flex justify-end gap-3 mt-4">
-              <button onClick={() => setShowAttestModal(false)} className="px-4 py-2 border rounded-lg text-sm">Cancel</button>
-              <button onClick={handleRequestAttestations} disabled={saving}
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50">
+            <div className={MODALS.footer}>
+              <button onClick={() => setShowAttestModal(false)} className={BUTTONS.secondary}>Cancel</button>
+              <button onClick={handleRequestAttestations} disabled={saving} className={BUTTONS.primary}>
                 {saving ? 'Sending...' : 'Send Requests'}
               </button>
             </div>
@@ -804,8 +817,8 @@ export function PoliciesPage() {
       {/* Link Control Modal */}
       {showLinkModal && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50" onClick={() => setShowLinkModal(false)}>
-          <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-lg" onClick={e => e.stopPropagation()}>
-            <h2 className="text-lg font-semibold mb-4">Link Control Implementation</h2>
+          <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-lg" role="dialog" aria-modal="true" aria-labelledby="link-control-modal-title" onClick={e => e.stopPropagation()}>
+            <h2 id="link-control-modal-title" className="text-lg font-semibold mb-4">Link Control Implementation</h2>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Select Implementation</label>
               <select value={linkImplId} onChange={e => setLinkImplId(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm">
@@ -815,10 +828,9 @@ export function PoliciesPage() {
                 ))}
               </select>
             </div>
-            <div className="flex justify-end gap-3 mt-4">
-              <button onClick={() => setShowLinkModal(false)} className="px-4 py-2 border rounded-lg text-sm">Cancel</button>
-              <button onClick={handleLinkControl} disabled={!linkImplId}
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50">Link</button>
+            <div className={MODALS.footer}>
+              <button onClick={() => setShowLinkModal(false)} className={BUTTONS.secondary}>Cancel</button>
+              <button onClick={handleLinkControl} disabled={!linkImplId} className={BUTTONS.primary}>Link</button>
             </div>
           </div>
         </div>

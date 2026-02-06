@@ -2,6 +2,10 @@ import React, { useEffect, useState, useMemo } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { useExperience } from '../hooks/useExperience';
 import { api } from '../utils/api';
+import { PageHeader } from '../components/PageHeader';
+import { SkeletonCard } from '../components/Skeleton';
+import { BUTTONS, CARDS, BADGES } from '../utils/typography';
+import { CALENDAR_EVENT_COLORS, RISK_LEVEL_COLORS, getRiskLevelColor } from '../utils/colorSystem';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -19,10 +23,10 @@ interface CalendarEvent {
 
 interface EventTypeConfig {
   label: string;
-  color: string;
+  bg: string;
+  bgLight: string;
   dotColor: string;
   textColor: string;
-  bgLight: string;
   borderColor: string;
   href: string;
   icon: string;
@@ -35,71 +39,43 @@ interface EventTypeConfig {
 const EVENT_TYPES: Record<EventType, EventTypeConfig> = {
   poam: {
     label: 'POA&M Due',
-    color: 'bg-orange-500',
-    dotColor: 'bg-orange-400',
-    textColor: 'text-orange-700',
-    bgLight: 'bg-orange-50',
-    borderColor: 'border-orange-400',
+    ...CALENDAR_EVENT_COLORS.poam,
     href: '/poams',
     icon: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4',
   },
   evidence_schedule: {
     label: 'Evidence Due',
-    color: 'bg-purple-500',
-    dotColor: 'bg-purple-400',
-    textColor: 'text-purple-700',
-    bgLight: 'bg-purple-50',
-    borderColor: 'border-purple-400',
+    ...CALENDAR_EVENT_COLORS.evidence_schedule,
     href: '/evidence/schedules',
     icon: 'M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z',
   },
   audit_task: {
     label: 'Audit Task',
-    color: 'bg-blue-500',
-    dotColor: 'bg-blue-400',
-    textColor: 'text-blue-700',
-    bgLight: 'bg-blue-50',
-    borderColor: 'border-blue-400',
+    ...CALENDAR_EVENT_COLORS.audit_task,
     href: '/audit-prep',
     icon: 'M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z',
   },
   ato_expiry: {
     label: 'ATO Expiry',
-    color: 'bg-amber-500',
-    dotColor: 'bg-amber-400',
-    textColor: 'text-amber-700',
-    bgLight: 'bg-amber-50',
-    borderColor: 'border-amber-400',
+    ...CALENDAR_EVENT_COLORS.ato_expiry,
     href: '/systems',
     icon: 'M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2',
   },
   vendor_assessment: {
     label: 'Vendor Review',
-    color: 'bg-teal-500',
-    dotColor: 'bg-teal-400',
-    textColor: 'text-teal-700',
-    bgLight: 'bg-teal-50',
-    borderColor: 'border-teal-400',
+    ...CALENDAR_EVENT_COLORS.vendor_assessment,
     href: '/vendors',
     icon: 'M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4',
   },
   vendor_contract: {
     label: 'Contract End',
-    color: 'bg-teal-500',
-    dotColor: 'bg-teal-300',
-    textColor: 'text-teal-700',
-    bgLight: 'bg-teal-50',
-    borderColor: 'border-teal-300',
+    ...CALENDAR_EVENT_COLORS.vendor_contract,
     href: '/vendors',
     icon: 'M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4',
   },
   risk_treatment: {
     label: 'Risk Due',
-    color: 'bg-rose-500',
-    dotColor: 'bg-rose-400',
-    textColor: 'text-rose-700',
-    bgLight: 'bg-rose-50',
-    borderColor: 'border-rose-400',
+    ...CALENDAR_EVENT_COLORS.risk_treatment,
     href: '/risks',
     icon: 'M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z',
   },
@@ -240,73 +216,71 @@ export function CalendarPage() {
   return (
     <div className="p-6 max-w-7xl mx-auto">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">{t('compliance')} Calendar</h1>
-          <p className="text-gray-500 text-sm mt-1">All deadlines and milestones in one view</p>
-        </div>
+      <PageHeader title={`${t('compliance')} Calendar`} subtitle="All deadlines and milestones in one view">
         <div className="flex items-center gap-2">
-          <button onClick={prevMonth} className="p-2 rounded-lg hover:bg-gray-100 transition-colors">
-            <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <button onClick={prevMonth} className="p-2 rounded-lg hover:bg-white/20 transition-colors">
+            <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
             </svg>
           </button>
-          <h2 className="text-lg font-semibold text-gray-900 w-48 text-center">
+          <h2 className="text-lg font-semibold text-white w-48 text-center">
             {MONTH_NAMES[currentMonth]} {currentYear}
           </h2>
-          <button onClick={nextMonth} className="p-2 rounded-lg hover:bg-gray-100 transition-colors">
-            <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <button onClick={nextMonth} className="p-2 rounded-lg hover:bg-white/20 transition-colors">
+            <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
             </svg>
           </button>
-          <button onClick={goToToday} className="ml-2 px-3 py-1.5 text-xs font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
+          <button onClick={goToToday} className={`ml-2 ${BUTTONS.secondary} ${BUTTONS.sm}`}>
             Today
           </button>
         </div>
-      </div>
+      </PageHeader>
 
       {/* Filter Bar */}
-      <div className="flex flex-wrap gap-2 mb-4">
-        {(Object.entries(EVENT_TYPES) as [EventType, EventTypeConfig][]).map(([type, cfg]) => {
-          const count = typeCounts[type] || 0;
-          const active = filters[type];
-          return (
-            <button
-              key={type}
-              onClick={() => toggleFilter(type)}
-              className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium border transition-all ${
-                active
-                  ? `${cfg.bgLight} ${cfg.textColor} border-current`
-                  : 'bg-gray-50 text-gray-400 border-gray-200'
-              }`}
-            >
-              <span className={`w-2 h-2 rounded-full ${active ? cfg.dotColor : 'bg-gray-300'}`} />
-              {cfg.label}
-              {count > 0 && <span className="ml-0.5 opacity-70">({count})</span>}
-            </button>
-          );
-        })}
+      <div className={`${CARDS.base} p-4 mb-6`}>
+        <div className="flex flex-wrap gap-2">
+          {(Object.entries(EVENT_TYPES) as [EventType, EventTypeConfig][]).map(([type, cfg]) => {
+            const count = typeCounts[type] || 0;
+            const active = filters[type];
+            return (
+              <button
+                key={type}
+                onClick={() => toggleFilter(type)}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                  active
+                    ? 'bg-forge-navy-900 text-white shadow-sm'
+                    : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                }`}
+              >
+                <span className={`w-2.5 h-2.5 rounded-full ${active ? cfg.dotColor : 'bg-gray-300'}`} />
+                {cfg.label}
+                {count > 0 && <span className={`ml-1 ${active ? 'text-white/70' : 'text-gray-400'}`}>({count})</span>}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {/* Main Content: Calendar Grid + Sidebar */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Calendar Grid */}
-        <div className="lg:col-span-2 bg-white rounded-xl border border-gray-200 p-4">
+        <div className={`lg:col-span-2 ${CARDS.base} overflow-hidden`}>
           {loading && (
-            <div className="flex items-center justify-center py-4">
-              <div className="w-5 h-5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+            <div className="p-4">
+              <SkeletonCard />
             </div>
           )}
 
           {/* Day headers */}
-          <div className="grid grid-cols-7 gap-px mb-1">
+          <div className="grid grid-cols-7 bg-gray-50 border-b border-gray-200">
             {DAY_NAMES.map((d) => (
-              <div key={d} className="text-center text-xs font-semibold text-gray-500 py-2">{d}</div>
+              <div key={d} className="text-center text-sm font-semibold text-gray-600 py-3">{d}</div>
             ))}
           </div>
 
           {/* Day cells */}
-          <div className="grid grid-cols-7 gap-px">
+          <div className="grid grid-cols-7 gap-px bg-gray-200 p-px">
             {calendarDays.map((day) => {
               const dayEvents = eventsByDate[day.key] || [];
               const isToday = day.key === todayKey;
@@ -317,15 +291,15 @@ export function CalendarPage() {
                 <button
                   key={day.key}
                   onClick={() => setSelectedDate(day.key)}
-                  className={`relative p-1.5 min-h-[72px] text-left rounded-lg transition-all
-                    ${day.isCurrentMonth ? 'bg-white hover:bg-gray-50' : 'bg-gray-50/50'}
-                    ${isSelected ? 'ring-2 ring-blue-500 ring-inset' : ''}
-                    ${isToday ? 'bg-blue-50' : ''}
+                  className={`relative p-2 min-h-[80px] text-left transition-all
+                    ${day.isCurrentMonth ? 'bg-white hover:bg-gray-50' : 'bg-gray-50'}
+                    ${isSelected ? 'ring-2 ring-forge-green-500 ring-inset z-10' : ''}
+                    ${isToday && !isSelected ? 'bg-forge-green-50' : ''}
                   `}
                 >
-                  <span className={`text-xs font-medium ${
-                    !day.isCurrentMonth ? 'text-gray-300' :
-                    isToday ? 'text-blue-700 font-bold' :
+                  <span className={`text-sm font-medium ${
+                    !day.isCurrentMonth ? 'text-gray-400' :
+                    isToday ? 'text-forge-green-700 font-bold' :
                     'text-gray-700'
                   }`}>
                     {day.date}
@@ -333,23 +307,23 @@ export function CalendarPage() {
 
                   {/* Event dots */}
                   {dayEvents.length > 0 && (
-                    <div className="flex flex-wrap gap-0.5 mt-1">
+                    <div className="flex flex-wrap gap-1 mt-1.5">
                       {dayEvents.slice(0, 3).map((ev, idx) => (
                         <span
                           key={idx}
-                          className={`w-1.5 h-1.5 rounded-full ${EVENT_TYPES[ev.type]?.dotColor || 'bg-gray-300'}`}
+                          className={`w-2 h-2 rounded-full ${EVENT_TYPES[ev.type]?.dotColor || 'bg-gray-300'}`}
                           title={ev.name}
                         />
                       ))}
                       {dayEvents.length > 3 && (
-                        <span className="text-[9px] text-gray-400 leading-none ml-0.5">+{dayEvents.length - 3}</span>
+                        <span className="text-[10px] text-gray-500 font-medium leading-none ml-0.5">+{dayEvents.length - 3}</span>
                       )}
                     </div>
                   )}
 
                   {/* Overdue indicator */}
                   {isOverdue && day.isCurrentMonth && (
-                    <div className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-red-500" />
+                    <div className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-red-500" />
                   )}
                 </button>
               );
@@ -358,92 +332,88 @@ export function CalendarPage() {
         </div>
 
         {/* Day Detail Sidebar */}
-        <div className="bg-white rounded-xl border border-gray-200 p-4">
-          <h3 className="font-semibold text-gray-900 mb-1">{formatSelectedDate(selectedDate)}</h3>
-          {selectedDate < todayKey && selectedEvents.length > 0 && (
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-100 text-red-700 text-xs font-medium mb-3">
-              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01" />
-              </svg>
-              Overdue
-            </span>
-          )}
-          <p className="text-xs text-gray-400 mb-4">
-            {selectedEvents.length === 0 ? 'No events on this day' : `${selectedEvents.length} event${selectedEvents.length > 1 ? 's' : ''}`}
-          </p>
-
-          <div className="space-y-3 max-h-[500px] overflow-y-auto">
-            {selectedEvents.map((ev) => {
-              const cfg = EVENT_TYPES[ev.type];
-              if (!cfg) return null;
-              return (
-                <a
-                  key={ev.id}
-                  href={cfg.href}
-                  className={`block rounded-lg border-l-4 ${cfg.borderColor} p-3 hover:bg-gray-50 transition-colors`}
-                >
-                  <div className="flex items-start gap-2">
-                    <svg className={`w-4 h-4 mt-0.5 flex-shrink-0 ${cfg.textColor}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={cfg.icon} />
-                    </svg>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-gray-900 truncate">{ev.name}</p>
-                      <span className={`inline-block mt-1 px-1.5 py-0.5 rounded text-[10px] font-semibold ${cfg.bgLight} ${cfg.textColor}`}>
-                        {cfg.label}
-                      </span>
-                      {/* Meta pills */}
-                      <div className="flex flex-wrap gap-1 mt-1.5">
-                        {ev.meta.status && (
-                          <span className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 text-[10px]">
-                            {String(ev.meta.status).replace('_', ' ')}
-                          </span>
-                        )}
-                        {ev.meta.risk_level && (
-                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
-                            ev.meta.risk_level === 'critical' ? 'bg-red-100 text-red-700' :
-                            ev.meta.risk_level === 'high' ? 'bg-orange-100 text-orange-700' :
-                            ev.meta.risk_level === 'moderate' ? 'bg-yellow-100 text-yellow-700' :
-                            'bg-green-100 text-green-700'
-                          }`}>
-                            {String(ev.meta.risk_level)}
-                          </span>
-                        )}
-                        {ev.meta.cadence && (
-                          <span className="px-1.5 py-0.5 rounded bg-purple-100 text-purple-600 text-[10px]">
-                            {String(ev.meta.cadence)}
-                          </span>
-                        )}
-                        {ev.meta.criticality && (
-                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
-                            ev.meta.criticality === 'critical' ? 'bg-red-100 text-red-700' :
-                            ev.meta.criticality === 'high' ? 'bg-orange-100 text-orange-700' :
-                            'bg-gray-100 text-gray-600'
-                          }`}>
-                            {String(ev.meta.criticality)}
-                          </span>
-                        )}
-                        {ev.meta.category && (
-                          <span className="px-1.5 py-0.5 rounded bg-blue-100 text-blue-600 text-[10px]">
-                            {String(ev.meta.category)}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </a>
-              );
-            })}
+        <div className={`${CARDS.base} overflow-hidden h-fit`}>
+          {/* Header with green accent */}
+          <div className="p-5 border-l-4 border-l-forge-green-500 bg-gradient-to-r from-gray-50 to-white">
+            <h3 className="text-xl font-bold text-gray-900 tracking-tight">{formatSelectedDate(selectedDate)}</h3>
+            <div className="flex items-center gap-2 mt-2">
+              {selectedDate < todayKey && selectedEvents.length > 0 && (
+                <span className={`inline-flex items-center gap-1 ${BADGES.pill} ${BADGES.error}`}>
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01" />
+                  </svg>
+                  Overdue
+                </span>
+              )}
+              <p className="text-sm font-medium text-gray-500">
+                {selectedEvents.length === 0 ? 'No events on this day' : `${selectedEvents.length} event${selectedEvents.length > 1 ? 's' : ''}`}
+              </p>
+            </div>
           </div>
 
-          {/* Legend */}
-          {selectedEvents.length === 0 && (
-            <div className="mt-6 pt-4 border-t border-gray-100">
-              <p className="text-xs font-medium text-gray-500 mb-2">Event Types</p>
-              <div className="space-y-1.5">
+          {/* Event list or Legend */}
+          {selectedEvents.length > 0 ? (
+            <div className="p-4 space-y-3 max-h-[400px] overflow-y-auto">
+              {selectedEvents.map((ev) => {
+                const cfg = EVENT_TYPES[ev.type];
+                if (!cfg) return null;
+                return (
+                  <a
+                    key={ev.id}
+                    href={cfg.href}
+                    className={`block rounded-lg border border-gray-100 border-l-4 ${cfg.borderColor} p-3 hover:shadow-md hover:border-gray-200 transition-all`}
+                  >
+                    <div className="flex items-start gap-2">
+                      <svg className={`w-4 h-4 mt-0.5 flex-shrink-0 ${cfg.textColor}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={cfg.icon} />
+                      </svg>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-semibold text-gray-900 truncate">{ev.name}</p>
+                        <span className={`inline-block mt-1.5 px-2 py-0.5 rounded text-xs font-bold ${cfg.bgLight} ${cfg.textColor}`}>
+                          {cfg.label}
+                        </span>
+                        {/* Meta pills */}
+                        <div className="flex flex-wrap gap-1.5 mt-2">
+                          {ev.meta.status && (
+                            <span className="px-2 py-0.5 rounded bg-gray-100 text-gray-700 text-xs font-medium">
+                              {String(ev.meta.status).replace('_', ' ')}
+                            </span>
+                          )}
+                          {ev.meta.risk_level && (
+                            <span className={`px-2 py-0.5 rounded text-xs font-semibold ${getRiskLevelColor(String(ev.meta.risk_level))}`}>
+                              {String(ev.meta.risk_level)}
+                            </span>
+                          )}
+                          {ev.meta.cadence && (
+                            <span className="px-2 py-0.5 rounded bg-purple-100 text-purple-700 text-xs font-medium">
+                              {String(ev.meta.cadence)}
+                            </span>
+                          )}
+                          {ev.meta.criticality && (
+                            <span className={`px-2 py-0.5 rounded text-xs font-semibold ${getRiskLevelColor(String(ev.meta.criticality))}`}>
+                              {String(ev.meta.criticality)}
+                            </span>
+                          )}
+                          {ev.meta.category && (
+                            <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-700 text-xs font-medium">
+                              {String(ev.meta.category)}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </a>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="p-5">
+              <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-4">Event Types</p>
+              <div className="grid grid-cols-2 gap-3">
                 {(Object.entries(EVENT_TYPES) as [EventType, EventTypeConfig][]).map(([type, cfg]) => (
-                  <div key={type} className="flex items-center gap-2">
-                    <span className={`w-2 h-2 rounded-full ${cfg.dotColor}`} />
-                    <span className="text-xs text-gray-500">{cfg.label}</span>
+                  <div key={type} className="flex items-center gap-2.5">
+                    <span className={`w-3 h-3 rounded-full ${cfg.dotColor}`} />
+                    <span className="text-sm font-medium text-gray-700">{cfg.label}</span>
                   </div>
                 ))}
               </div>

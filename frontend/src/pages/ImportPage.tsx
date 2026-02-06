@@ -4,6 +4,11 @@ import { api } from '../utils/api';
 import { parseCSV, matchColumns, validateRow, type ColumnMatchResult } from '../utils/csvParser';
 import { IMPORT_CONFIGS, SPECIALIZED_IMPORT_KEYS, downloadTemplate, type ImportEntityConfig } from '../utils/importTemplates';
 import { parseOscalSSP, parseOscalCatalog, type OscalSSPResult, type OscalCatalogResult } from '../utils/oscalParser';
+import { PageHeader } from '../components/PageHeader';
+import { SkeletonCard } from '../components/Skeleton';
+import { ProgressBar } from '../components/ProgressBar';
+import { useToast } from '../components/Toast';
+import { TYPOGRAPHY, BUTTONS, CARDS, FORMS, BADGES } from '../utils/typography';
 
 type Step = 'select' | 'upload' | 'preview' | 'importing' | 'results';
 type ImportFormat = 'csv' | 'oscal_ssp' | 'oscal_catalog';
@@ -31,6 +36,7 @@ const SPECIALIZED_CONFIGS = Object.fromEntries(
 
 export function ImportPage() {
   const { canManage } = useAuth();
+  const { addToast } = useToast();
   const [step, setStep] = useState<Step>('select');
   const [entityType, setEntityType] = useState<string | null>(null);
   const [importFormat, setImportFormat] = useState<ImportFormat>('csv');
@@ -246,21 +252,23 @@ export function ImportPage() {
         setStep('results');
       }
     } catch (err: any) {
-      setError(err.message || 'Import failed');
+      const errorMsg = err.message || 'Import failed';
+      setError(errorMsg);
+      addToast({ type: 'error', title: 'Import failed', message: errorMsg });
       setStep('preview');
     }
   };
 
   if (!canManage) {
     return (
-      <div className="p-8 text-center">
+      <div className={`${CARDS.elevated} p-12 text-center max-w-md mx-auto mt-12`}>
         <div className="mx-auto w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mb-4">
           <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
           </svg>
         </div>
-        <h2 className="text-xl font-semibold text-gray-700 mb-2">Access Restricted</h2>
-        <p className="text-gray-500">Bulk import is available to managers, admins, and owners only.</p>
+        <h2 className={TYPOGRAPHY.sectionTitle}>Access Restricted</h2>
+        <p className={`${TYPOGRAPHY.bodyMuted} mt-2`}>Bulk import is available to managers, admins, and owners only.</p>
       </div>
     );
   }
@@ -270,10 +278,7 @@ export function ImportPage() {
   return (
     <div className="p-6 max-w-5xl mx-auto">
       {/* Header */}
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900 mb-1">Bulk Import</h1>
-        <p className="text-gray-500 text-sm">Import data from CSV, OSCAL JSON, or compliance tool exports into ForgeComply 360.</p>
-      </div>
+      <PageHeader title="Compliance Imports" subtitle="Import data from CSV, OSCAL JSON, or compliance tool exports into ForgeComply 360." />
 
       {/* Step indicator */}
       <div className="flex items-center gap-2 mb-8 text-sm">
@@ -606,11 +611,11 @@ export function ImportPage() {
                   <table className="w-full text-xs">
                     <thead>
                       <tr className="bg-gray-50">
-                        <th className="px-3 py-2 text-left text-gray-500 font-medium">#</th>
-                        <th className="px-3 py-2 text-left text-gray-500 font-medium">Control ID</th>
-                        <th className="px-3 py-2 text-left text-gray-500 font-medium">Status</th>
-                        <th className="px-3 py-2 text-left text-gray-500 font-medium">Role</th>
-                        <th className="px-3 py-2 text-left text-gray-500 font-medium">Description</th>
+                        <th className={`px-3 py-2 text-left ${TYPOGRAPHY.tableHeader}`}>#</th>
+                        <th className={`px-3 py-2 text-left ${TYPOGRAPHY.tableHeader}`}>Control ID</th>
+                        <th className={`px-3 py-2 text-left ${TYPOGRAPHY.tableHeader}`}>Status</th>
+                        <th className={`px-3 py-2 text-left ${TYPOGRAPHY.tableHeader}`}>Role</th>
+                        <th className={`px-3 py-2 text-left ${TYPOGRAPHY.tableHeader}`}>Description</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -664,10 +669,10 @@ export function ImportPage() {
                   <table className="w-full text-xs">
                     <thead>
                       <tr className="bg-gray-50">
-                        <th className="px-3 py-2 text-left text-gray-500 font-medium">Control ID</th>
-                        <th className="px-3 py-2 text-left text-gray-500 font-medium">Family</th>
-                        <th className="px-3 py-2 text-left text-gray-500 font-medium">Title</th>
-                        <th className="px-3 py-2 text-left text-gray-500 font-medium">Type</th>
+                        <th className={`px-3 py-2 text-left ${TYPOGRAPHY.tableHeader}`}>Control ID</th>
+                        <th className={`px-3 py-2 text-left ${TYPOGRAPHY.tableHeader}`}>Family</th>
+                        <th className={`px-3 py-2 text-left ${TYPOGRAPHY.tableHeader}`}>Title</th>
+                        <th className={`px-3 py-2 text-left ${TYPOGRAPHY.tableHeader}`}>Type</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -719,9 +724,9 @@ export function ImportPage() {
                   <table className="w-full text-xs">
                     <thead>
                       <tr className="bg-gray-50">
-                        <th className="px-3 py-2 text-left text-gray-500 font-medium">#</th>
+                        <th className={`px-3 py-2 text-left ${TYPOGRAPHY.tableHeader}`}>#</th>
                         {columnMatch?.matched.map(m => (
-                          <th key={m.fieldName} className="px-3 py-2 text-left text-gray-500 font-medium">{m.csvName}</th>
+                          <th key={m.fieldName} className={`px-3 py-2 text-left ${TYPOGRAPHY.tableHeader}`}>{m.csvName}</th>
                         ))}
                       </tr>
                     </thead>
@@ -768,14 +773,19 @@ export function ImportPage() {
       {/* Step 4: Importing */}
       {/* ================================================================== */}
       {step === 'importing' && (
-        <div className="bg-white rounded-xl border p-12 text-center">
-          <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
-          <p className="text-gray-700 font-medium">
-            {importFormat === 'oscal_ssp' ? 'Importing OSCAL SSP data...' :
-             importFormat === 'oscal_catalog' ? 'Importing OSCAL Catalog...' :
-             `Importing ${validRows.length} ${config?.label || 'records'}...`}
-          </p>
-          <p className="text-sm text-gray-400 mt-1">This may take a moment.</p>
+        <div className="bg-white dark:bg-gray-800 rounded-xl border border-blue-200 dark:border-gray-700 p-12 text-center">
+          <div className="max-w-md mx-auto">
+            <div className="w-12 h-12 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin mx-auto mb-4" />
+            <p className="text-gray-700 dark:text-gray-300 font-medium">
+              {importFormat === 'oscal_ssp' ? 'Importing OSCAL SSP data...' :
+               importFormat === 'oscal_catalog' ? 'Importing OSCAL Catalog...' :
+               `Importing ${validRows.length} ${config?.label || 'records'}...`}
+            </p>
+            <p className="text-sm text-gray-400 mt-1 mb-4">This may take a moment.</p>
+            <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2 overflow-hidden">
+              <div className="bg-blue-600 h-2 rounded-full animate-pulse" style={{ width: '60%' }} />
+            </div>
+          </div>
         </div>
       )}
 
@@ -893,7 +903,7 @@ function ImportCard({ cfg, onClick, showTemplate }: { cfg: ImportEntityConfig; o
     rose: 'bg-rose-100 text-rose-600',
   };
   return (
-    <div className={`bg-white rounded-xl border-2 ${colors[cfg.color] || 'border-gray-200'} p-5 cursor-pointer transition-all hover:shadow-md`} onClick={onClick}>
+    <div className={`bg-white rounded-xl border-2 ${colors[cfg.color] || 'border-blue-200'} p-5 cursor-pointer transition-all hover:shadow-md`} onClick={onClick}>
       <div className="flex items-center gap-3 mb-3">
         <div className={`w-10 h-10 rounded-lg ${iconColors[cfg.color] || 'bg-gray-100 text-gray-600'} flex items-center justify-center`}>
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={cfg.icon} /></svg>

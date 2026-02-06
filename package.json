@@ -4,20 +4,29 @@
   "private": true,
   "description": "ForgeComply 360 - Enterprise GRC Platform by Forge Cyber Defense (SDVOSB)",
   "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:all": "npm test && cd frontend && npm test",
     "dev": "wrangler dev",
     "dev:frontend": "cd frontend && npm run dev",
     "build": "cd frontend && npm run build",
     "deploy:staging": "wrangler deploy --env staging",
     "deploy:production": "wrangler deploy --env production",
-    "db:migrate:local": "wrangler d1 execute forge-db --local --file=database/schema.sql",
-    "db:migrate:staging": "wrangler d1 execute forge-db --env staging --file=database/schema.sql",
-    "db:migrate:production": "wrangler d1 execute forge-db --env production --file=database/schema.sql",
-    "db:seed:local": "wrangler d1 execute forge-db --local --file=database/seed.sql",
+    "db:migrate:local": "wrangler d1 execute forge-comply360-db --local --file=database/schema.sql",
+    "db:migrate:staging": "wrangler d1 execute forge-comply360-db --env staging --remote --file=database/schema.sql",
+    "db:migrate:production": "wrangler d1 execute forge-comply360-db --env production --remote --file=database/schema.sql",
+    "db:seed:local": "wrangler d1 execute forge-comply360-db --local --file=database/seed.sql",
     "frontend:deploy:staging": "cd frontend && npm run build && npx wrangler pages deploy dist --project-name=forgecomply360 --branch=staging",
     "frontend:deploy:production": "cd frontend && npm run build && npx wrangler pages deploy dist --project-name=forgecomply360 --branch=main"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20241205.0",
+    "@vitest/coverage-v8": "^4.0.18",
+    "vitest": "^4.0.18",
     "wrangler": "^3.99.0"
+  },
+  "dependencies": {
+    "toucan-js": "^4.1.1"
   }
 }

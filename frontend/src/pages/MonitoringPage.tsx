@@ -2,6 +2,13 @@ import React, { useEffect, useState } from 'react';
 import { useExperience } from '../hooks/useExperience';
 import { useAuth } from '../hooks/useAuth';
 import { api } from '../utils/api';
+import { PageHeader } from '../components/PageHeader';
+import { ScoreRadialChart, TrendAreaChart, MetricCard as ChartMetricCard } from '../components/charts';
+import { STATUS_COLORS } from '../utils/chartTheme';
+import { SkeletonMetricCards, SkeletonListItem } from '../components/Skeleton';
+import { EmptyState } from '../components/EmptyState';
+import { BUTTONS, FORMS, CARDS, BADGES } from '../utils/typography';
+import { CHECK_TYPE_COLORS, FREQUENCY_COLORS, RESULT_DOTS, getScoreBadgeClass } from '../utils/colorSystem';
 
 interface DashboardStats {
   health_score: number;
@@ -77,27 +84,8 @@ const CHECK_TYPES = ['automated', 'manual', 'hybrid'];
 const FREQUENCIES = ['continuous', 'daily', 'weekly', 'monthly', 'quarterly', 'annually'];
 const RESULTS = ['pass', 'fail', 'warning', 'error'];
 
-const TYPE_COLOR: Record<string, string> = {
-  automated: 'bg-purple-100 text-purple-700',
-  manual: 'bg-blue-100 text-blue-700',
-  hybrid: 'bg-indigo-100 text-indigo-700',
-};
-
-const FREQ_COLOR: Record<string, string> = {
-  continuous: 'bg-green-100 text-green-700',
-  daily: 'bg-teal-100 text-teal-700',
-  weekly: 'bg-blue-100 text-blue-700',
-  monthly: 'bg-indigo-100 text-indigo-700',
-  quarterly: 'bg-purple-100 text-purple-700',
-  annually: 'bg-gray-100 text-gray-600',
-};
-
-const RESULT_DOT: Record<string, string> = {
-  pass: 'bg-green-500',
-  fail: 'bg-red-500',
-  warning: 'bg-yellow-500',
-  error: 'bg-red-400',
-};
+// Color constants imported from colorSystem.ts:
+// CHECK_TYPE_COLORS, FREQUENCY_COLORS, RESULT_DOTS, getScoreBadgeClass
 
 const FREQ_HOURS: Record<string, number> = {
   continuous: 1,
@@ -121,11 +109,7 @@ function scoreColor(score: number): string {
   return '#ef4444';
 }
 
-function scoreBadgeClass(score: number): string {
-  if (score >= 80) return 'bg-green-100 text-green-700';
-  if (score >= 50) return 'bg-yellow-100 text-yellow-700';
-  return 'bg-red-100 text-red-700';
-}
+// scoreBadgeClass imported from colorSystem.ts as getScoreBadgeClass
 
 function formatTimestamp(dateStr: string | null): string {
   if (!dateStr) return 'Never';
@@ -144,95 +128,9 @@ function formatShortDate(dateStr: string): string {
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
-function HealthDonut({ score }: { score: number }) {
-  const radius = 54;
-  const circumference = 2 * Math.PI * radius;
-  const offset = circumference - (score / 100) * circumference;
-  const color = scoreColor(score);
+// HealthDonut replaced by ScoreRadialChart from charts/
 
-  return (
-    <svg width="140" height="140" viewBox="0 0 140 140">
-      <circle cx="70" cy="70" r={radius} fill="none" stroke="#e5e7eb" strokeWidth="12" />
-      <circle
-        cx="70"
-        cy="70"
-        r={radius}
-        fill="none"
-        stroke={color}
-        strokeWidth="12"
-        strokeDasharray={circumference}
-        strokeDashoffset={offset}
-        strokeLinecap="round"
-        transform="rotate(-90 70 70)"
-        className="transition-all duration-700"
-      />
-      <text x="70" y="66" textAnchor="middle" className="text-2xl font-bold" fill="#111827" fontSize="28">
-        {score}
-      </text>
-      <text x="70" y="88" textAnchor="middle" fill="#6b7280" fontSize="12">
-        Health
-      </text>
-    </svg>
-  );
-}
-
-function TrendChart({ data }: { data: TrendPoint[] }) {
-  if (data.length < 2) {
-    return <p className="text-sm text-gray-400 py-4 text-center">Need at least 2 snapshots for a trend line.</p>;
-  }
-
-  const width = 600;
-  const height = 160;
-  const paddingX = 40;
-  const paddingY = 20;
-  const chartW = width - paddingX * 2;
-  const chartH = height - paddingY * 2;
-
-  const minVal = Math.min(...data.map((d) => d.compliance_percentage));
-  const maxVal = Math.max(...data.map((d) => d.compliance_percentage));
-  const range = maxVal - minVal || 1;
-
-  const points = data.map((d, i) => {
-    const x = paddingX + (i / (data.length - 1)) * chartW;
-    const y = paddingY + chartH - ((d.compliance_percentage - minVal) / range) * chartH;
-    return { x, y, ...d };
-  });
-
-  const pathD = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
-  const areaD = pathD + ` L ${points[points.length - 1].x} ${paddingY + chartH} L ${points[0].x} ${paddingY + chartH} Z`;
-
-  return (
-    <div className="w-full overflow-x-auto">
-      <svg viewBox={`0 0 ${width} ${height}`} className="w-full max-w-[600px]" preserveAspectRatio="xMidYMid meet">
-        <defs>
-          <linearGradient id="conmonTrendGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.3" />
-            <stop offset="100%" stopColor="#3b82f6" stopOpacity="0.02" />
-          </linearGradient>
-        </defs>
-        <text x={paddingX - 4} y={paddingY + 4} fontSize="9" fill="#9ca3af" textAnchor="end">{maxVal}%</text>
-        <text x={paddingX - 4} y={paddingY + chartH + 4} fontSize="9" fill="#9ca3af" textAnchor="end">{minVal}%</text>
-        <line x1={paddingX} y1={paddingY} x2={paddingX + chartW} y2={paddingY} stroke="#e5e7eb" strokeDasharray="4 2" />
-        <line x1={paddingX} y1={paddingY + chartH} x2={paddingX + chartW} y2={paddingY + chartH} stroke="#e5e7eb" strokeDasharray="4 2" />
-        <path d={areaD} fill="url(#conmonTrendGrad)" />
-        <path d={pathD} fill="none" stroke="#3b82f6" strokeWidth="2" strokeLinecap="round" />
-        {points.map((p, i) => (
-          <circle key={i} cx={p.x} cy={p.y} r="3" fill="#3b82f6" />
-        ))}
-        {points.length > 0 && (
-          <>
-            <text x={points[0].x} y={paddingY + chartH + 14} fontSize="8" fill="#9ca3af" textAnchor="middle">
-              {formatShortDate(points[0].snapshot_date)}
-            </text>
-            <text x={points[points.length - 1].x} y={paddingY + chartH + 14} fontSize="8" fill="#9ca3af" textAnchor="middle">
-              {formatShortDate(points[points.length - 1].snapshot_date)}
-            </text>
-          </>
-        )}
-      </svg>
-    </div>
-  );
-}
+// TrendChart replaced by TrendAreaChart from charts/
 
 export function MonitoringPage() {
   const { nav } = useExperience();
@@ -408,13 +306,7 @@ export function MonitoringPage() {
     }
   };
 
-  if (loading) {
-    return (
-      <div className="flex justify-center py-12">
-        <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
-      </div>
-    );
-  }
+  if (loading) return <div><SkeletonMetricCards /><SkeletonListItem count={5} /></div>;
 
   const healthScore = stats?.health_score ?? 0;
   const overdueCount = checks.filter((c) => isOverdue(c)).length;
@@ -426,66 +318,54 @@ export function MonitoringPage() {
   return (
     <div>
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center gap-3">
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">
-              ControlPulse {nav('monitoring')}
-            </h1>
-            <p className="text-gray-500 text-sm mt-1">
-              Continuous monitoring and automated compliance checks
-            </p>
-          </div>
-          <span className={`text-sm px-3 py-1 rounded-full font-semibold ${scoreBadgeClass(healthScore)}`}>
-            {healthScore}% Health
-          </span>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={handleExportCSV}
-            className="px-3 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50"
-          >
-            Export CSV
-          </button>
-          {canEdit && (
-            <div className="flex items-center gap-1">
-              <select
-                value={bulkSystem}
-                onChange={(e) => setBulkSystem(e.target.value)}
-                className="px-2 py-2 border border-gray-300 rounded-lg text-sm"
-              >
-                <option value="">Bulk Run...</option>
-                {systems.map((s) => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
-                ))}
-              </select>
-              {bulkSystem && (
-                <button
-                  onClick={handleBulkRun}
-                  disabled={bulkRunning}
-                  className="px-3 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50"
-                >
-                  {bulkRunning ? 'Running...' : 'Go'}
-                </button>
-              )}
-            </div>
-          )}
-          {canManage && (
-            <button
-              onClick={() => setShowCreate(true)}
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700"
+      <PageHeader title={`ControlPulse ${nav('monitoring')}`} subtitle="Continuous monitoring and automated compliance checks">
+        <span className={`text-sm px-3 py-1 rounded-full font-semibold ${getScoreBadgeClass(healthScore)}`}>
+          {healthScore}% Health
+        </span>
+        <button
+          onClick={handleExportCSV}
+          className={BUTTONS.secondary}
+        >
+          Export CSV
+        </button>
+        {canEdit && (
+          <div className="flex items-center gap-1">
+            <select
+              value={bulkSystem}
+              onChange={(e) => setBulkSystem(e.target.value)}
+              className={FORMS.select}
             >
-              + Create Check
-            </button>
-          )}
-        </div>
-      </div>
+              <option value="">Bulk Run...</option>
+              {systems.map((s) => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+            {bulkSystem && (
+              <button
+                onClick={handleBulkRun}
+                disabled={bulkRunning}
+                className={BUTTONS.success}
+              >
+                {bulkRunning ? 'Running...' : 'Go'}
+              </button>
+            )}
+          </div>
+        )}
+        {canManage && (
+          <button
+            onClick={() => setShowCreate(true)}
+            className={BUTTONS.primary}
+          >
+            + Create Check
+          </button>
+        )}
+      </PageHeader>
 
       {/* Health Score Section */}
       {stats && (
-        <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
+        <div className={`${CARDS.elevated} p-6 mb-6`}>
           <div className="flex items-center gap-8">
-            <HealthDonut score={healthScore} />
+            <ScoreRadialChart score={healthScore} size={140} label="Health" thickness={14} />
             <div className="flex-1 grid grid-cols-2 sm:grid-cols-6 gap-4">
               <div className="text-center">
                 <div className="text-2xl font-bold text-gray-900">{stats.total_checks}</div>
@@ -516,38 +396,29 @@ export function MonitoringPage() {
         </div>
       )}
 
-      {/* Velocity Cards */}
+      {/* Velocity Cards — Dark MetricCards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-        <div className="bg-white rounded-xl border border-gray-200 p-5">
-          <div className="text-xs text-gray-500 uppercase tracking-wider mb-1">Current Compliance</div>
-          <div className="text-3xl font-bold text-gray-900">
-            {latestPct !== null ? `${latestPct}%` : '--'}
-          </div>
-        </div>
-        <div className="bg-white rounded-xl border border-gray-200 p-5">
-          <div className="text-xs text-gray-500 uppercase tracking-wider mb-1">30-Day Delta</div>
-          <div className="flex items-center gap-2">
-            <span className={`text-3xl font-bold ${delta !== null ? (delta >= 0 ? 'text-green-600' : 'text-red-600') : 'text-gray-400'}`}>
-              {delta !== null ? `${delta >= 0 ? '+' : ''}${delta.toFixed(1)}%` : '--'}
-            </span>
-            {delta !== null && (
-              <svg className={`w-5 h-5 ${delta >= 0 ? 'text-green-500' : 'text-red-500 rotate-180'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
-              </svg>
-            )}
-          </div>
-        </div>
-        <div className="bg-white rounded-xl border border-gray-200 p-5">
-          <div className="text-xs text-gray-500 uppercase tracking-wider mb-1">Overdue Checks</div>
-          <div className={`text-3xl font-bold ${overdueCount > 0 ? 'text-red-600' : 'text-green-600'}`}>
-            {overdueCount}
-          </div>
-          <div className="text-xs text-gray-400 mt-1">{overdueCount === 0 ? 'All on schedule' : 'Action required'}</div>
-        </div>
+        <ChartMetricCard
+          title="Current Compliance"
+          value={latestPct !== null ? `${latestPct}%` : '--'}
+          accentColor={STATUS_COLORS.info}
+        />
+        <ChartMetricCard
+          title="30-Day Delta"
+          value={delta !== null ? `${delta >= 0 ? '+' : ''}${delta.toFixed(1)}%` : '--'}
+          trend={delta !== null ? { value: Math.round(delta), label: '%' } : undefined}
+          accentColor={delta !== null ? (delta >= 0 ? STATUS_COLORS.success : STATUS_COLORS.danger) : STATUS_COLORS.muted}
+        />
+        <ChartMetricCard
+          title="Overdue Checks"
+          value={String(overdueCount)}
+          subtitle={overdueCount === 0 ? 'All on schedule' : 'Action required'}
+          accentColor={overdueCount > 0 ? STATUS_COLORS.danger : STATUS_COLORS.success}
+        />
       </div>
 
       {/* Compliance Trends */}
-      <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
+      <div className={`${CARDS.elevated} p-6 mb-6`}>
         <div className="flex items-center justify-between mb-4">
           <h2 className="font-semibold text-gray-900">Compliance Trends</h2>
           <div className="flex items-center gap-2">
@@ -568,11 +439,20 @@ export function MonitoringPage() {
             </select>
           </div>
         </div>
-        <TrendChart data={trendData} />
+        {trendData.length >= 2 ? (
+          <TrendAreaChart
+            data={trendData.map((tp) => ({ date: tp.snapshot_date, value: tp.compliance_percentage }))}
+            height={200}
+            valueLabel="Compliance"
+            valueSuffix="%"
+          />
+        ) : (
+          <p className="text-sm text-gray-400 py-4 text-center">Need at least 2 snapshots for a trend line.</p>
+        )}
       </div>
 
       {/* Drift Detection */}
-      <div className="bg-white rounded-xl border border-gray-200 mb-6 overflow-hidden">
+      <div className={`${CARDS.elevated} mb-6 overflow-hidden`}>
         <button
           onClick={() => setShowDrift(!showDrift)}
           className="w-full p-5 flex items-center justify-between hover:bg-gray-50 transition-colors"
@@ -580,12 +460,12 @@ export function MonitoringPage() {
           <div className="flex items-center gap-3">
             <h2 className="font-semibold text-gray-900">Drift Detection</h2>
             {totalDriftItems > 0 && (
-              <span className="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-medium">
+              <span className={`${BADGES.pill} ${BADGES.error}`}>
                 {totalDriftItems} issue{totalDriftItems !== 1 ? 's' : ''}
               </span>
             )}
             {totalDriftItems === 0 && (
-              <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700 font-medium">No drift</span>
+              <span className={`${BADGES.pill} ${BADGES.success}`}>No drift</span>
             )}
           </div>
           <svg className={`w-4 h-4 text-gray-400 transition-transform ${showDrift ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -647,7 +527,7 @@ export function MonitoringPage() {
 
       {/* Create Check Form */}
       {showCreate && (
-        <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
+        <div className={`${CARDS.elevated} p-6 mb-6`}>
           <h2 className="font-semibold text-gray-900 mb-4">Create Monitoring Check</h2>
           <form onSubmit={handleCreateCheck} className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -657,12 +537,12 @@ export function MonitoringPage() {
                 value={createForm.check_name}
                 onChange={(e) => setCreateForm({ ...createForm, check_name: e.target.value })}
                 required
-                className="px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                className={FORMS.input}
               />
               <select
                 value={createForm.check_type}
                 onChange={(e) => setCreateForm({ ...createForm, check_type: e.target.value })}
-                className="px-4 py-2.5 border border-gray-300 rounded-lg"
+                className={FORMS.select}
               >
                 {CHECK_TYPES.map((ct) => (
                   <option key={ct} value={ct}>
@@ -675,7 +555,7 @@ export function MonitoringPage() {
               <select
                 value={createForm.frequency}
                 onChange={(e) => setCreateForm({ ...createForm, frequency: e.target.value })}
-                className="px-4 py-2.5 border border-gray-300 rounded-lg"
+                className={FORMS.select}
               >
                 {FREQUENCIES.map((f) => (
                   <option key={f} value={f}>
@@ -686,7 +566,7 @@ export function MonitoringPage() {
               <select
                 value={createForm.system_id}
                 onChange={(e) => setCreateForm({ ...createForm, system_id: e.target.value })}
-                className="px-4 py-2.5 border border-gray-300 rounded-lg"
+                className={FORMS.select}
               >
                 <option value="">Select System</option>
                 {systems.map((s) => (
@@ -698,7 +578,7 @@ export function MonitoringPage() {
               <select
                 value={createForm.framework_id}
                 onChange={(e) => setCreateForm({ ...createForm, framework_id: e.target.value })}
-                className="px-4 py-2.5 border border-gray-300 rounded-lg"
+                className={FORMS.select}
               >
                 <option value="">Select Framework</option>
                 {frameworks.map((fw) => (
@@ -713,7 +593,7 @@ export function MonitoringPage() {
               placeholder="Control ID (e.g. AC-1)"
               value={createForm.control_id}
               onChange={(e) => setCreateForm({ ...createForm, control_id: e.target.value })}
-              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+              className={FORMS.input}
             />
             <textarea
               placeholder="Check Description"
@@ -722,20 +602,20 @@ export function MonitoringPage() {
                 setCreateForm({ ...createForm, check_description: e.target.value })
               }
               rows={3}
-              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+              className={FORMS.textarea}
             />
             <div className="flex gap-3">
               <button
                 type="submit"
                 disabled={saving}
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+                className={BUTTONS.primary}
               >
                 {saving ? 'Creating...' : 'Create Check'}
               </button>
               <button
                 type="button"
                 onClick={() => setShowCreate(false)}
-                className="px-4 py-2 text-gray-600 text-sm"
+                className={BUTTONS.ghost}
               >
                 Cancel
               </button>
@@ -749,9 +629,7 @@ export function MonitoringPage() {
         <h2 className="font-semibold text-gray-900">Monitoring Checks ({checks.length})</h2>
       </div>
       {checks.length === 0 ? (
-        <div className="bg-white rounded-xl border border-gray-200 p-12 text-center">
-          <p className="text-gray-500">No monitoring checks yet. Create your first one to get started.</p>
-        </div>
+        <EmptyState title="No monitoring checks found" subtitle="Create your first check to get started" />
       ) : (
         <div className="space-y-3">
           {checks.map((check) => {
@@ -764,7 +642,7 @@ export function MonitoringPage() {
             return (
               <div
                 key={check.id}
-                className={`bg-white rounded-xl border overflow-hidden ${overdue ? 'border-red-300' : 'border-gray-200'}`}
+                className={`bg-white rounded-xl border overflow-hidden ${overdue ? 'border-red-300' : 'border-blue-200'}`}
               >
                 {/* Check Card Header */}
                 <div
@@ -777,7 +655,7 @@ export function MonitoringPage() {
                       <div
                         className={`w-3 h-3 rounded-full flex-shrink-0 ${
                           check.last_result
-                            ? RESULT_DOT[check.last_result] || 'bg-gray-300'
+                            ? RESULT_DOTS[check.last_result] || 'bg-gray-300'
                             : 'bg-gray-300'
                         }`}
                       />
@@ -799,14 +677,14 @@ export function MonitoringPage() {
                     <div className="flex items-center gap-2">
                       <span
                         className={`text-xs px-2 py-0.5 rounded font-medium ${
-                          TYPE_COLOR[check.check_type] || 'bg-gray-100 text-gray-600'
+                          CHECK_TYPE_COLORS[check.check_type] || 'bg-gray-100 text-gray-600'
                         }`}
                       >
                         {check.check_type}
                       </span>
                       <span
                         className={`text-xs px-2 py-0.5 rounded font-medium ${
-                          FREQ_COLOR[check.frequency] || 'bg-gray-100 text-gray-600'
+                          FREQUENCY_COLORS[check.frequency] || 'bg-gray-100 text-gray-600'
                         }`}
                       >
                         {check.frequency}
@@ -845,20 +723,20 @@ export function MonitoringPage() {
                           setRunningId(check.id);
                           setRunForm({ result: 'pass', notes: '' });
                         }}
-                        className="mb-4 px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-medium hover:bg-blue-700"
+                        className={`mb-4 ${BUTTONS.primary} ${BUTTONS.sm}`}
                       >
                         Run Check
                       </button>
                     )}
 
                     {isRunning && (
-                      <div className="mb-4 p-4 bg-white rounded-lg border border-gray-200">
+                      <div className={`mb-4 p-4 ${CARDS.base}`}>
                         <h4 className="text-sm font-medium text-gray-900 mb-3">Record Check Result</h4>
                         <div className="space-y-3">
                           <select
                             value={runForm.result}
                             onChange={(e) => setRunForm({ ...runForm, result: e.target.value })}
-                            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                            className={FORMS.select}
                           >
                             {RESULTS.map((r) => (
                               <option key={r} value={r}>
@@ -871,19 +749,19 @@ export function MonitoringPage() {
                             value={runForm.notes}
                             onChange={(e) => setRunForm({ ...runForm, notes: e.target.value })}
                             rows={2}
-                            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                            className={FORMS.textarea}
                           />
                           <div className="flex gap-2">
                             <button
                               onClick={() => handleRunCheck(check.id)}
                               disabled={submittingRun}
-                              className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-medium hover:bg-blue-700 disabled:opacity-50"
+                              className={`${BUTTONS.primary} ${BUTTONS.sm}`}
                             >
                               {submittingRun ? 'Submitting...' : 'Submit Result'}
                             </button>
                             <button
                               onClick={() => setRunningId(null)}
-                              className="px-3 py-1.5 text-gray-600 text-xs"
+                              className={`${BUTTONS.ghost} ${BUTTONS.sm}`}
                             >
                               Cancel
                             </button>
@@ -909,7 +787,7 @@ export function MonitoringPage() {
                           >
                             <div
                               className={`w-2.5 h-2.5 rounded-full mt-1 flex-shrink-0 ${
-                                RESULT_DOT[r.result] || 'bg-gray-300'
+                                RESULT_DOTS[r.result] || 'bg-gray-300'
                               }`}
                             />
                             <div className="flex-1 min-w-0">

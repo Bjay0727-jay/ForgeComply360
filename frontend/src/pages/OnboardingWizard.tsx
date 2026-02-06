@@ -134,7 +134,7 @@ export function OnboardingWizard() {
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-72 overflow-y-auto pr-1">
                 {filtered.map((fw) => (
-                  <button key={fw.id} onClick={() => update('selectedFramework', fw.id)} className={`p-3 rounded-lg border text-left transition-all ${form.selectedFramework === fw.id ? 'border-blue-600 bg-blue-50 ring-2 ring-blue-600' : 'border-gray-200 hover:border-gray-300'}`}>
+                  <button key={fw.id} onClick={() => update('selectedFramework', fw.id)} className={`p-3 rounded-lg border text-left transition-all ${form.selectedFramework === fw.id ? 'border-blue-600 bg-blue-50 ring-2 ring-blue-600' : 'border-blue-200 hover:border-gray-300'}`}>
                     <div className="flex justify-between items-start mb-1">
                       <span className="font-medium text-gray-900 text-sm">{fw.name}</span>
                       <span className={`text-xs px-1.5 py-0.5 rounded ${catColors[fw.category] || ''}`}>{fw.category}</span>
@@ -174,7 +174,7 @@ export function OnboardingWizard() {
                   <label className="block text-sm font-medium text-gray-700 mb-1">FIPS 199 Impact Level *</label>
                   <div className="grid grid-cols-3 gap-3">
                     {[{ id: 'low', color: 'green' }, { id: 'moderate', color: 'yellow' }, { id: 'high', color: 'red' }].map((l) => (
-                      <button key={l.id} onClick={() => update('impactLevel', l.id)} className={`p-3 rounded-lg border text-center ${form.impactLevel === l.id ? 'border-blue-600 bg-blue-50' : 'border-gray-200 hover:border-gray-300'}`}>
+                      <button key={l.id} onClick={() => update('impactLevel', l.id)} className={`p-3 rounded-lg border text-center ${form.impactLevel === l.id ? 'border-blue-600 bg-blue-50' : 'border-blue-200 hover:border-gray-300'}`}>
                         <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium bg-${l.color}-100 text-${l.color}-700 capitalize`}>{l.id}</span>
                       </button>
                     ))}
