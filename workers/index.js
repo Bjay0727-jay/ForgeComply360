@@ -6710,17 +6710,21 @@ async function handleGenerateScanPOAMs(request, env, org, user, scanImportId) {
     let findingsLinked = 0;
 
     for (const poam of poams) {
+      // Build description with source reference info
+      const fullDescription = `${poam.weaknessDescription}\n\nSource: ${poam.source} - ${poam.sourceReference}`;
+
       await env.DB.prepare(`
         INSERT INTO poams (
           id, org_id, system_id, poam_id, weakness_name, weakness_description,
-          source, source_reference, risk_level, assigned_to, remediation_plan,
-          milestones, scheduled_completion, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          risk_level, assigned_to, resources_required, milestones,
+          scheduled_completion, status, comments
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).bind(
         poam.id, poam.orgId, poam.systemId, poam.poamId,
-        poam.weaknessName, poam.weaknessDescription, poam.source, poam.sourceReference,
+        poam.weaknessName, fullDescription,
         poam.riskLevel, poam.assignedTo, poam.remediationPlan,
-        poam.milestones, poam.scheduledCompletion, poam.status
+        poam.milestones, poam.scheduledCompletion, poam.status,
+        `Generated from vulnerability scan: ${poam.sourceReference}`
       ).run();
 
       poamIds.push(poam.id);
