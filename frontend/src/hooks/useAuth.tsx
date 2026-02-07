@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { api, setTokens, clearTokens } from '../utils/api';
+import { api, setTokens, clearTokens, onAuthFailure } from '../utils/api';
 import { setUserContext, clearUserContext } from '../utils/sentry';
 
 interface User {
@@ -81,6 +81,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setLoading(false);
     }
   }, [refreshUser]);
+
+  // Listen for auth failures (token refresh failed) and redirect to login
+  useEffect(() => {
+    return onAuthFailure(() => {
+      setUser(null);
+      setOrg(null);
+      clearUserContext();
+      // Redirect to login with session expired message
+      window.location.href = '/login?expired=1';
+    });
+  }, []);
 
   const login = async (email: string, password: string): Promise<MFAResponse> => {
     const data = await api('/api/v1/auth/login', {

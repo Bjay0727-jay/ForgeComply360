@@ -19,6 +19,17 @@ export function onApiError(listener: ApiErrorListener) {
   };
 }
 
+// Auth failure listener — redirects to login when token refresh fails
+type AuthFailureListener = () => void;
+let authFailureListener: AuthFailureListener | null = null;
+
+export function onAuthFailure(listener: AuthFailureListener) {
+  authFailureListener = listener;
+  return () => {
+    authFailureListener = null;
+  };
+}
+
 function emitApiError(message: string, status: number, path: string) {
   // Send to Sentry - server errors are errors, client errors are warnings
   captureException(message, {
@@ -86,7 +97,19 @@ export async function api<T = any>(path: string, options: RequestInit = {}): Pro
     if (refreshed) {
       headers['Authorization'] = `Bearer ${accessToken}`;
       res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+    } else {
+      // Refresh failed - session is completely expired
+      clearTokens();
+      if (authFailureListener) authFailureListener();
+      throw new Error('Session expired');
     }
+  }
+
+  // Handle 401 when no refresh token exists
+  if (res.status === 401 && !refreshToken) {
+    clearTokens();
+    if (authFailureListener) authFailureListener();
+    throw new Error('Session expired');
   }
 
   if (!res.ok) {

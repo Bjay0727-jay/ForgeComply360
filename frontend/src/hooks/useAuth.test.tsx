@@ -8,6 +8,7 @@ vi.mock('../utils/api', () => ({
   api: vi.fn(),
   setTokens: vi.fn(),
   clearTokens: vi.fn(),
+  onAuthFailure: vi.fn(() => () => {}), // Returns unsubscribe function
 }));
 
 import { api, setTokens, clearTokens } from '../utils/api';
