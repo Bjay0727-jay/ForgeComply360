@@ -105,6 +105,7 @@ export function PoamsPage() {
   const [frameworks, setFrameworks] = useState<any[]>([]);
   const [deviationHistory, setDeviationHistory] = useState<any[]>([]);
   const [risks, setRisks] = useState<any[]>([]);
+  const [vendors, setVendors] = useState<any[]>([]);
 
   // Approval workflow
   const [showApprovalModal, setShowApprovalModal] = useState(false);
@@ -155,6 +156,7 @@ export function PoamsPage() {
     api('/api/v1/evidence?limit=500').then((d) => setAvailableEvidence(d.evidence || [])).catch(() => {});
     api('/api/v1/frameworks').then((d) => setFrameworks(d.frameworks || [])).catch(() => {});
     api('/api/v1/risks?limit=500').then((d) => setRisks(d.risks || [])).catch(() => {});
+    api('/api/v1/vendors?limit=500').then((d) => setVendors(d.vendors || [])).catch(() => {});
   }, []);
 
   const toggleExpand = (p: any) => {
@@ -172,7 +174,12 @@ export function PoamsPage() {
       // Deviation Tracking (FedRAMP AO)
       deviation_type: p.deviation_type || '', deviation_rationale: p.deviation_rationale || '',
       deviation_expires_at: p.deviation_expires_at || '', deviation_review_frequency: p.deviation_review_frequency || '',
-      deviation_next_review: p.deviation_next_review || '', compensating_control_description: p.compensating_control_description || ''
+      deviation_next_review: p.deviation_next_review || '', compensating_control_description: p.compensating_control_description || '',
+      // VendorGuard Linkage
+      vendor_id: p.vendor_id || '', vendor_dependency_notes: p.vendor_dependency_notes || '',
+      // OSCAL Metadata
+      oscal_uuid: p.oscal_uuid || '', oscal_poam_item_id: p.oscal_poam_item_id || '',
+      related_observations: p.related_observations || '[]', related_risks: p.related_risks || '[]'
     } }));
     loadDetail(p.id);
   };
@@ -414,6 +421,11 @@ export function PoamsPage() {
                             {p.deviation_approved_by ? '✓ ' : ''}{DEVIATION_LABELS[p.deviation_type]?.split(' ')[0]}
                           </span>
                         )}
+                        {p.vendor_name && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-purple-100 text-purple-700">
+                            🏢 {p.vendor_name}
+                          </span>
+                        )}
                       </div>
                       <h3 className="font-medium text-gray-900 text-sm">{p.weakness_name}</h3>
                       {!isExpanded && p.weakness_description && <p className="text-xs text-gray-500 mt-1 line-clamp-2">{p.weakness_description}</p>}
@@ -622,6 +634,57 @@ export function PoamsPage() {
                             )}
                           </div>
                         )}
+
+                        {/* VendorGuard Vendor Linkage (FedRAMP Supply Chain) */}
+                        <div className="border-t border-gray-200 pt-3 mt-3">
+                          <h5 className="text-xs font-semibold text-gray-700 mb-2 flex items-center gap-1">
+                            <svg className="w-3.5 h-3.5 text-purple-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
+                            Vendor Dependency
+                            {p.vendor_id && <span className="px-1.5 py-0.5 bg-purple-100 text-purple-700 text-[10px] rounded font-medium">Linked</span>}
+                          </h5>
+                          <div className="grid grid-cols-2 gap-3">
+                            <div>
+                              <label className="block text-[10px] text-gray-500 mb-0.5">Linked Vendor</label>
+                              <select value={ef.vendor_id || ''} onChange={(e) => setEditFields((prev) => ({ ...prev, [p.id]: { ...prev[p.id], vendor_id: e.target.value } }))} className="w-full px-2 py-1.5 border border-gray-300 rounded-lg text-xs" disabled={!canEdit}>
+                                <option value="">No vendor dependency</option>
+                                {vendors.map((v: any) => <option key={v.id} value={v.id}>{v.name} ({v.criticality || 'medium'})</option>)}
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-[10px] text-gray-500 mb-0.5">Dependency Notes</label>
+                              <input type="text" placeholder="e.g., Awaiting patch from vendor" value={ef.vendor_dependency_notes || ''} onChange={(e) => setEditFields((prev) => ({ ...prev, [p.id]: { ...prev[p.id], vendor_dependency_notes: e.target.value } }))} className="w-full px-2 py-1.5 border border-gray-300 rounded-lg text-xs" readOnly={!canEdit} />
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* OSCAL Export Metadata */}
+                        <details className="border-t border-gray-200 pt-3 mt-3">
+                          <summary className="text-xs font-semibold text-gray-700 cursor-pointer flex items-center gap-1">
+                            <svg className="w-3.5 h-3.5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" /></svg>
+                            OSCAL Metadata
+                            <span className="text-[10px] font-normal text-gray-400 ml-1">(for eMASS/CSAM export)</span>
+                          </summary>
+                          <div className="mt-2 space-y-2">
+                            <div className="grid grid-cols-2 gap-3">
+                              <div>
+                                <label className="block text-[10px] text-gray-500 mb-0.5">OSCAL UUID</label>
+                                <input type="text" value={ef.oscal_uuid || ''} className="w-full px-2 py-1.5 border border-gray-200 rounded-lg text-[10px] font-mono bg-gray-50 text-gray-500" readOnly />
+                              </div>
+                              <div>
+                                <label className="block text-[10px] text-gray-500 mb-0.5">POA&M Item ID</label>
+                                <input type="text" placeholder="Optional custom ID" value={ef.oscal_poam_item_id || ''} onChange={(e) => setEditFields((prev) => ({ ...prev, [p.id]: { ...prev[p.id], oscal_poam_item_id: e.target.value } }))} className="w-full px-2 py-1.5 border border-gray-300 rounded-lg text-xs" readOnly={!canEdit} />
+                              </div>
+                            </div>
+                            <div>
+                              <label className="block text-[10px] text-gray-500 mb-0.5">Related Observations (JSON array of UUIDs)</label>
+                              <input type="text" placeholder='["uuid1", "uuid2"]' value={ef.related_observations || '[]'} onChange={(e) => setEditFields((prev) => ({ ...prev, [p.id]: { ...prev[p.id], related_observations: e.target.value } }))} className="w-full px-2 py-1.5 border border-gray-300 rounded-lg text-[10px] font-mono" readOnly={!canEdit} />
+                            </div>
+                            <div>
+                              <label className="block text-[10px] text-gray-500 mb-0.5">Related Risks (JSON array of UUIDs)</label>
+                              <input type="text" placeholder='["uuid1", "uuid2"]' value={ef.related_risks || '[]'} onChange={(e) => setEditFields((prev) => ({ ...prev, [p.id]: { ...prev[p.id], related_risks: e.target.value } }))} className="w-full px-2 py-1.5 border border-gray-300 rounded-lg text-[10px] font-mono" readOnly={!canEdit} />
+                            </div>
+                          </div>
+                        </details>
 
                         {canEdit && (
                           <div className="flex items-center gap-2 pt-2">

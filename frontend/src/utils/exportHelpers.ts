@@ -469,12 +469,15 @@ export function exportPoamsCSV(poams: any[]): void {
     'POA&M ID', 'Weakness Name', 'Description', 'System', 'Risk Level', 'Status', 'Days Open', 'Due Date', 'Overdue',
     'Assigned To', 'Responsible Party', 'Cost Estimate', 'Milestones', 'Affected Assets', 'Mapped Controls', 'Evidence Count',
     'FedRAMP Ready', 'Data Classification', 'CUI Category', 'Impact C/I/A',
-    'Deviation Type', 'Deviation Approved', 'Deviation Expires', 'Review Frequency', 'Created'
+    'Deviation Type', 'Deviation Approved', 'Deviation Expires', 'Review Frequency',
+    'Vendor Name', 'Vendor Criticality', 'OSCAL UUID', 'OSCAL Item ID', 'Related Observations', 'Related Risks', 'Created'
   ];
   const rows: string[] = [headers.map(csvCell).join(',')];
 
   for (const p of poams) {
     const impactCIA = [p.impact_confidentiality, p.impact_integrity, p.impact_availability].filter(Boolean).join('/');
+    const relatedObsCount = Array.isArray(p.related_observations) ? p.related_observations.length : (p.related_observations ? JSON.parse(p.related_observations || '[]').length : 0);
+    const relatedRisksCount = Array.isArray(p.related_risks) ? p.related_risks.length : (p.related_risks ? JSON.parse(p.related_risks || '[]').length : 0);
     const row = [
       csvCell(p.poam_id),
       csvCell(p.weakness_name),
@@ -500,6 +503,12 @@ export function exportPoamsCSV(poams: any[]): void {
       csvCell(p.deviation_approved_by ? 'Yes' : 'No'),
       csvCell(p.deviation_expires_at || ''),
       csvCell(p.deviation_review_frequency || ''),
+      csvCell(p.vendor_name || ''),
+      csvCell(p.vendor_criticality || ''),
+      csvCell(p.oscal_uuid || ''),
+      csvCell(p.oscal_poam_item_id || ''),
+      csvCell(relatedObsCount),
+      csvCell(relatedRisksCount),
       csvCell(p.created_at),
     ];
     rows.push(row.join(','));

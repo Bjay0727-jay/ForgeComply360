@@ -1721,8 +1721,8 @@ async function handleListPoams(env, url, org) {
   const total = countResult?.total || 0;
 
   const orderBy = ' ORDER BY CASE p.risk_level WHEN "critical" THEN 0 WHEN "high" THEN 1 WHEN "moderate" THEN 2 ELSE 3 END, p.created_at DESC';
-  const query = `SELECT p.*, u.name as assigned_to_name, u2.name as created_by_name, s.name as system_name
-    FROM poams p LEFT JOIN users u ON p.assigned_to = u.id LEFT JOIN users u2 ON p.created_by = u2.id LEFT JOIN systems s ON s.id = p.system_id`
+  const query = `SELECT p.*, u.name as assigned_to_name, u2.name as created_by_name, s.name as system_name, v.name as vendor_name, v.criticality as vendor_criticality
+    FROM poams p LEFT JOIN users u ON p.assigned_to = u.id LEFT JOIN users u2 ON p.created_by = u2.id LEFT JOIN systems s ON s.id = p.system_id LEFT JOIN vendors v ON v.id = p.vendor_id`
     + where + orderBy + ' LIMIT ? OFFSET ?';
 
   const { results } = await env.DB.prepare(query).bind(...params, limit, offset).all();
@@ -1778,7 +1778,7 @@ async function handleCreatePoam(request, env, org, user) {
   const body = await request.json();
   const { system_id, weakness_name, weakness_description, control_id, framework_id, risk_level, scheduled_completion, responsible_party, assigned_to,
     data_classification, cui_category, risk_register_id, impact_confidentiality, impact_integrity, impact_availability,
-    asset_owner_id, asset_owner_name } = body;
+    asset_owner_id, asset_owner_name, vendor_id, vendor_dependency_notes, related_observations, related_risks } = body;
 
   const valErrors = validateBody(body, {
     weakness_name: { required: true, type: 'string', maxLength: 500 },
@@ -1793,15 +1793,18 @@ async function handleCreatePoam(request, env, org, user) {
 
   const id = generateId();
   const poamId = `POAM-${Date.now().toString(36).toUpperCase()}`;
+  const oscalUuid = generateId(); // OSCAL UUID for export
 
   await env.DB.prepare(
     `INSERT INTO poams (id, org_id, system_id, poam_id, weakness_name, weakness_description, control_id, framework_id, risk_level, status, scheduled_completion, responsible_party, assigned_to, created_by,
-     data_classification, cui_category, risk_register_id, impact_confidentiality, impact_integrity, impact_availability, asset_owner_id, asset_owner_name)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     data_classification, cui_category, risk_register_id, impact_confidentiality, impact_integrity, impact_availability, asset_owner_id, asset_owner_name,
+     vendor_id, vendor_dependency_notes, oscal_uuid, related_observations, related_risks)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).bind(id, org.id, system_id, poamId, weakness_name, weakness_description || null, control_id || null, framework_id || null, risk_level || 'moderate', scheduled_completion || null, responsible_party || null, assigned_to || null, user.id,
-    data_classification || 'internal', cui_category || null, risk_register_id || null, impact_confidentiality || null, impact_integrity || null, impact_availability || null, asset_owner_id || null, asset_owner_name || null).run();
+    data_classification || 'internal', cui_category || null, risk_register_id || null, impact_confidentiality || null, impact_integrity || null, impact_availability || null, asset_owner_id || null, asset_owner_name || null,
+    vendor_id || null, vendor_dependency_notes || null, oscalUuid, related_observations || '[]', related_risks || '[]').run();
 
-  await auditLog(env, org.id, user.id, 'create', 'poam', id, { poam_id: poamId, weakness_name, data_classification });
+  await auditLog(env, org.id, user.id, 'create', 'poam', id, { poam_id: poamId, weakness_name, data_classification, vendor_id });
   await notifyOrgRole(env, org.id, user.id, 'manager', 'poam_update', 'New POA&M Created', 'POA&M "' + weakness_name + '" was created', 'poam', id, {});
   if (assigned_to && assigned_to !== user.id) {
     await createNotification(env, org.id, assigned_to, 'poam_update', 'POA&M Assigned to You', 'You were assigned to POA&M "' + weakness_name + '"', 'poam', id, {});
@@ -1819,7 +1822,7 @@ async function handleUpdatePoam(request, env, org, user, poamId) {
   const fields = ['weakness_name', 'weakness_description', 'risk_level', 'status', 'scheduled_completion', 'actual_completion', 'milestones', 'responsible_party', 'resources_required', 'cost_estimate', 'comments', 'assigned_to', 'vendor_dependency',
     'data_classification', 'cui_category', 'risk_register_id', 'impact_confidentiality', 'impact_integrity', 'impact_availability',
     'deviation_type', 'deviation_rationale', 'deviation_expires_at', 'deviation_review_frequency', 'deviation_next_review', 'compensating_control_description',
-    'asset_owner_id', 'asset_owner_name'];
+    'asset_owner_id', 'asset_owner_name', 'vendor_id', 'vendor_dependency_notes', 'oscal_poam_item_id', 'related_observations', 'related_risks'];
   const updates = [];
   const values = [];
 
