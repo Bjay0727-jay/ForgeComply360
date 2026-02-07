@@ -5,6 +5,7 @@
 // ============================================================================
 
 import { Toucan } from 'toucan-js';
+import { XMLParser } from 'fast-xml-parser';
 
 // Initialize Sentry for error monitoring in production
 function initSentry(request, env, ctx) {
@@ -6221,19 +6222,29 @@ const REMEDIATION_DAYS = {
 };
 
 async function parseNessusXML(xmlContent) {
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(xmlContent, 'text/xml');
+  const parser = new XMLParser({
+    ignoreAttributes: false,
+    attributeNamePrefix: '@_',
+    textNodeName: '#text',
+    isArray: (name) => ['ReportHost', 'ReportItem', 'tag', 'cve', 'preference'].includes(name)
+  });
 
-  const parseError = doc.querySelector('parsererror');
-  if (parseError) {
-    throw new Error('Invalid Nessus XML file: ' + parseError.textContent);
+  let doc;
+  try {
+    doc = parser.parse(xmlContent);
+  } catch (e) {
+    throw new Error('Invalid Nessus XML file: ' + e.message);
   }
 
-  const report = doc.querySelector('Report');
-  const policy = doc.querySelector('Policy');
+  if (!doc.NessusClientData_v2) {
+    throw new Error('Invalid Nessus XML file: missing NessusClientData_v2 root element');
+  }
+
+  const report = doc.NessusClientData_v2.Report;
+  const policy = doc.NessusClientData_v2.Policy;
 
   const scanData = {
-    scanName: report?.getAttribute('name') || 'Unknown Scan',
+    scanName: report?.['@_name'] || 'Unknown Scan',
     scannerVersion: extractNessusPreference(policy, 'sc_version') || 'Unknown',
     hosts: [],
     findings: [],
@@ -6248,14 +6259,14 @@ async function parseNessusXML(xmlContent) {
     }
   };
 
-  const reportHosts = doc.querySelectorAll('ReportHost');
+  const reportHosts = report?.ReportHost || [];
   scanData.summary.hostsScanned = reportHosts.length;
 
   for (const hostNode of reportHosts) {
     const host = parseNessusReportHost(hostNode);
     scanData.hosts.push(host);
 
-    const reportItems = hostNode.querySelectorAll('ReportItem');
+    const reportItems = hostNode.ReportItem || [];
     for (const itemNode of reportItems) {
       const finding = parseNessusReportItem(itemNode, host);
       scanData.findings.push(finding);
@@ -6268,13 +6279,13 @@ async function parseNessusXML(xmlContent) {
 }
 
 function parseNessusReportHost(hostNode) {
-  const hostName = hostNode.getAttribute('name');
+  const hostName = hostNode['@_name'];
   const properties = {};
 
-  const hostProps = hostNode.querySelectorAll('HostProperties > tag');
+  const hostProps = hostNode.HostProperties?.tag || [];
   for (const prop of hostProps) {
-    const name = prop.getAttribute('name');
-    const value = prop.textContent;
+    const name = prop['@_name'];
+    const value = prop['#text'] || '';
     properties[name] = value;
   }
 
@@ -6292,18 +6303,19 @@ function parseNessusReportHost(hostNode) {
 }
 
 function parseNessusReportItem(itemNode, host) {
-  const severityNum = parseInt(itemNode.getAttribute('severity') || '0', 10);
+  const severityNum = parseInt(itemNode['@_severity'] || '0', 10);
 
   const cves = [];
-  const cveNodes = itemNode.querySelectorAll('cve');
+  const cveNodes = itemNode.cve || [];
   for (const cve of cveNodes) {
-    cves.push(cve.textContent);
+    const cveText = typeof cve === 'string' ? cve : cve['#text'];
+    if (cveText) cves.push(cveText);
   }
 
   const seeAlso = [];
-  const seeAlsoNode = itemNode.querySelector('see_also');
-  if (seeAlsoNode) {
-    seeAlso.push(...seeAlsoNode.textContent.split('\n').filter(url => url.trim()));
+  const seeAlsoText = getNessusElementText(itemNode, 'see_also');
+  if (seeAlsoText) {
+    seeAlso.push(...seeAlsoText.split('\n').filter(url => url.trim()));
   }
 
   const cvss3Vector = getNessusElementText(itemNode, 'cvss3_vector');
@@ -6317,16 +6329,16 @@ function parseNessusReportItem(itemNode, host) {
   }
 
   return {
-    pluginId: itemNode.getAttribute('pluginID'),
-    pluginName: itemNode.getAttribute('pluginName'),
-    pluginFamily: itemNode.getAttribute('pluginFamily'),
-    port: parseInt(itemNode.getAttribute('port') || '0', 10),
-    protocol: itemNode.getAttribute('protocol') || 'tcp',
+    pluginId: itemNode['@_pluginID'],
+    pluginName: itemNode['@_pluginName'],
+    pluginFamily: itemNode['@_pluginFamily'],
+    port: parseInt(itemNode['@_port'] || '0', 10),
+    protocol: itemNode['@_protocol'] || 'tcp',
     severity: SEVERITY_MAP[severityNum] || 'info',
     severityNum,
     hostIp: host.ipAddress,
     hostFqdn: host.fqdn,
-    title: itemNode.getAttribute('pluginName'),
+    title: itemNode['@_pluginName'],
     description: getNessusElementText(itemNode, 'description'),
     synopsis: getNessusElementText(itemNode, 'synopsis'),
     solution: getNessusElementText(itemNode, 'solution'),
@@ -6345,18 +6357,21 @@ function parseNessusReportItem(itemNode, host) {
 }
 
 function getNessusElementText(parent, tagName) {
-  const el = parent.querySelector(tagName);
-  return el ? el.textContent : null;
+  const el = parent[tagName];
+  if (!el) return null;
+  if (typeof el === 'string') return el;
+  return el['#text'] || null;
 }
 
 function extractNessusPreference(policy, name) {
   if (!policy) return null;
-  const prefs = policy.querySelectorAll('preference');
+  const prefs = policy.Preferences?.ServerPreferences?.preference || [];
   for (const pref of prefs) {
-    const nameEl = pref.querySelector('name');
-    if (nameEl && nameEl.textContent === name) {
-      const valueEl = pref.querySelector('value');
-      return valueEl ? valueEl.textContent : null;
+    const prefName = pref.name;
+    const prefNameText = typeof prefName === 'string' ? prefName : prefName?.['#text'];
+    if (prefNameText === name) {
+      const prefValue = pref.value;
+      return typeof prefValue === 'string' ? prefValue : prefValue?.['#text'] || null;
     }
   }
   return null;
