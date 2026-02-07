@@ -6654,87 +6654,92 @@ async function handleListScanImports(env, url, org) {
 }
 
 async function handleGenerateScanPOAMs(request, env, org, user, scanImportId) {
-  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Insufficient permissions' }, 403);
+  try {
+    if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Insufficient permissions' }, 403);
 
-  const scanImport = await env.DB.prepare(
-    `SELECT * FROM scan_imports WHERE id = ? AND organization_id = ? AND status = 'completed'`
-  ).bind(scanImportId, org.id).first();
+    const scanImport = await env.DB.prepare(
+      `SELECT * FROM scan_imports WHERE id = ? AND organization_id = ? AND status = 'completed'`
+    ).bind(scanImportId, org.id).first();
 
-  if (!scanImport) return jsonResponse({ error: 'Scan import not found or not completed' }, 404);
+    if (!scanImport) return jsonResponse({ error: 'Scan import not found or not completed' }, 404);
 
-  const body = await request.json();
-  const {
-    min_severity = 'high',
-    exclude_accepted = true,
-    exclude_false_positive = true,
-    group_by = 'plugin_id',
-    default_owner_id = null
-  } = body;
+    const body = await request.json();
+    const {
+      min_severity = 'high',
+      exclude_accepted = true,
+      exclude_false_positive = true,
+      group_by = 'plugin_id',
+      default_owner_id = null
+    } = body;
 
-  let findingsQuery = `
-    SELECT vf.*, a.id as asset_id
-    FROM vulnerability_findings vf
-    JOIN assets a ON vf.asset_id = a.id
-    WHERE vf.scan_import_id = ? AND vf.org_id = ?
-  `;
-  const params = [scanImportId, org.id];
+    let findingsQuery = `
+      SELECT vf.*, a.id as asset_id
+      FROM vulnerability_findings vf
+      JOIN assets a ON vf.asset_id = a.id
+      WHERE vf.scan_import_id = ? AND vf.org_id = ?
+    `;
+    const params = [scanImportId, org.id];
 
-  const severityOrder = ['info', 'low', 'medium', 'high', 'critical'];
-  const minIndex = severityOrder.indexOf(min_severity);
-  if (minIndex > 0) {
-    const allowedSeverities = severityOrder.slice(minIndex);
-    findingsQuery += ` AND vf.severity IN (${allowedSeverities.map(() => '?').join(',')})`;
-    params.push(...allowedSeverities);
-  }
-
-  if (exclude_accepted) findingsQuery += ` AND vf.status != 'accepted'`;
-  if (exclude_false_positive) findingsQuery += ` AND vf.status != 'false_positive'`;
-  findingsQuery += ` AND vf.related_poam_id IS NULL`;
-
-  const findingsResult = await env.DB.prepare(findingsQuery).bind(...params).all();
-  const findings = findingsResult.results;
-
-  if (findings.length === 0) {
-    return jsonResponse({ poams_created: 0, findings_linked: 0, message: 'No eligible findings for POA&M generation' });
-  }
-
-  const poams = generateScanPOAM(findings, {
-    groupBy: group_by,
-    defaultOwnerId: default_owner_id,
-    systemId: scanImport.system_id,
-    orgId: org.id
-  });
-
-  const poamIds = [];
-  let findingsLinked = 0;
-
-  for (const poam of poams) {
-    await env.DB.prepare(`
-      INSERT INTO poams (
-        id, org_id, system_id, poam_id, weakness_name, weakness_description,
-        source, source_reference, risk_level, assigned_to, remediation_plan,
-        milestones, scheduled_completion, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(
-      poam.id, poam.orgId, poam.systemId, poam.poamId,
-      poam.weaknessName, poam.weaknessDescription, poam.source, poam.sourceReference,
-      poam.riskLevel, poam.assignedTo, poam.remediationPlan,
-      poam.milestones, poam.scheduledCompletion, poam.status
-    ).run();
-
-    poamIds.push(poam.id);
-
-    for (const findingId of poam.findingIds) {
-      await env.DB.prepare(
-        `UPDATE vulnerability_findings SET related_poam_id = ? WHERE id = ?`
-      ).bind(poam.id, findingId).run();
-      findingsLinked++;
+    const severityOrder = ['info', 'low', 'medium', 'high', 'critical'];
+    const minIndex = severityOrder.indexOf(min_severity);
+    if (minIndex > 0) {
+      const allowedSeverities = severityOrder.slice(minIndex);
+      findingsQuery += ` AND vf.severity IN (${allowedSeverities.map(() => '?').join(',')})`;
+      params.push(...allowedSeverities);
     }
+
+    if (exclude_accepted) findingsQuery += ` AND vf.status != 'accepted'`;
+    if (exclude_false_positive) findingsQuery += ` AND vf.status != 'false_positive'`;
+    findingsQuery += ` AND vf.related_poam_id IS NULL`;
+
+    const findingsResult = await env.DB.prepare(findingsQuery).bind(...params).all();
+    const findings = findingsResult.results;
+
+    if (findings.length === 0) {
+      return jsonResponse({ poams_created: 0, findings_linked: 0, message: 'No eligible findings for POA&M generation' });
+    }
+
+    const poams = generateScanPOAM(findings, {
+      groupBy: group_by,
+      defaultOwnerId: default_owner_id,
+      systemId: scanImport.system_id,
+      orgId: org.id
+    });
+
+    const poamIds = [];
+    let findingsLinked = 0;
+
+    for (const poam of poams) {
+      await env.DB.prepare(`
+        INSERT INTO poams (
+          id, org_id, system_id, poam_id, weakness_name, weakness_description,
+          source, source_reference, risk_level, assigned_to, remediation_plan,
+          milestones, scheduled_completion, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        poam.id, poam.orgId, poam.systemId, poam.poamId,
+        poam.weaknessName, poam.weaknessDescription, poam.source, poam.sourceReference,
+        poam.riskLevel, poam.assignedTo, poam.remediationPlan,
+        poam.milestones, poam.scheduledCompletion, poam.status
+      ).run();
+
+      poamIds.push(poam.id);
+
+      for (const findingId of poam.findingIds) {
+        await env.DB.prepare(
+          `UPDATE vulnerability_findings SET related_poam_id = ? WHERE id = ?`
+        ).bind(poam.id, findingId).run();
+        findingsLinked++;
+      }
+    }
+
+    await auditLog(env, org.id, user.id, 'generate_poams', 'scan', scanImportId, { poams_created: poams.length, findings_linked: findingsLinked }, request);
+
+    return jsonResponse({ poams_created: poams.length, findings_linked: findingsLinked, poam_ids: poamIds }, 201);
+  } catch (error) {
+    console.error('POA&M generation error:', error);
+    return jsonResponse({ error: error.message || 'Failed to generate POA&Ms' }, 500);
   }
-
-  await auditLog(env, org.id, user.id, 'generate_poams', 'scan', scanImportId, { poams_created: poams.length, findings_linked: findingsLinked }, request);
-
-  return jsonResponse({ poams_created: poams.length, findings_linked: findingsLinked, poam_ids: poamIds }, 201);
 }
 
 async function handleDeleteScanImport(env, org, user, importId) {
