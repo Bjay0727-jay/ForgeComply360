@@ -29,10 +29,17 @@ const RISK_COLORS: Record<string, string> = {
   moderate: 'bg-yellow-100 text-yellow-700', low: 'bg-green-100 text-green-700',
 };
 const WORKFLOW_STEPS = ['draft', 'open', 'in_progress', 'verification', 'completed'];
-const MS_COLORS: Record<string, string> = { pending: 'bg-gray-100 text-gray-600', in_progress: 'bg-yellow-100 text-yellow-700', completed: 'bg-green-100 text-green-700' };
+const MS_COLORS: Record<string, string> = { pending: 'bg-gray-100 text-gray-600', in_progress: 'bg-yellow-100 text-yellow-700', completed: 'bg-green-100 text-green-700', delayed: 'bg-orange-100 text-orange-700', blocked: 'bg-red-100 text-red-700' };
 const LINK_REASON_COLORS: Record<string, string> = { vulnerable: 'bg-red-100 text-red-700', impacted: 'bg-orange-100 text-orange-700', affected: 'bg-yellow-100 text-yellow-700', at_risk: 'bg-blue-100 text-blue-700', remediated: 'bg-green-100 text-green-700' };
 const MAPPING_TYPE_COLORS: Record<string, string> = { primary: 'bg-blue-100 text-blue-700', related: 'bg-gray-100 text-gray-600', inherited: 'bg-purple-100 text-purple-700' };
 const PURPOSE_COLORS: Record<string, string> = { identification: 'bg-red-100 text-red-700', remediation: 'bg-yellow-100 text-yellow-700', closure: 'bg-green-100 text-green-700', verification: 'bg-blue-100 text-blue-700', deviation: 'bg-purple-100 text-purple-700' };
+// Data Classification & CUI (CMMC/NIST)
+const DATA_CLASS_LABELS: Record<string, string> = { public: 'Public', internal: 'Internal', confidential: 'Confidential', cui: 'CUI', classified: 'Classified' };
+const DATA_CLASS_COLORS: Record<string, string> = { public: 'bg-gray-100 text-gray-600', internal: 'bg-blue-100 text-blue-700', confidential: 'bg-yellow-100 text-yellow-700', cui: 'bg-orange-100 text-orange-700', classified: 'bg-red-100 text-red-700' };
+// Deviation Types (FedRAMP AO)
+const DEVIATION_LABELS: Record<string, string> = { operational_requirement: 'Operational Requirement', false_positive: 'False Positive', risk_accepted: 'Risk Accepted', vendor_dependency: 'Vendor Dependency', compensating_control: 'Compensating Control' };
+const DEVIATION_COLORS: Record<string, string> = { operational_requirement: 'bg-blue-100 text-blue-700', false_positive: 'bg-gray-100 text-gray-600', risk_accepted: 'bg-yellow-100 text-yellow-700', vendor_dependency: 'bg-purple-100 text-purple-700', compensating_control: 'bg-green-100 text-green-700' };
+const REVIEW_FREQ_LABELS: Record<string, string> = { monthly: 'Monthly', quarterly: 'Quarterly', semi_annual: 'Semi-Annual', annual: 'Annual' };
 
 function ageColor(days: number): string {
   if (days < 30) return 'bg-green-100 text-green-700';
@@ -96,6 +103,8 @@ export function PoamsPage() {
   const [availableAssets, setAvailableAssets] = useState<any[]>([]);
   const [availableEvidence, setAvailableEvidence] = useState<any[]>([]);
   const [frameworks, setFrameworks] = useState<any[]>([]);
+  const [deviationHistory, setDeviationHistory] = useState<any[]>([]);
+  const [risks, setRisks] = useState<any[]>([]);
 
   // Approval workflow
   const [showApprovalModal, setShowApprovalModal] = useState(false);
@@ -136,19 +145,35 @@ export function PoamsPage() {
     api(`/api/v1/poams/${poamId}/affected-assets`).then((d) => setLinkedAssets(d.assets || [])).catch(() => {});
     api(`/api/v1/poams/${poamId}/control-mappings`).then((d) => setLinkedControls(d.controls || [])).catch(() => {});
     api(`/api/v1/poams/${poamId}/evidence`).then((d) => setLinkedEvidence(d.evidence || [])).catch(() => {});
+    // Deviation history (CMMC/FedRAMP AO)
+    api(`/api/v1/poams/${poamId}/deviation-history`).then((d) => setDeviationHistory(d.history || [])).catch(() => {});
   };
 
-  // Load available assets/evidence/frameworks for linking
+  // Load available assets/evidence/frameworks/risks for linking
   useEffect(() => {
     api('/api/v1/assets?limit=500').then((d) => setAvailableAssets(d.assets || [])).catch(() => {});
     api('/api/v1/evidence?limit=500').then((d) => setAvailableEvidence(d.evidence || [])).catch(() => {});
     api('/api/v1/frameworks').then((d) => setFrameworks(d.frameworks || [])).catch(() => {});
+    api('/api/v1/risks?limit=500').then((d) => setRisks(d.risks || [])).catch(() => {});
   }, []);
 
   const toggleExpand = (p: any) => {
     if (expandedId === p.id) { setExpandedId(null); return; }
     setExpandedId(p.id);
-    setEditFields((prev) => ({ ...prev, [p.id]: { weakness_name: p.weakness_name, weakness_description: p.weakness_description || '', risk_level: p.risk_level, scheduled_completion: p.scheduled_completion || '', responsible_party: p.responsible_party || '', assigned_to: p.assigned_to || '', resources_required: p.resources_required || '', cost_estimate: p.cost_estimate || '', vendor_dependency: p.vendor_dependency || 0 } }));
+    setEditFields((prev) => ({ ...prev, [p.id]: {
+      weakness_name: p.weakness_name, weakness_description: p.weakness_description || '', risk_level: p.risk_level,
+      scheduled_completion: p.scheduled_completion || '', responsible_party: p.responsible_party || '',
+      assigned_to: p.assigned_to || '', resources_required: p.resources_required || '',
+      cost_estimate: p.cost_estimate || '', vendor_dependency: p.vendor_dependency || 0,
+      // Data Sensitivity (CMMC)
+      data_classification: p.data_classification || 'internal', cui_category: p.cui_category || '',
+      risk_register_id: p.risk_register_id || '', impact_confidentiality: p.impact_confidentiality || '',
+      impact_integrity: p.impact_integrity || '', impact_availability: p.impact_availability || '',
+      // Deviation Tracking (FedRAMP AO)
+      deviation_type: p.deviation_type || '', deviation_rationale: p.deviation_rationale || '',
+      deviation_expires_at: p.deviation_expires_at || '', deviation_review_frequency: p.deviation_review_frequency || '',
+      deviation_next_review: p.deviation_next_review || '', compensating_control_description: p.compensating_control_description || ''
+    } }));
     loadDetail(p.id);
   };
 
@@ -381,6 +406,14 @@ export function PoamsPage() {
                         {p.asset_count > 0 && p.control_count > 0 && (
                           <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-blue-100 text-blue-700">FedRAMP Ready</span>
                         )}
+                        {p.data_classification && p.data_classification !== 'internal' && (
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${DATA_CLASS_COLORS[p.data_classification] || ''}`}>{DATA_CLASS_LABELS[p.data_classification]}</span>
+                        )}
+                        {p.deviation_type && (
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${DEVIATION_COLORS[p.deviation_type] || ''}`}>
+                            {p.deviation_approved_by ? '✓ ' : ''}{DEVIATION_LABELS[p.deviation_type]?.split(' ')[0]}
+                          </span>
+                        )}
                       </div>
                       <h3 className="font-medium text-gray-900 text-sm">{p.weakness_name}</h3>
                       {!isExpanded && p.weakness_description && <p className="text-xs text-gray-500 mt-1 line-clamp-2">{p.weakness_description}</p>}
@@ -479,6 +512,117 @@ export function PoamsPage() {
                             <input type="number" value={ef.cost_estimate} onChange={(e) => setEditFields((prev) => ({ ...prev, [p.id]: { ...prev[p.id], cost_estimate: parseFloat(e.target.value) || '' } }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" readOnly={!canEdit} />
                           </div>
                         </div>
+
+                        {/* Data Sensitivity (CMMC/NIST) */}
+                        <div className="border-t border-gray-200 pt-3 mt-3">
+                          <h5 className="text-xs font-semibold text-gray-700 mb-2 flex items-center gap-1">
+                            <svg className="w-3.5 h-3.5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
+                            Data Sensitivity {p.data_classification === 'cui' && <span className="px-1.5 py-0.5 bg-orange-100 text-orange-700 text-[10px] rounded font-medium">CUI</span>}
+                          </h5>
+                          <div className="grid grid-cols-2 gap-3">
+                            <div>
+                              <label className="block text-[10px] text-gray-500 mb-0.5">Data Classification</label>
+                              <select value={ef.data_classification || 'internal'} onChange={(e) => setEditFields((prev) => ({ ...prev, [p.id]: { ...prev[p.id], data_classification: e.target.value } }))} className="w-full px-2 py-1.5 border border-gray-300 rounded-lg text-xs" disabled={!canEdit}>
+                                <option value="public">Public</option><option value="internal">Internal</option><option value="confidential">Confidential</option><option value="cui">CUI</option><option value="classified">Classified</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-[10px] text-gray-500 mb-0.5">CUI Category</label>
+                              <input type="text" placeholder="e.g., CTI, ITAR" value={ef.cui_category || ''} onChange={(e) => setEditFields((prev) => ({ ...prev, [p.id]: { ...prev[p.id], cui_category: e.target.value } }))} className="w-full px-2 py-1.5 border border-gray-300 rounded-lg text-xs" readOnly={!canEdit} />
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-3 gap-2 mt-2">
+                            <div>
+                              <label className="block text-[10px] text-gray-500 mb-0.5">Confidentiality Impact</label>
+                              <select value={ef.impact_confidentiality || ''} onChange={(e) => setEditFields((prev) => ({ ...prev, [p.id]: { ...prev[p.id], impact_confidentiality: e.target.value } }))} className="w-full px-2 py-1 border border-gray-300 rounded text-[10px]" disabled={!canEdit}>
+                                <option value="">—</option><option value="low">Low</option><option value="moderate">Moderate</option><option value="high">High</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-[10px] text-gray-500 mb-0.5">Integrity Impact</label>
+                              <select value={ef.impact_integrity || ''} onChange={(e) => setEditFields((prev) => ({ ...prev, [p.id]: { ...prev[p.id], impact_integrity: e.target.value } }))} className="w-full px-2 py-1 border border-gray-300 rounded text-[10px]" disabled={!canEdit}>
+                                <option value="">—</option><option value="low">Low</option><option value="moderate">Moderate</option><option value="high">High</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-[10px] text-gray-500 mb-0.5">Availability Impact</label>
+                              <select value={ef.impact_availability || ''} onChange={(e) => setEditFields((prev) => ({ ...prev, [p.id]: { ...prev[p.id], impact_availability: e.target.value } }))} className="w-full px-2 py-1 border border-gray-300 rounded text-[10px]" disabled={!canEdit}>
+                                <option value="">—</option><option value="low">Low</option><option value="moderate">Moderate</option><option value="high">High</option>
+                              </select>
+                            </div>
+                          </div>
+                          <div className="mt-2">
+                            <label className="block text-[10px] text-gray-500 mb-0.5">Linked Risk Register Entry</label>
+                            <select value={ef.risk_register_id || ''} onChange={(e) => setEditFields((prev) => ({ ...prev, [p.id]: { ...prev[p.id], risk_register_id: e.target.value } }))} className="w-full px-2 py-1.5 border border-gray-300 rounded-lg text-xs" disabled={!canEdit}>
+                              <option value="">None</option>
+                              {risks.map((r: any) => <option key={r.id} value={r.id}>{r.title}</option>)}
+                            </select>
+                          </div>
+                        </div>
+
+                        {/* Deviation/Risk Acceptance (FedRAMP AO) */}
+                        {(p.status === 'deferred' || p.status === 'accepted' || p.deviation_type) && (
+                          <div className="border-t border-gray-200 pt-3 mt-3">
+                            <h5 className="text-xs font-semibold text-gray-700 mb-2 flex items-center gap-1">
+                              <svg className="w-3.5 h-3.5 text-yellow-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                              Risk Deviation
+                              {p.deviation_approved_by && <span className="px-1.5 py-0.5 bg-green-100 text-green-700 text-[10px] rounded font-medium">Approved</span>}
+                              {!p.deviation_approved_by && p.deviation_type && <span className="px-1.5 py-0.5 bg-yellow-100 text-yellow-700 text-[10px] rounded font-medium">Pending Approval</span>}
+                            </h5>
+                            <div className="grid grid-cols-2 gap-3">
+                              <div>
+                                <label className="block text-[10px] text-gray-500 mb-0.5">Deviation Type</label>
+                                <select value={ef.deviation_type || ''} onChange={(e) => setEditFields((prev) => ({ ...prev, [p.id]: { ...prev[p.id], deviation_type: e.target.value } }))} className="w-full px-2 py-1.5 border border-gray-300 rounded-lg text-xs" disabled={!canEdit}>
+                                  <option value="">Select type...</option>
+                                  {Object.entries(DEVIATION_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                                </select>
+                              </div>
+                              <div>
+                                <label className="block text-[10px] text-gray-500 mb-0.5">Review Frequency</label>
+                                <select value={ef.deviation_review_frequency || ''} onChange={(e) => setEditFields((prev) => ({ ...prev, [p.id]: { ...prev[p.id], deviation_review_frequency: e.target.value } }))} className="w-full px-2 py-1.5 border border-gray-300 rounded-lg text-xs" disabled={!canEdit}>
+                                  <option value="">None</option>
+                                  {Object.entries(REVIEW_FREQ_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                                </select>
+                              </div>
+                            </div>
+                            <div className="grid grid-cols-2 gap-3 mt-2">
+                              <div>
+                                <label className="block text-[10px] text-gray-500 mb-0.5">Expires At</label>
+                                <input type="date" value={ef.deviation_expires_at || ''} onChange={(e) => setEditFields((prev) => ({ ...prev, [p.id]: { ...prev[p.id], deviation_expires_at: e.target.value } }))} className="w-full px-2 py-1.5 border border-gray-300 rounded-lg text-xs" readOnly={!canEdit} />
+                              </div>
+                              <div>
+                                <label className="block text-[10px] text-gray-500 mb-0.5">Next Review</label>
+                                <input type="date" value={ef.deviation_next_review || ''} onChange={(e) => setEditFields((prev) => ({ ...prev, [p.id]: { ...prev[p.id], deviation_next_review: e.target.value } }))} className="w-full px-2 py-1.5 border border-gray-300 rounded-lg text-xs" readOnly={!canEdit} />
+                              </div>
+                            </div>
+                            <div className="mt-2">
+                              <label className="block text-[10px] text-gray-500 mb-0.5">Deviation Rationale</label>
+                              <textarea value={ef.deviation_rationale || ''} onChange={(e) => setEditFields((prev) => ({ ...prev, [p.id]: { ...prev[p.id], deviation_rationale: e.target.value } }))} rows={2} className="w-full px-2 py-1.5 border border-gray-300 rounded-lg text-xs" placeholder="Explain why this deviation is justified..." readOnly={!canEdit} />
+                            </div>
+                            {ef.deviation_type === 'compensating_control' && (
+                              <div className="mt-2">
+                                <label className="block text-[10px] text-gray-500 mb-0.5">Compensating Control Description</label>
+                                <textarea value={ef.compensating_control_description || ''} onChange={(e) => setEditFields((prev) => ({ ...prev, [p.id]: { ...prev[p.id], compensating_control_description: e.target.value } }))} rows={2} className="w-full px-2 py-1.5 border border-gray-300 rounded-lg text-xs" placeholder="Describe the compensating control..." readOnly={!canEdit} />
+                              </div>
+                            )}
+                            {/* Deviation History */}
+                            {deviationHistory.length > 0 && (
+                              <div className="mt-3 border-t border-gray-100 pt-2">
+                                <label className="block text-[10px] text-gray-500 mb-1">Deviation History</label>
+                                <div className="max-h-24 overflow-y-auto space-y-1">
+                                  {deviationHistory.map((h: any) => (
+                                    <div key={h.id} className="flex items-center justify-between text-[10px] text-gray-600 px-2 py-1 bg-gray-50 rounded">
+                                      <span className={`px-1 py-0.5 rounded font-medium ${h.action === 'approved' ? 'bg-green-100 text-green-700' : h.action === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-600'}`}>{h.action}</span>
+                                      <span>{h.performed_by_name}</span>
+                                      <span>{new Date(h.performed_at).toLocaleDateString()}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
                         {canEdit && (
                           <div className="flex items-center gap-2 pt-2">
                             <button onClick={() => saveEdit(p.id)} disabled={savingEdit === p.id} className="px-4 py-2 bg-forge-navy-900 text-white rounded-lg text-sm font-medium hover:bg-forge-navy-800 disabled:opacity-50">

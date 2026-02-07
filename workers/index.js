@@ -305,6 +305,8 @@ async function handleRequest(request, env, url, ctx) {
   if (path.match(/^\/api\/v1\/poams\/[\w-]+\/evidence$/) && method === 'GET') return handleListPoamEvidence(env, org, path.split('/')[4]);
   if (path.match(/^\/api\/v1\/poams\/[\w-]+\/evidence$/) && method === 'POST') return handleLinkPoamEvidence(request, env, org, user, path.split('/')[4]);
   if (path.match(/^\/api\/v1\/poams\/[\w-]+\/evidence\/[\w-]+$/) && method === 'DELETE') return handleUnlinkPoamEvidence(env, org, user, path.split('/')[4], path.split('/')[6]);
+  // POA&M Deviation History (CMMC/FedRAMP AO audit trail)
+  if (path.match(/^\/api\/v1\/poams\/[\w-]+\/deviation-history$/) && method === 'GET') return handleListDeviationHistory(env, org, path.split('/')[4]);
   if (path === '/api/v1/org-members' && method === 'GET') return handleListOrgMembers(env, org);
 
   // Evidence
@@ -1774,12 +1776,17 @@ async function handleListPoams(env, url, org) {
 async function handleCreatePoam(request, env, org, user) {
   if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
   const body = await request.json();
-  const { system_id, weakness_name, weakness_description, control_id, framework_id, risk_level, scheduled_completion, responsible_party, assigned_to } = body;
+  const { system_id, weakness_name, weakness_description, control_id, framework_id, risk_level, scheduled_completion, responsible_party, assigned_to,
+    data_classification, cui_category, risk_register_id, impact_confidentiality, impact_integrity, impact_availability } = body;
 
   const valErrors = validateBody(body, {
     weakness_name: { required: true, type: 'string', maxLength: 500 },
     risk_level: { enum: ['low', 'moderate', 'high', 'critical'] },
     system_id: { required: true, type: 'string' },
+    data_classification: { enum: ['public', 'internal', 'confidential', 'cui', 'classified'] },
+    impact_confidentiality: { enum: ['low', 'moderate', 'high'] },
+    impact_integrity: { enum: ['low', 'moderate', 'high'] },
+    impact_availability: { enum: ['low', 'moderate', 'high'] },
   });
   if (valErrors) return validationErrorResponse(valErrors);
 
@@ -1787,11 +1794,13 @@ async function handleCreatePoam(request, env, org, user) {
   const poamId = `POAM-${Date.now().toString(36).toUpperCase()}`;
 
   await env.DB.prepare(
-    `INSERT INTO poams (id, org_id, system_id, poam_id, weakness_name, weakness_description, control_id, framework_id, risk_level, status, scheduled_completion, responsible_party, assigned_to, created_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?)`
-  ).bind(id, org.id, system_id, poamId, weakness_name, weakness_description || null, control_id || null, framework_id || null, risk_level || 'moderate', scheduled_completion || null, responsible_party || null, assigned_to || null, user.id).run();
+    `INSERT INTO poams (id, org_id, system_id, poam_id, weakness_name, weakness_description, control_id, framework_id, risk_level, status, scheduled_completion, responsible_party, assigned_to, created_by,
+     data_classification, cui_category, risk_register_id, impact_confidentiality, impact_integrity, impact_availability)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(id, org.id, system_id, poamId, weakness_name, weakness_description || null, control_id || null, framework_id || null, risk_level || 'moderate', scheduled_completion || null, responsible_party || null, assigned_to || null, user.id,
+    data_classification || 'internal', cui_category || null, risk_register_id || null, impact_confidentiality || null, impact_integrity || null, impact_availability || null).run();
 
-  await auditLog(env, org.id, user.id, 'create', 'poam', id, { poam_id: poamId, weakness_name });
+  await auditLog(env, org.id, user.id, 'create', 'poam', id, { poam_id: poamId, weakness_name, data_classification });
   await notifyOrgRole(env, org.id, user.id, 'manager', 'poam_update', 'New POA&M Created', 'POA&M "' + weakness_name + '" was created', 'poam', id, {});
   if (assigned_to && assigned_to !== user.id) {
     await createNotification(env, org.id, assigned_to, 'poam_update', 'POA&M Assigned to You', 'You were assigned to POA&M "' + weakness_name + '"', 'poam', id, {});
@@ -1806,7 +1815,9 @@ async function handleUpdatePoam(request, env, org, user, poamId) {
   const poam = await env.DB.prepare('SELECT * FROM poams WHERE id = ? AND org_id = ?').bind(poamId, org.id).first();
   if (!poam) return jsonResponse({ error: 'POA&M not found' }, 404);
 
-  const fields = ['weakness_name', 'weakness_description', 'risk_level', 'status', 'scheduled_completion', 'actual_completion', 'milestones', 'responsible_party', 'resources_required', 'cost_estimate', 'comments', 'assigned_to', 'vendor_dependency'];
+  const fields = ['weakness_name', 'weakness_description', 'risk_level', 'status', 'scheduled_completion', 'actual_completion', 'milestones', 'responsible_party', 'resources_required', 'cost_estimate', 'comments', 'assigned_to', 'vendor_dependency',
+    'data_classification', 'cui_category', 'risk_register_id', 'impact_confidentiality', 'impact_integrity', 'impact_availability',
+    'deviation_type', 'deviation_rationale', 'deviation_expires_at', 'deviation_review_frequency', 'deviation_next_review', 'compensating_control_description'];
   const updates = [];
   const values = [];
 
@@ -1817,13 +1828,32 @@ async function handleUpdatePoam(request, env, org, user, poamId) {
     }
   }
 
+  // Handle deviation approval (manager+ required)
+  if (body.deviation_approved !== undefined) {
+    if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Manager role required for deviation approval' }, 403);
+    if (body.deviation_approved) {
+      updates.push('deviation_approved_by = ?', 'deviation_approved_at = ?');
+      values.push(user.id, new Date().toISOString());
+      // Record in deviation history
+      await env.DB.prepare(
+        'INSERT INTO poam_deviation_history (id, poam_id, action, deviation_type, rationale, performed_by, expires_at, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      ).bind(generateId(), poamId, 'approved', body.deviation_type || poam.deviation_type, body.deviation_rationale || poam.deviation_rationale, user.id, body.deviation_expires_at || null, body.approval_notes || null).run();
+    } else {
+      // Revoke approval
+      updates.push('deviation_approved_by = NULL', 'deviation_approved_at = NULL');
+      await env.DB.prepare(
+        'INSERT INTO poam_deviation_history (id, poam_id, action, deviation_type, performed_by, notes) VALUES (?, ?, ?, ?, ?, ?)'
+      ).bind(generateId(), poamId, 'revoked', poam.deviation_type, user.id, body.revoke_reason || null).run();
+    }
+  }
+
   if (updates.length === 0) return jsonResponse({ error: 'No fields to update' }, 400);
   updates.push('updated_at = ?');
   values.push(new Date().toISOString());
   values.push(poamId);
 
   await env.DB.prepare(`UPDATE poams SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run();
-  const changes = computeDiff(poam, body, ['weakness_name', 'weakness_description', 'risk_level', 'status', 'scheduled_completion', 'actual_completion', 'responsible_party', 'resources_required', 'cost_estimate', 'assigned_to', 'vendor_dependency']);
+  const changes = computeDiff(poam, body, ['weakness_name', 'weakness_description', 'risk_level', 'status', 'scheduled_completion', 'actual_completion', 'responsible_party', 'resources_required', 'cost_estimate', 'assigned_to', 'vendor_dependency', 'data_classification', 'deviation_type']);
   await auditLog(env, org.id, user.id, 'update', 'poam', poamId, { ...body, _changes: changes });
   if (body.status) {
     await notifyOrgRole(env, org.id, user.id, 'manager', 'poam_update', 'POA&M Status Changed', 'POA&M "' + poam.weakness_name + '" status changed to ' + body.status, 'poam', poamId, { status: body.status });
@@ -1863,7 +1893,12 @@ async function handleCreateMilestone(request, env, org, user, poamId) {
   const body = await request.json();
   if (!body.title) return jsonResponse({ error: 'title required' }, 400);
   const id = generateId();
-  await env.DB.prepare('INSERT INTO poam_milestones (id, poam_id, title, target_date) VALUES (?, ?, ?, ?)').bind(id, poamId, body.title, body.target_date || null).run();
+  // Get next sequence number
+  const maxSeq = await env.DB.prepare('SELECT MAX(sequence_number) as max_seq FROM poam_milestones WHERE poam_id = ?').bind(poamId).first();
+  const seqNum = (maxSeq?.max_seq || 0) + 1;
+  await env.DB.prepare(
+    'INSERT INTO poam_milestones (id, poam_id, title, description, target_date, sequence_number, responsible_party, evidence_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+  ).bind(id, poamId, body.title, body.description || null, body.target_date || null, body.sequence_number || seqNum, body.responsible_party || null, body.evidence_id || null).run();
   await auditLog(env, org.id, user.id, 'create', 'poam_milestone', id, { poam_id: poamId, title: body.title });
   const milestone = await env.DB.prepare('SELECT * FROM poam_milestones WHERE id = ?').bind(id).first();
   return jsonResponse({ milestone }, 201);
@@ -1874,13 +1909,14 @@ async function handleUpdateMilestone(request, env, org, user, poamId, milestoneI
   const poam = await env.DB.prepare('SELECT id FROM poams WHERE id = ? AND org_id = ?').bind(poamId, org.id).first();
   if (!poam) return jsonResponse({ error: 'POA&M not found' }, 404);
   const body = await request.json();
-  const fields = ['title', 'target_date', 'status', 'completion_date'];
+  const fields = ['title', 'description', 'target_date', 'status', 'completion_date', 'sequence_number', 'progress_percentage', 'responsible_party', 'evidence_id', 'blocked_reason'];
   const updates = [];
   const values = [];
   for (const f of fields) {
     if (body[f] !== undefined) { updates.push(`${f} = ?`); values.push(body[f]); }
   }
-  if (body.status === 'completed' && !body.completion_date) { updates.push('completion_date = ?'); values.push(new Date().toISOString()); }
+  if (body.status === 'completed' && !body.completion_date) { updates.push('completion_date = ?'); values.push(new Date().toISOString()); updates.push('progress_percentage = ?'); values.push(100); }
+  if (body.status === 'blocked' && body.blocked_reason === undefined) return jsonResponse({ error: 'blocked_reason required for blocked status' }, 400);
   if (updates.length === 0) return jsonResponse({ error: 'No fields to update' }, 400);
   updates.push('updated_at = ?'); values.push(new Date().toISOString()); values.push(milestoneId); values.push(poamId);
   await env.DB.prepare(`UPDATE poam_milestones SET ${updates.join(', ')} WHERE id = ? AND poam_id = ?`).bind(...values).run();
@@ -1911,6 +1947,23 @@ async function handleCreateComment(request, env, org, user, poamId) {
   await notifyOrgRole(env, org.id, user.id, 'manager', 'poam_update', 'New Comment on POA&M', user.name + ' commented on POA&M "' + poam.weakness_name + '"', 'poam', poamId, {});
   const comment = await env.DB.prepare('SELECT c.*, u.name as author_name FROM poam_comments c LEFT JOIN users u ON u.id = c.user_id WHERE c.id = ?').bind(id).first();
   return jsonResponse({ comment }, 201);
+}
+
+// ============================================================================
+// POA&M DEVIATION HISTORY (CMMC/FedRAMP AO Audit Trail)
+// ============================================================================
+
+async function handleListDeviationHistory(env, org, poamId) {
+  const poam = await env.DB.prepare('SELECT id FROM poams WHERE id = ? AND org_id = ?').bind(poamId, org.id).first();
+  if (!poam) return jsonResponse({ error: 'POA&M not found' }, 404);
+  const { results } = await env.DB.prepare(`
+    SELECT h.*, u.name as performed_by_name
+    FROM poam_deviation_history h
+    LEFT JOIN users u ON u.id = h.performed_by
+    WHERE h.poam_id = ?
+    ORDER BY h.performed_at DESC
+  `).bind(poamId).all();
+  return jsonResponse({ history: results });
 }
 
 // ============================================================================

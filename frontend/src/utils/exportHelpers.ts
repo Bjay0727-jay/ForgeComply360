@@ -465,10 +465,16 @@ export function exportAuditLogCSV(logs: any[]): void {
  * Export POA&Ms to CSV.
  */
 export function exportPoamsCSV(poams: any[]): void {
-  const headers = ['POA&M ID', 'Weakness Name', 'Description', 'System', 'Risk Level', 'Status', 'Days Open', 'Due Date', 'Overdue', 'Assigned To', 'Responsible Party', 'Cost Estimate', 'Milestones', 'Affected Assets', 'Mapped Controls', 'Evidence Count', 'FedRAMP Ready', 'Created'];
+  const headers = [
+    'POA&M ID', 'Weakness Name', 'Description', 'System', 'Risk Level', 'Status', 'Days Open', 'Due Date', 'Overdue',
+    'Assigned To', 'Responsible Party', 'Cost Estimate', 'Milestones', 'Affected Assets', 'Mapped Controls', 'Evidence Count',
+    'FedRAMP Ready', 'Data Classification', 'CUI Category', 'Impact C/I/A',
+    'Deviation Type', 'Deviation Approved', 'Deviation Expires', 'Review Frequency', 'Created'
+  ];
   const rows: string[] = [headers.map(csvCell).join(',')];
 
   for (const p of poams) {
+    const impactCIA = [p.impact_confidentiality, p.impact_integrity, p.impact_availability].filter(Boolean).join('/');
     const row = [
       csvCell(p.poam_id),
       csvCell(p.weakness_name),
@@ -487,6 +493,13 @@ export function exportPoamsCSV(poams: any[]): void {
       csvCell(p.control_count || 0),
       csvCell(p.evidence_count || 0),
       csvCell((p.asset_count > 0 && p.control_count > 0) ? 'Yes' : 'No'),
+      csvCell(p.data_classification || 'internal'),
+      csvCell(p.cui_category || ''),
+      csvCell(impactCIA || ''),
+      csvCell(p.deviation_type || ''),
+      csvCell(p.deviation_approved_by ? 'Yes' : 'No'),
+      csvCell(p.deviation_expires_at || ''),
+      csvCell(p.deviation_review_frequency || ''),
       csvCell(p.created_at),
     ];
     rows.push(row.join(','));
