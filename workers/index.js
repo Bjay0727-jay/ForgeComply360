@@ -471,6 +471,15 @@ async function handleRequest(request, env, url, ctx) {
   if (path.match(/^\/api\/v1\/scans\/import\/[\w-]+$/) && method === 'GET') return handleGetScanImport(env, org, path.split('/')[5]);
   if (path.match(/^\/api\/v1\/scans\/import\/[\w-]+$/) && method === 'DELETE') return handleDeleteScanImport(env, org, user, path.split('/')[5]);
 
+  // Assets (Inventory Management)
+  if (path === '/api/v1/assets' && method === 'GET') return handleListAssets(env, url, org);
+  if (path === '/api/v1/assets' && method === 'POST') return handleCreateAsset(request, env, org, user);
+  if (path === '/api/v1/assets/export-csv' && method === 'GET') return handleExportAssetsCSV(env, org, user);
+  if (path === '/api/v1/assets/import-csv' && method === 'POST') return handleImportAssetsCSV(request, env, org, user);
+  if (path.match(/^\/api\/v1\/assets\/[\w-]+$/) && method === 'GET') return handleGetAsset(env, org, path.split('/').pop());
+  if (path.match(/^\/api\/v1\/assets\/[\w-]+$/) && method === 'PUT') return handleUpdateAsset(request, env, org, user, path.split('/').pop());
+  if (path.match(/^\/api\/v1\/assets\/[\w-]+$/) && method === 'DELETE') return handleDeleteAsset(env, org, user, path.split('/').pop());
+
   // Webhooks (Integration Framework)
   if (path === '/api/v1/webhooks' && method === 'GET') return handleListWebhooks(env, org, user);
   if (path === '/api/v1/webhooks' && method === 'POST') return handleCreateWebhook(request, env, org, user);
@@ -6773,6 +6782,372 @@ async function handleDeleteScanImport(env, org, user, importId) {
   });
 
   return jsonResponse({ message: 'Scan import deleted successfully' });
+}
+
+// ============================================
+// Asset Inventory Management Handlers
+// ============================================
+
+async function handleListAssets(env, url, org) {
+  const page = parseInt(url.searchParams.get('page') || '1');
+  const limit = Math.min(parseInt(url.searchParams.get('limit') || '50'), 100);
+  const offset = (page - 1) * limit;
+
+  const search = url.searchParams.get('search') || '';
+  const systemId = url.searchParams.get('system_id') || '';
+  const osType = url.searchParams.get('os_type') || '';
+  const discoverySource = url.searchParams.get('discovery_source') || '';
+
+  let whereClause = 'WHERE a.org_id = ?';
+  const params = [org.id];
+
+  if (search) {
+    whereClause += ` AND (a.hostname LIKE ? OR a.ip_address LIKE ? OR a.fqdn LIKE ?)`;
+    const searchTerm = `%${search}%`;
+    params.push(searchTerm, searchTerm, searchTerm);
+  }
+  if (systemId) {
+    whereClause += ' AND a.system_id = ?';
+    params.push(systemId);
+  }
+  if (osType) {
+    whereClause += ' AND a.os_type = ?';
+    params.push(osType);
+  }
+  if (discoverySource) {
+    whereClause += ' AND a.discovery_source = ?';
+    params.push(discoverySource);
+  }
+
+  const countResult = await env.DB.prepare(
+    `SELECT COUNT(*) as total FROM assets a ${whereClause}`
+  ).bind(...params).first();
+
+  const assets = await env.DB.prepare(`
+    SELECT
+      a.*,
+      s.name as system_name,
+      (SELECT COUNT(*) FROM vulnerability_findings vf WHERE vf.asset_id = a.id AND vf.status = 'open' AND vf.severity = 'critical') as critical_count,
+      (SELECT COUNT(*) FROM vulnerability_findings vf WHERE vf.asset_id = a.id AND vf.status = 'open' AND vf.severity = 'high') as high_count,
+      (SELECT COUNT(*) FROM vulnerability_findings vf WHERE vf.asset_id = a.id AND vf.status = 'open' AND vf.severity = 'medium') as medium_count,
+      (SELECT COUNT(*) FROM vulnerability_findings vf WHERE vf.asset_id = a.id AND vf.status = 'open' AND vf.severity = 'low') as low_count,
+      (SELECT COUNT(*) FROM vulnerability_findings vf WHERE vf.asset_id = a.id AND vf.status = 'open') as total_findings
+    FROM assets a
+    LEFT JOIN systems s ON a.system_id = s.id
+    ${whereClause}
+    ORDER BY a.last_seen_at DESC NULLS LAST, a.hostname ASC
+    LIMIT ? OFFSET ?
+  `).bind(...params, limit, offset).all();
+
+  return jsonResponse({
+    assets: assets.results,
+    total: countResult?.total || 0,
+    page,
+    limit,
+    total_pages: Math.ceil((countResult?.total || 0) / limit)
+  });
+}
+
+async function handleGetAsset(env, org, assetId) {
+  const asset = await env.DB.prepare(`
+    SELECT
+      a.*,
+      s.name as system_name,
+      (SELECT COUNT(*) FROM vulnerability_findings vf WHERE vf.asset_id = a.id AND vf.status = 'open' AND vf.severity = 'critical') as critical_count,
+      (SELECT COUNT(*) FROM vulnerability_findings vf WHERE vf.asset_id = a.id AND vf.status = 'open' AND vf.severity = 'high') as high_count,
+      (SELECT COUNT(*) FROM vulnerability_findings vf WHERE vf.asset_id = a.id AND vf.status = 'open' AND vf.severity = 'medium') as medium_count,
+      (SELECT COUNT(*) FROM vulnerability_findings vf WHERE vf.asset_id = a.id AND vf.status = 'open' AND vf.severity = 'low') as low_count,
+      (SELECT COUNT(*) FROM vulnerability_findings vf WHERE vf.asset_id = a.id AND vf.status = 'open') as total_findings
+    FROM assets a
+    LEFT JOIN systems s ON a.system_id = s.id
+    WHERE a.id = ? AND a.org_id = ?
+  `).bind(assetId, org.id).first();
+
+  if (!asset) return jsonResponse({ error: 'Asset not found' }, 404);
+
+  const findings = await env.DB.prepare(`
+    SELECT id, title, severity, status, first_seen_at, last_seen_at
+    FROM vulnerability_findings
+    WHERE asset_id = ? AND org_id = ?
+    ORDER BY
+      CASE severity
+        WHEN 'critical' THEN 1
+        WHEN 'high' THEN 2
+        WHEN 'medium' THEN 3
+        WHEN 'low' THEN 4
+        ELSE 5
+      END,
+      last_seen_at DESC
+    LIMIT 20
+  `).bind(assetId, org.id).all();
+
+  return jsonResponse({ ...asset, recent_findings: findings.results });
+}
+
+async function handleCreateAsset(request, env, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Permission denied' }, 403);
+
+  const body = await request.json();
+
+  if (!body.hostname && !body.ip_address) {
+    return jsonResponse({ error: 'Either hostname or ip_address is required' }, 400);
+  }
+
+  if (body.ip_address || body.hostname) {
+    const existing = await env.DB.prepare(`
+      SELECT id FROM assets
+      WHERE org_id = ? AND (ip_address = ? OR hostname = ?)
+    `).bind(org.id, body.ip_address || '', body.hostname || '').first();
+
+    if (existing) {
+      return jsonResponse({ error: 'Asset with this IP or hostname already exists' }, 409);
+    }
+  }
+
+  const assetId = generateId();
+
+  await env.DB.prepare(`
+    INSERT INTO assets (
+      id, org_id, system_id, hostname, ip_address, mac_address,
+      fqdn, netbios_name, os_type, asset_type, discovery_source,
+      scan_credentialed, open_ports, last_seen_at, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', 0, ?, datetime('now'), datetime('now'), datetime('now'))
+  `).bind(
+    assetId, org.id, body.system_id || null, body.hostname || null,
+    body.ip_address || null, body.mac_address || null, body.fqdn || null,
+    body.netbios_name || null, body.os_type || null, body.asset_type || 'server',
+    body.open_ports || null
+  ).run();
+
+  await auditLog(env, org.id, user.id, 'create', 'asset', assetId,
+    { hostname: body.hostname, ip_address: body.ip_address });
+
+  return jsonResponse({ id: assetId, message: 'Asset created' }, 201);
+}
+
+async function handleUpdateAsset(request, env, org, user, assetId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Permission denied' }, 403);
+
+  const existing = await env.DB.prepare(
+    'SELECT id FROM assets WHERE id = ? AND org_id = ?'
+  ).bind(assetId, org.id).first();
+
+  if (!existing) return jsonResponse({ error: 'Asset not found' }, 404);
+
+  const body = await request.json();
+
+  await env.DB.prepare(`
+    UPDATE assets SET
+      system_id = COALESCE(?, system_id),
+      hostname = COALESCE(?, hostname),
+      ip_address = COALESCE(?, ip_address),
+      mac_address = COALESCE(?, mac_address),
+      fqdn = COALESCE(?, fqdn),
+      netbios_name = COALESCE(?, netbios_name),
+      os_type = COALESCE(?, os_type),
+      asset_type = COALESCE(?, asset_type),
+      open_ports = COALESCE(?, open_ports),
+      updated_at = datetime('now')
+    WHERE id = ? AND org_id = ?
+  `).bind(
+    body.system_id, body.hostname, body.ip_address, body.mac_address,
+    body.fqdn, body.netbios_name, body.os_type, body.asset_type, body.open_ports,
+    assetId, org.id
+  ).run();
+
+  await auditLog(env, org.id, user.id, 'update', 'asset', assetId, body);
+
+  return jsonResponse({ message: 'Asset updated' });
+}
+
+async function handleDeleteAsset(env, org, user, assetId) {
+  if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Permission denied. Manager role required.' }, 403);
+
+  const existing = await env.DB.prepare(
+    'SELECT hostname, ip_address FROM assets WHERE id = ? AND org_id = ?'
+  ).bind(assetId, org.id).first();
+
+  if (!existing) return jsonResponse({ error: 'Asset not found' }, 404);
+
+  await env.DB.prepare(
+    'DELETE FROM vulnerability_findings WHERE asset_id = ? AND org_id = ?'
+  ).bind(assetId, org.id).run();
+
+  await env.DB.prepare(
+    'DELETE FROM assets WHERE id = ? AND org_id = ?'
+  ).bind(assetId, org.id).run();
+
+  await auditLog(env, org.id, user.id, 'delete', 'asset', assetId,
+    { hostname: existing.hostname, ip_address: existing.ip_address });
+
+  return jsonResponse({ message: 'Asset deleted' });
+}
+
+async function handleExportAssetsCSV(env, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Permission denied' }, 403);
+
+  const assets = await env.DB.prepare(`
+    SELECT
+      a.*,
+      s.name as system_name,
+      (SELECT COUNT(*) FROM vulnerability_findings vf WHERE vf.asset_id = a.id AND vf.status = 'open' AND vf.severity = 'critical') as critical_count,
+      (SELECT COUNT(*) FROM vulnerability_findings vf WHERE vf.asset_id = a.id AND vf.status = 'open' AND vf.severity = 'high') as high_count,
+      (SELECT COUNT(*) FROM vulnerability_findings vf WHERE vf.asset_id = a.id AND vf.status = 'open' AND vf.severity = 'medium') as medium_count,
+      (SELECT COUNT(*) FROM vulnerability_findings vf WHERE vf.asset_id = a.id AND vf.status = 'open' AND vf.severity = 'low') as low_count
+    FROM assets a
+    LEFT JOIN systems s ON a.system_id = s.id
+    WHERE a.org_id = ?
+    ORDER BY a.hostname ASC
+  `).bind(org.id).all();
+
+  const csvEscape = (val) => {
+    if (val === null || val === undefined) return '';
+    const str = String(val);
+    if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+      return `"${str.replace(/"/g, '""')}"`;
+    }
+    return str;
+  };
+
+  const headers = ['Hostname', 'IP Address', 'FQDN', 'MAC Address', 'OS Type',
+    'System Name', 'Asset Type', 'Discovery Source', 'Last Seen',
+    'Critical Count', 'High Count', 'Medium Count', 'Low Count'];
+
+  const rows = assets.results.map(a => [
+    csvEscape(a.hostname), csvEscape(a.ip_address), csvEscape(a.fqdn),
+    csvEscape(a.mac_address), csvEscape(a.os_type), csvEscape(a.system_name),
+    csvEscape(a.asset_type), csvEscape(a.discovery_source), csvEscape(a.last_seen_at),
+    a.critical_count || 0, a.high_count || 0, a.medium_count || 0, a.low_count || 0
+  ].join(','));
+
+  const csv = [headers.join(','), ...rows].join('\r\n');
+
+  return new Response(csv, {
+    headers: {
+      'Content-Type': 'text/csv; charset=utf-8',
+      'Content-Disposition': `attachment; filename="assets_export_${new Date().toISOString().split('T')[0]}.csv"`,
+      'Access-Control-Allow-Origin': '*'
+    }
+  });
+}
+
+async function handleImportAssetsCSV(request, env, org, user) {
+  if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Permission denied. Manager role required.' }, 403);
+
+  const formData = await request.formData();
+  const file = formData.get('file');
+
+  if (!file) return jsonResponse({ error: 'No file provided' }, 400);
+
+  const content = await file.text();
+  const lines = content.split(/\r?\n/).filter(line => line.trim());
+
+  if (lines.length < 2) {
+    return jsonResponse({ error: 'CSV must have header row and at least one data row' }, 400);
+  }
+
+  const header = lines[0].toLowerCase().split(',').map(h => h.trim().replace(/^"|"$/g, ''));
+  const hostnameIdx = header.findIndex(h => h === 'hostname');
+  const ipIdx = header.findIndex(h => h === 'ip_address' || h === 'ip');
+  const fqdnIdx = header.findIndex(h => h === 'fqdn');
+  const macIdx = header.findIndex(h => h === 'mac_address' || h === 'mac');
+  const osIdx = header.findIndex(h => h === 'os_type' || h === 'os');
+  const typeIdx = header.findIndex(h => h === 'asset_type' || h === 'type');
+
+  const systemId = formData.get('system_id') || null;
+
+  let created = 0, updated = 0, skipped = 0;
+  const errors = [];
+
+  for (let i = 1; i < lines.length && i < 1001; i++) {
+    const values = parseCSVLine(lines[i]);
+    const hostname = hostnameIdx >= 0 ? values[hostnameIdx]?.trim() : null;
+    const ip = ipIdx >= 0 ? values[ipIdx]?.trim() : null;
+
+    if (!hostname && !ip) {
+      skipped++;
+      continue;
+    }
+
+    try {
+      const existing = await env.DB.prepare(`
+        SELECT id FROM assets WHERE org_id = ? AND (ip_address = ? OR hostname = ?)
+      `).bind(org.id, ip || '', hostname || '').first();
+
+      if (existing) {
+        await env.DB.prepare(`
+          UPDATE assets SET
+            fqdn = COALESCE(?, fqdn),
+            mac_address = COALESCE(?, mac_address),
+            os_type = COALESCE(?, os_type),
+            asset_type = COALESCE(?, asset_type),
+            system_id = COALESCE(?, system_id),
+            updated_at = datetime('now')
+          WHERE id = ?
+        `).bind(
+          fqdnIdx >= 0 ? values[fqdnIdx]?.trim() || null : null,
+          macIdx >= 0 ? values[macIdx]?.trim() || null : null,
+          osIdx >= 0 ? values[osIdx]?.trim() || null : null,
+          typeIdx >= 0 ? values[typeIdx]?.trim() || null : null,
+          systemId,
+          existing.id
+        ).run();
+        updated++;
+      } else {
+        const assetId = generateId();
+        await env.DB.prepare(`
+          INSERT INTO assets (
+            id, org_id, system_id, hostname, ip_address, mac_address,
+            fqdn, os_type, asset_type, discovery_source, scan_credentialed,
+            created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'csv_import', 0, datetime('now'), datetime('now'))
+        `).bind(
+          assetId, org.id, systemId, hostname, ip,
+          macIdx >= 0 ? values[macIdx]?.trim() || null : null,
+          fqdnIdx >= 0 ? values[fqdnIdx]?.trim() || null : null,
+          osIdx >= 0 ? values[osIdx]?.trim() || null : null,
+          typeIdx >= 0 ? values[typeIdx]?.trim() || 'server' : 'server'
+        ).run();
+        created++;
+      }
+    } catch (err) {
+      errors.push(`Row ${i + 1}: ${err.message}`);
+      skipped++;
+    }
+  }
+
+  await auditLog(env, org.id, user.id, 'import', 'assets', null,
+    { created, updated, skipped, errors_count: errors.length });
+
+  return jsonResponse({
+    message: 'Import completed',
+    summary: { created, updated, skipped, errors: errors.slice(0, 10) }
+  });
+}
+
+function parseCSVLine(line) {
+  const result = [];
+  let current = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    if (char === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (char === ',' && !inQuotes) {
+      result.push(current);
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  result.push(current);
+  return result;
 }
 
 async function processNessusScan(env, options) {

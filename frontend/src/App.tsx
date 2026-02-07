@@ -49,6 +49,7 @@ const PublicPortalPage = lazy(() => import('./pages/PublicPortalPage').then(m =>
 // LAZY IMPORTS - Tier 3: Medium pages (still beneficial to lazy load)
 // ============================================================================
 const ScanImportPage = lazy(() => import('./pages/ScanImportPage').then(m => ({ default: m.ScanImportPage })));      // 24K
+const AssetsPage = lazy(() => import('./pages/AssetsPage').then(m => ({ default: m.AssetsPage })));                // 24K
 const QuestionnaireBuilderPage = lazy(() => import('./pages/QuestionnaireBuilderPage').then(m => ({ default: m.QuestionnaireBuilderPage }))); // 23K
 const CalendarPage = lazy(() => import('./pages/CalendarPage').then(m => ({ default: m.CalendarPage })));          // 19K
 const SystemComparisonPage = lazy(() => import('./pages/SystemComparisonPage').then(m => ({ default: m.SystemComparisonPage }))); // 19K
@@ -198,6 +199,7 @@ function AppRoutes() {
           <Route path="/monitoring" element={<LazyPage><MonitoringPage /></LazyPage>} />
           <Route path="/vendors" element={<LazyPage><VendorsPage /></LazyPage>} />
           <Route path="/scans" element={<ProtectedRoute minRole="analyst"><LazyPage><ScanImportPage /></LazyPage></ProtectedRoute>} />
+          <Route path="/assets" element={<LazyPage><AssetsPage /></LazyPage>} />
 
           {/* Tools */}
           <Route path="/ai-writer" element={<LazyPage><AIWriterPage /></LazyPage>} />
