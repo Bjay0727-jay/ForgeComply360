@@ -2,12 +2,10 @@ import { captureException } from './sentry';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
-// SECURITY: Use sessionStorage instead of localStorage
-// - Tokens are cleared when browser/tab closes (more secure)
-// - Not accessible across browser tabs (prevents token leakage)
-// - Users must re-login after closing browser
-let accessToken: string | null = sessionStorage.getItem('accessToken');
-let refreshToken: string | null = sessionStorage.getItem('refreshToken');
+// Store tokens in localStorage for persistence across page refreshes
+// Note: useAuth.tsx also checks localStorage on app startup
+let accessToken: string | null = localStorage.getItem('accessToken');
+let refreshToken: string | null = localStorage.getItem('refreshToken');
 
 // Global API error listener — Toast system subscribes to this
 type ApiErrorListener = (error: { message: string; status: number; path: string }) => void;
@@ -34,15 +32,15 @@ function emitApiError(message: string, status: number, path: string) {
 export function setTokens(access: string, refresh: string) {
   accessToken = access;
   refreshToken = refresh;
-  sessionStorage.setItem('accessToken', access);
-  sessionStorage.setItem('refreshToken', refresh);
+  localStorage.setItem('accessToken', access);
+  localStorage.setItem('refreshToken', refresh);
 }
 
 export function clearTokens() {
   accessToken = null;
   refreshToken = null;
-  sessionStorage.removeItem('accessToken');
-  sessionStorage.removeItem('refreshToken');
+  localStorage.removeItem('accessToken');
+  localStorage.removeItem('refreshToken');
 }
 
 export function getAccessToken() {
