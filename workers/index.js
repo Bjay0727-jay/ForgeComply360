@@ -469,6 +469,7 @@ async function handleRequest(request, env, url, ctx) {
   if (path === '/api/v1/scans/imports' && method === 'GET') return handleListScanImports(env, url, org);
   if (path.match(/^\/api\/v1\/scans\/import\/[\w-]+\/generate-poams$/) && method === 'POST') return handleGenerateScanPOAMs(request, env, org, user, path.split('/')[5]);
   if (path.match(/^\/api\/v1\/scans\/import\/[\w-]+$/) && method === 'GET') return handleGetScanImport(env, org, path.split('/')[5]);
+  if (path.match(/^\/api\/v1\/scans\/import\/[\w-]+$/) && method === 'DELETE') return handleDeleteScanImport(env, org, user, path.split('/')[5]);
 
   // Webhooks (Integration Framework)
   if (path === '/api/v1/webhooks' && method === 'GET') return handleListWebhooks(env, org, user);
@@ -6734,6 +6735,35 @@ async function handleGenerateScanPOAMs(request, env, org, user, scanImportId) {
   await auditLog(env, org.id, user.id, 'generate_poams', 'scan', scanImportId, { poams_created: poams.length, findings_linked: findingsLinked }, request);
 
   return jsonResponse({ poams_created: poams.length, findings_linked: findingsLinked, poam_ids: poamIds }, 201);
+}
+
+async function handleDeleteScanImport(env, org, user, importId) {
+  if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  const scanImport = await env.DB.prepare(
+    'SELECT * FROM scan_imports WHERE id = ? AND organization_id = ?'
+  ).bind(importId, org.id).first();
+
+  if (!scanImport) return jsonResponse({ error: 'Scan import not found' }, 404);
+
+  // Delete related vulnerability findings first (cascade)
+  await env.DB.prepare(
+    'DELETE FROM vulnerability_findings WHERE scan_import_id = ?'
+  ).bind(importId).run();
+
+  // Delete the scan import record
+  await env.DB.prepare(
+    'DELETE FROM scan_imports WHERE id = ?'
+  ).bind(importId).run();
+
+  await auditLog(env, org.id, user.id, 'delete', 'scan_import', importId, {
+    file_name: scanImport.file_name,
+    scan_name: scanImport.scan_name,
+    system_id: scanImport.system_id,
+    findings_total: scanImport.findings_total
+  });
+
+  return jsonResponse({ message: 'Scan import deleted successfully' });
 }
 
 async function processNessusScan(env, options) {

@@ -67,6 +67,7 @@ export function ScanImportPage() {
   const [poamOwnerId, setPoamOwnerId] = useState('');
   const [generatingPoams, setGeneratingPoams] = useState(false);
   const [orgMembers, setOrgMembers] = useState<OrgMember[]>([]);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const loadImports = useCallback(async () => {
     try {
@@ -185,6 +186,25 @@ export function ScanImportPage() {
       addToast({ type: 'error', title: err?.message || 'Failed to generate POA&Ms' });
     } finally {
       setGeneratingPoams(false);
+    }
+  };
+
+  const handleDeleteImport = async (importId: string, fileName: string) => {
+    if (!confirm(`Are you sure you want to delete "${fileName}"?\n\nThis will also remove all associated vulnerability findings. This action cannot be undone.`)) {
+      return;
+    }
+
+    setDeletingId(importId);
+    try {
+      await api(`/api/v1/scans/import/${importId}`, { method: 'DELETE' });
+      setImports(imports.filter(i => i.id !== importId));
+      setExpandedId(null);
+      setExpandedDetails(null);
+      addToast({ type: 'success', title: 'Scan import deleted successfully' });
+    } catch (err: any) {
+      addToast({ type: 'error', title: err?.message || 'Failed to delete scan import' });
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -411,8 +431,8 @@ export function ScanImportPage() {
                               <strong>Error:</strong> {scan.error_message}
                             </div>
                           )}
-                          {scan.status === 'completed' && (
-                            <div className="mt-3">
+                          <div className="mt-3 flex items-center gap-3">
+                            {scan.status === 'completed' && (
                               <button
                                 onClick={(e) => { e.stopPropagation(); openPoamModal(scan.id, scan.scan_name || scan.file_name); }}
                                 className="px-3 py-1.5 bg-purple-600 text-white rounded-lg text-sm font-medium hover:bg-purple-700 flex items-center gap-2"
@@ -422,8 +442,30 @@ export function ScanImportPage() {
                                 </svg>
                                 Generate POA&Ms
                               </button>
-                            </div>
-                          )}
+                            )}
+                            <button
+                              onClick={(e) => { e.stopPropagation(); handleDeleteImport(scan.id, scan.scan_name || scan.file_name); }}
+                              disabled={deletingId === scan.id}
+                              className="px-3 py-1.5 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700 disabled:opacity-50 flex items-center gap-2"
+                            >
+                              {deletingId === scan.id ? (
+                                <>
+                                  <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                                  </svg>
+                                  Deleting...
+                                </>
+                              ) : (
+                                <>
+                                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                  </svg>
+                                  Delete
+                                </>
+                              )}
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     )}
