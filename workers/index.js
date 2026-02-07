@@ -295,6 +295,16 @@ async function handleRequest(request, env, url, ctx) {
   if (path.match(/^\/api\/v1\/poams\/[\w-]+\/milestones\/[\w-]+$/) && method === 'PUT') return handleUpdateMilestone(request, env, org, user, path.split('/')[4], path.split('/')[6]);
   if (path.match(/^\/api\/v1\/poams\/[\w-]+\/comments$/) && method === 'GET') return handleListComments(env, org, path.split('/')[4]);
   if (path.match(/^\/api\/v1\/poams\/[\w-]+\/comments$/) && method === 'POST') return handleCreateComment(request, env, org, user, path.split('/')[4]);
+  // POA&M Junction Tables (FedRAMP compliance)
+  if (path.match(/^\/api\/v1\/poams\/[\w-]+\/affected-assets$/) && method === 'GET') return handleListPoamAssets(env, org, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/poams\/[\w-]+\/affected-assets$/) && method === 'POST') return handleLinkPoamAsset(request, env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/poams\/[\w-]+\/affected-assets\/[\w-]+$/) && method === 'DELETE') return handleUnlinkPoamAsset(env, org, user, path.split('/')[4], path.split('/')[6]);
+  if (path.match(/^\/api\/v1\/poams\/[\w-]+\/control-mappings$/) && method === 'GET') return handleListPoamControls(env, org, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/poams\/[\w-]+\/control-mappings$/) && method === 'POST') return handleLinkPoamControl(request, env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/poams\/[\w-]+\/control-mappings\/[\w-]+$/) && method === 'DELETE') return handleUnlinkPoamControl(env, org, user, path.split('/')[4], path.split('/')[6]);
+  if (path.match(/^\/api\/v1\/poams\/[\w-]+\/evidence$/) && method === 'GET') return handleListPoamEvidence(env, org, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/poams\/[\w-]+\/evidence$/) && method === 'POST') return handleLinkPoamEvidence(request, env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/poams\/[\w-]+\/evidence\/[\w-]+$/) && method === 'DELETE') return handleUnlinkPoamEvidence(env, org, user, path.split('/')[4], path.split('/')[6]);
   if (path === '/api/v1/org-members' && method === 'GET') return handleListOrgMembers(env, org);
 
   // Evidence
@@ -1731,6 +1741,31 @@ async function handleListPoams(env, url, org) {
     const msMap = {};
     for (const m of ms) msMap[m.poam_id] = m;
     for (const p of results) { const m = msMap[p.id]; p.milestone_total = m?.total || 0; p.milestone_completed = m?.completed || 0; }
+
+    // Junction table counts (FedRAMP compliance)
+    const { results: assetCounts } = await env.DB.prepare(
+      `SELECT poam_id, COUNT(*) as count FROM poam_affected_assets WHERE poam_id IN (${ph}) GROUP BY poam_id`
+    ).bind(...poamIds).all();
+    const assetMap = {};
+    for (const a of assetCounts) assetMap[a.poam_id] = a.count;
+
+    const { results: controlCounts } = await env.DB.prepare(
+      `SELECT poam_id, COUNT(*) as count FROM poam_control_mappings WHERE poam_id IN (${ph}) GROUP BY poam_id`
+    ).bind(...poamIds).all();
+    const controlMap = {};
+    for (const c of controlCounts) controlMap[c.poam_id] = c.count;
+
+    const { results: evidenceCounts } = await env.DB.prepare(
+      `SELECT poam_id, COUNT(*) as count FROM poam_evidence WHERE poam_id IN (${ph}) GROUP BY poam_id`
+    ).bind(...poamIds).all();
+    const evidenceMap = {};
+    for (const e of evidenceCounts) evidenceMap[e.poam_id] = e.count;
+
+    for (const p of results) {
+      p.asset_count = assetMap[p.id] || 0;
+      p.control_count = controlMap[p.id] || 0;
+      p.evidence_count = evidenceMap[p.id] || 0;
+    }
   }
 
   return jsonResponse({ poams: results, total, page, limit });
@@ -1876,6 +1911,155 @@ async function handleCreateComment(request, env, org, user, poamId) {
   await notifyOrgRole(env, org.id, user.id, 'manager', 'poam_update', 'New Comment on POA&M', user.name + ' commented on POA&M "' + poam.weakness_name + '"', 'poam', poamId, {});
   const comment = await env.DB.prepare('SELECT c.*, u.name as author_name FROM poam_comments c LEFT JOIN users u ON u.id = c.user_id WHERE c.id = ?').bind(id).first();
   return jsonResponse({ comment }, 201);
+}
+
+// ============================================================================
+// POA&M JUNCTION TABLES (FedRAMP Compliance)
+// ============================================================================
+
+// POA&M Affected Assets
+async function handleListPoamAssets(env, org, poamId) {
+  const poam = await env.DB.prepare('SELECT id FROM poams WHERE id = ? AND org_id = ?').bind(poamId, org.id).first();
+  if (!poam) return jsonResponse({ error: 'POA&M not found' }, 404);
+  const { results } = await env.DB.prepare(`
+    SELECT paa.*, a.hostname, a.ip_address, a.fqdn, a.os_type, a.asset_type,
+           a.system_id, s.name as system_name, u.name as linked_by_name
+    FROM poam_affected_assets paa
+    JOIN assets a ON paa.asset_id = a.id
+    LEFT JOIN systems s ON a.system_id = s.id
+    LEFT JOIN users u ON paa.linked_by = u.id
+    WHERE paa.poam_id = ?
+    ORDER BY paa.linked_at DESC
+  `).bind(poamId).all();
+  return jsonResponse({ assets: results });
+}
+
+async function handleLinkPoamAsset(request, env, org, user, poamId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const poam = await env.DB.prepare('SELECT id FROM poams WHERE id = ? AND org_id = ?').bind(poamId, org.id).first();
+  if (!poam) return jsonResponse({ error: 'POA&M not found' }, 404);
+  const body = await request.json();
+  const { asset_id, link_reason, notes } = body;
+  if (!asset_id) return jsonResponse({ error: 'asset_id required' }, 400);
+  const asset = await env.DB.prepare('SELECT id FROM assets WHERE id = ? AND org_id = ?').bind(asset_id, org.id).first();
+  if (!asset) return jsonResponse({ error: 'Asset not found' }, 404);
+  const id = generateId();
+  try {
+    await env.DB.prepare('INSERT INTO poam_affected_assets (id, poam_id, asset_id, link_reason, notes, linked_by) VALUES (?, ?, ?, ?, ?, ?)').bind(id, poamId, asset_id, link_reason || 'affected', notes || null, user.id).run();
+  } catch (e) {
+    if (e.message?.includes('UNIQUE')) return jsonResponse({ error: 'Asset already linked to this POA&M' }, 409);
+    throw e;
+  }
+  await auditLog(env, org.id, user.id, 'link', 'poam_asset', id, { poam_id: poamId, asset_id, link_reason });
+  return jsonResponse({ message: 'Asset linked to POA&M', id }, 201);
+}
+
+async function handleUnlinkPoamAsset(env, org, user, poamId, linkId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const poam = await env.DB.prepare('SELECT id FROM poams WHERE id = ? AND org_id = ?').bind(poamId, org.id).first();
+  if (!poam) return jsonResponse({ error: 'POA&M not found' }, 404);
+  const link = await env.DB.prepare('SELECT * FROM poam_affected_assets WHERE id = ? AND poam_id = ?').bind(linkId, poamId).first();
+  if (!link) return jsonResponse({ error: 'Link not found' }, 404);
+  await env.DB.prepare('DELETE FROM poam_affected_assets WHERE id = ?').bind(linkId).run();
+  await auditLog(env, org.id, user.id, 'unlink', 'poam_asset', linkId, { poam_id: poamId, asset_id: link.asset_id });
+  return jsonResponse({ message: 'Asset unlinked from POA&M' });
+}
+
+// POA&M Control Mappings
+async function handleListPoamControls(env, org, poamId) {
+  const poam = await env.DB.prepare('SELECT id FROM poams WHERE id = ? AND org_id = ?').bind(poamId, org.id).first();
+  if (!poam) return jsonResponse({ error: 'POA&M not found' }, 404);
+  const { results } = await env.DB.prepare(`
+    SELECT pcm.*, cf.name as framework_name, sc.title as control_title, u.name as mapped_by_name
+    FROM poam_control_mappings pcm
+    LEFT JOIN compliance_frameworks cf ON pcm.framework_id = cf.id
+    LEFT JOIN security_controls sc ON pcm.control_id = sc.control_id AND pcm.framework_id = sc.framework_id
+    LEFT JOIN users u ON pcm.mapped_by = u.id
+    WHERE pcm.poam_id = ?
+    ORDER BY pcm.mapping_type ASC, pcm.mapped_at DESC
+  `).bind(poamId).all();
+  return jsonResponse({ controls: results });
+}
+
+async function handleLinkPoamControl(request, env, org, user, poamId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const poam = await env.DB.prepare('SELECT id FROM poams WHERE id = ? AND org_id = ?').bind(poamId, org.id).first();
+  if (!poam) return jsonResponse({ error: 'POA&M not found' }, 404);
+  const body = await request.json();
+  const { framework_id, control_id, mapping_type, confidence, notes } = body;
+  if (!framework_id || !control_id) return jsonResponse({ error: 'framework_id and control_id required' }, 400);
+  const framework = await env.DB.prepare('SELECT id FROM compliance_frameworks WHERE id = ?').bind(framework_id).first();
+  if (!framework) return jsonResponse({ error: 'Framework not found' }, 404);
+  const id = generateId();
+  try {
+    await env.DB.prepare('INSERT INTO poam_control_mappings (id, poam_id, framework_id, control_id, mapping_type, confidence, notes, mapped_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(id, poamId, framework_id, control_id, mapping_type || 'primary', confidence || 'high', notes || null, user.id).run();
+  } catch (e) {
+    if (e.message?.includes('UNIQUE')) return jsonResponse({ error: 'Control already mapped to this POA&M' }, 409);
+    throw e;
+  }
+  await auditLog(env, org.id, user.id, 'link', 'poam_control', id, { poam_id: poamId, framework_id, control_id, mapping_type });
+  return jsonResponse({ message: 'Control mapped to POA&M', id }, 201);
+}
+
+async function handleUnlinkPoamControl(env, org, user, poamId, linkId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const poam = await env.DB.prepare('SELECT id FROM poams WHERE id = ? AND org_id = ?').bind(poamId, org.id).first();
+  if (!poam) return jsonResponse({ error: 'POA&M not found' }, 404);
+  const link = await env.DB.prepare('SELECT * FROM poam_control_mappings WHERE id = ? AND poam_id = ?').bind(linkId, poamId).first();
+  if (!link) return jsonResponse({ error: 'Mapping not found' }, 404);
+  await env.DB.prepare('DELETE FROM poam_control_mappings WHERE id = ?').bind(linkId).run();
+  await auditLog(env, org.id, user.id, 'unlink', 'poam_control', linkId, { poam_id: poamId, framework_id: link.framework_id, control_id: link.control_id });
+  return jsonResponse({ message: 'Control unmapped from POA&M' });
+}
+
+// POA&M Evidence
+async function handleListPoamEvidence(env, org, poamId) {
+  const poam = await env.DB.prepare('SELECT id FROM poams WHERE id = ? AND org_id = ?').bind(poamId, org.id).first();
+  if (!poam) return jsonResponse({ error: 'POA&M not found' }, 404);
+  const { results } = await env.DB.prepare(`
+    SELECT pe.*, e.title as evidence_title, e.file_name, e.file_type, e.file_size, e.collection_date,
+           u.name as linked_by_name, v.name as verified_by_name
+    FROM poam_evidence pe
+    JOIN evidence e ON pe.evidence_id = e.id
+    LEFT JOIN users u ON pe.linked_by = u.id
+    LEFT JOIN users v ON pe.verified_by = v.id
+    WHERE pe.poam_id = ?
+    ORDER BY pe.purpose ASC, pe.linked_at DESC
+  `).bind(poamId).all();
+  return jsonResponse({ evidence: results });
+}
+
+async function handleLinkPoamEvidence(request, env, org, user, poamId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const poam = await env.DB.prepare('SELECT id FROM poams WHERE id = ? AND org_id = ?').bind(poamId, org.id).first();
+  if (!poam) return jsonResponse({ error: 'POA&M not found' }, 404);
+  const body = await request.json();
+  const { evidence_id, purpose, description } = body;
+  if (!evidence_id || !purpose) return jsonResponse({ error: 'evidence_id and purpose required' }, 400);
+  const validPurposes = ['identification', 'remediation', 'closure', 'verification', 'deviation'];
+  if (!validPurposes.includes(purpose)) return jsonResponse({ error: 'Invalid purpose. Must be: ' + validPurposes.join(', ') }, 400);
+  const evidence = await env.DB.prepare('SELECT id FROM evidence WHERE id = ? AND org_id = ?').bind(evidence_id, org.id).first();
+  if (!evidence) return jsonResponse({ error: 'Evidence not found' }, 404);
+  const id = generateId();
+  try {
+    await env.DB.prepare('INSERT INTO poam_evidence (id, poam_id, evidence_id, purpose, description, linked_by) VALUES (?, ?, ?, ?, ?, ?)').bind(id, poamId, evidence_id, purpose, description || null, user.id).run();
+  } catch (e) {
+    if (e.message?.includes('UNIQUE')) return jsonResponse({ error: 'Evidence already linked for this purpose' }, 409);
+    throw e;
+  }
+  await auditLog(env, org.id, user.id, 'link', 'poam_evidence', id, { poam_id: poamId, evidence_id, purpose });
+  return jsonResponse({ message: 'Evidence linked to POA&M', id }, 201);
+}
+
+async function handleUnlinkPoamEvidence(env, org, user, poamId, linkId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const poam = await env.DB.prepare('SELECT id FROM poams WHERE id = ? AND org_id = ?').bind(poamId, org.id).first();
+  if (!poam) return jsonResponse({ error: 'POA&M not found' }, 404);
+  const link = await env.DB.prepare('SELECT * FROM poam_evidence WHERE id = ? AND poam_id = ?').bind(linkId, poamId).first();
+  if (!link) return jsonResponse({ error: 'Link not found' }, 404);
+  await env.DB.prepare('DELETE FROM poam_evidence WHERE id = ?').bind(linkId).run();
+  await auditLog(env, org.id, user.id, 'unlink', 'poam_evidence', linkId, { poam_id: poamId, evidence_id: link.evidence_id, purpose: link.purpose });
+  return jsonResponse({ message: 'Evidence unlinked from POA&M' });
 }
 
 // Control Comments

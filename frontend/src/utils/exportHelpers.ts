@@ -465,7 +465,7 @@ export function exportAuditLogCSV(logs: any[]): void {
  * Export POA&Ms to CSV.
  */
 export function exportPoamsCSV(poams: any[]): void {
-  const headers = ['POA&M ID', 'Weakness Name', 'Description', 'System', 'Risk Level', 'Status', 'Days Open', 'Due Date', 'Overdue', 'Assigned To', 'Responsible Party', 'Cost Estimate', 'Milestones', 'Created'];
+  const headers = ['POA&M ID', 'Weakness Name', 'Description', 'System', 'Risk Level', 'Status', 'Days Open', 'Due Date', 'Overdue', 'Assigned To', 'Responsible Party', 'Cost Estimate', 'Milestones', 'Affected Assets', 'Mapped Controls', 'Evidence Count', 'FedRAMP Ready', 'Created'];
   const rows: string[] = [headers.map(csvCell).join(',')];
 
   for (const p of poams) {
@@ -483,6 +483,10 @@ export function exportPoamsCSV(poams: any[]): void {
       csvCell(p.responsible_party || ''),
       csvCell(p.cost_estimate || ''),
       csvCell(p.milestone_total > 0 ? `${p.milestone_completed}/${p.milestone_total}` : ''),
+      csvCell(p.asset_count || 0),
+      csvCell(p.control_count || 0),
+      csvCell(p.evidence_count || 0),
+      csvCell((p.asset_count > 0 && p.control_count > 0) ? 'Yes' : 'No'),
       csvCell(p.created_at),
     ];
     rows.push(row.join(','));

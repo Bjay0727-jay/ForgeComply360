@@ -30,6 +30,9 @@ const RISK_COLORS: Record<string, string> = {
 };
 const WORKFLOW_STEPS = ['draft', 'open', 'in_progress', 'verification', 'completed'];
 const MS_COLORS: Record<string, string> = { pending: 'bg-gray-100 text-gray-600', in_progress: 'bg-yellow-100 text-yellow-700', completed: 'bg-green-100 text-green-700' };
+const LINK_REASON_COLORS: Record<string, string> = { vulnerable: 'bg-red-100 text-red-700', impacted: 'bg-orange-100 text-orange-700', affected: 'bg-yellow-100 text-yellow-700', at_risk: 'bg-blue-100 text-blue-700', remediated: 'bg-green-100 text-green-700' };
+const MAPPING_TYPE_COLORS: Record<string, string> = { primary: 'bg-blue-100 text-blue-700', related: 'bg-gray-100 text-gray-600', inherited: 'bg-purple-100 text-purple-700' };
+const PURPOSE_COLORS: Record<string, string> = { identification: 'bg-red-100 text-red-700', remediation: 'bg-yellow-100 text-yellow-700', closure: 'bg-green-100 text-green-700', verification: 'bg-blue-100 text-blue-700', deviation: 'bg-purple-100 text-purple-700' };
 
 function ageColor(days: number): string {
   if (days < 30) return 'bg-green-100 text-green-700';
@@ -86,6 +89,14 @@ export function PoamsPage() {
   const [comments, setComments] = useState<any[]>([]);
   const [newComment, setNewComment] = useState('');
 
+  // Junction table data (FedRAMP compliance)
+  const [linkedAssets, setLinkedAssets] = useState<any[]>([]);
+  const [linkedControls, setLinkedControls] = useState<any[]>([]);
+  const [linkedEvidence, setLinkedEvidence] = useState<any[]>([]);
+  const [availableAssets, setAvailableAssets] = useState<any[]>([]);
+  const [availableEvidence, setAvailableEvidence] = useState<any[]>([]);
+  const [frameworks, setFrameworks] = useState<any[]>([]);
+
   // Approval workflow
   const [showApprovalModal, setShowApprovalModal] = useState(false);
   const [approvalTarget, setApprovalTarget] = useState<{ id: string; name: string } | null>(null);
@@ -121,7 +132,18 @@ export function PoamsPage() {
   const loadDetail = (poamId: string) => {
     api(`/api/v1/poams/${poamId}/milestones`).then((d) => setMilestones(d.milestones || [])).catch(() => {});
     api(`/api/v1/poams/${poamId}/comments`).then((d) => setComments(d.comments || [])).catch(() => {});
+    // Junction table data (FedRAMP)
+    api(`/api/v1/poams/${poamId}/affected-assets`).then((d) => setLinkedAssets(d.assets || [])).catch(() => {});
+    api(`/api/v1/poams/${poamId}/control-mappings`).then((d) => setLinkedControls(d.controls || [])).catch(() => {});
+    api(`/api/v1/poams/${poamId}/evidence`).then((d) => setLinkedEvidence(d.evidence || [])).catch(() => {});
   };
+
+  // Load available assets/evidence/frameworks for linking
+  useEffect(() => {
+    api('/api/v1/assets?limit=500').then((d) => setAvailableAssets(d.assets || [])).catch(() => {});
+    api('/api/v1/evidence?limit=500').then((d) => setAvailableEvidence(d.evidence || [])).catch(() => {});
+    api('/api/v1/frameworks').then((d) => setFrameworks(d.frameworks || [])).catch(() => {});
+  }, []);
 
   const toggleExpand = (p: any) => {
     if (expandedId === p.id) { setExpandedId(null); return; }
@@ -202,6 +224,68 @@ export function PoamsPage() {
       await api(`/api/v1/poams/${poamId}/comments`, { method: 'POST', body: JSON.stringify({ content: newComment }) });
       setNewComment('');
       loadDetail(poamId);
+    } catch { }
+  };
+
+  // Junction table operations (FedRAMP compliance)
+  const [linkingAsset, setLinkingAsset] = useState({ poamId: '', assetId: '', reason: 'affected' });
+  const [linkingControl, setLinkingControl] = useState({ poamId: '', frameworkId: '', controlId: '', type: 'primary' });
+  const [linkingEvidence, setLinkingEvidence] = useState({ poamId: '', evidenceId: '', purpose: 'closure' });
+
+  const linkAsset = async (poamId: string) => {
+    if (!linkingAsset.assetId) return;
+    try {
+      await api(`/api/v1/poams/${poamId}/affected-assets`, { method: 'POST', body: JSON.stringify({ asset_id: linkingAsset.assetId, link_reason: linkingAsset.reason }) });
+      setLinkingAsset({ poamId: '', assetId: '', reason: 'affected' });
+      loadDetail(poamId);
+      loadPoams();
+      addToast({ type: 'success', title: 'Asset Linked' });
+    } catch (e: any) { addToast({ type: 'error', title: 'Link Failed', message: e.message }); }
+  };
+
+  const unlinkAsset = async (poamId: string, linkId: string) => {
+    try {
+      await api(`/api/v1/poams/${poamId}/affected-assets/${linkId}`, { method: 'DELETE' });
+      loadDetail(poamId);
+      loadPoams();
+    } catch { }
+  };
+
+  const linkControl = async (poamId: string) => {
+    if (!linkingControl.frameworkId || !linkingControl.controlId) return;
+    try {
+      await api(`/api/v1/poams/${poamId}/control-mappings`, { method: 'POST', body: JSON.stringify({ framework_id: linkingControl.frameworkId, control_id: linkingControl.controlId, mapping_type: linkingControl.type }) });
+      setLinkingControl({ poamId: '', frameworkId: '', controlId: '', type: 'primary' });
+      loadDetail(poamId);
+      loadPoams();
+      addToast({ type: 'success', title: 'Control Mapped' });
+    } catch (e: any) { addToast({ type: 'error', title: 'Mapping Failed', message: e.message }); }
+  };
+
+  const unlinkControl = async (poamId: string, linkId: string) => {
+    try {
+      await api(`/api/v1/poams/${poamId}/control-mappings/${linkId}`, { method: 'DELETE' });
+      loadDetail(poamId);
+      loadPoams();
+    } catch { }
+  };
+
+  const linkEvidence = async (poamId: string) => {
+    if (!linkingEvidence.evidenceId) return;
+    try {
+      await api(`/api/v1/poams/${poamId}/evidence`, { method: 'POST', body: JSON.stringify({ evidence_id: linkingEvidence.evidenceId, purpose: linkingEvidence.purpose }) });
+      setLinkingEvidence({ poamId: '', evidenceId: '', purpose: 'closure' });
+      loadDetail(poamId);
+      loadPoams();
+      addToast({ type: 'success', title: 'Evidence Linked' });
+    } catch (e: any) { addToast({ type: 'error', title: 'Link Failed', message: e.message }); }
+  };
+
+  const unlinkEvidence = async (poamId: string, linkId: string) => {
+    try {
+      await api(`/api/v1/poams/${poamId}/evidence/${linkId}`, { method: 'DELETE' });
+      loadDetail(poamId);
+      loadPoams();
     } catch { }
   };
 
@@ -293,6 +377,9 @@ export function PoamsPage() {
                         {p.is_overdue && <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-red-600 text-white">OVERDUE</span>}
                         {p.milestone_total > 0 && (
                           <span className="text-xs text-gray-500">{p.milestone_completed}/{p.milestone_total} milestones</span>
+                        )}
+                        {p.asset_count > 0 && p.control_count > 0 && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-blue-100 text-blue-700">FedRAMP Ready</span>
                         )}
                       </div>
                       <h3 className="font-medium text-gray-900 text-sm">{p.weakness_name}</h3>
@@ -473,6 +560,134 @@ export function PoamsPage() {
                             <div className="flex items-center gap-2 mt-2">
                               <input type="text" placeholder="Add a comment..." value={newComment} onChange={(e) => setNewComment(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && addComment(p.id)} className="flex-1 px-2 py-1.5 border border-gray-300 rounded-lg text-xs" />
                               <button onClick={() => addComment(p.id)} className="px-2.5 py-1.5 bg-forge-navy-900 text-white rounded-lg text-xs font-medium hover:bg-forge-navy-800">Post</button>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* FedRAMP Compliance Sections */}
+                        {/* Affected Assets */}
+                        <div className="border-t border-gray-100 pt-4">
+                          <h4 className="text-xs font-semibold text-gray-700 mb-2 flex items-center gap-1">
+                            <svg className="w-3.5 h-3.5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2" /></svg>
+                            Affected Assets ({linkedAssets.length})
+                            {linkedAssets.length > 0 && <span className="ml-1 text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">FedRAMP</span>}
+                          </h4>
+                          <div className="space-y-1.5 max-h-32 overflow-y-auto">
+                            {linkedAssets.length === 0 && <p className="text-xs text-gray-400">No assets linked. FedRAMP requires listing affected components.</p>}
+                            {linkedAssets.map((a: any) => (
+                              <div key={a.id} className="flex items-center justify-between py-1.5 px-2 bg-white rounded border border-gray-100 text-xs">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <span className="text-gray-700 truncate font-medium">{a.hostname || a.ip_address || 'Unknown'}</span>
+                                  {a.system_name && <span className="text-gray-400 text-[10px]">{a.system_name}</span>}
+                                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${LINK_REASON_COLORS[a.link_reason] || 'bg-gray-100 text-gray-600'}`}>{a.link_reason}</span>
+                                </div>
+                                {canEdit && (
+                                  <button onClick={() => unlinkAsset(p.id, a.id)} className="text-red-500 hover:text-red-700 p-1">
+                                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                                  </button>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                          {canEdit && (
+                            <div className="flex items-center gap-2 mt-2">
+                              <select value={linkingAsset.assetId} onChange={(e) => setLinkingAsset({ ...linkingAsset, poamId: p.id, assetId: e.target.value })} className="flex-1 px-2 py-1.5 border border-gray-300 rounded-lg text-xs">
+                                <option value="">Select asset...</option>
+                                {availableAssets.filter(a => !linkedAssets.find(la => la.asset_id === a.id)).map((a) => (
+                                  <option key={a.id} value={a.id}>{a.hostname || a.ip_address} {a.system_name ? `(${a.system_name})` : ''}</option>
+                                ))}
+                              </select>
+                              <select value={linkingAsset.reason} onChange={(e) => setLinkingAsset({ ...linkingAsset, reason: e.target.value })} className="px-2 py-1.5 border border-gray-300 rounded-lg text-xs">
+                                <option value="vulnerable">Vulnerable</option>
+                                <option value="impacted">Impacted</option>
+                                <option value="affected">Affected</option>
+                                <option value="at_risk">At Risk</option>
+                              </select>
+                              <button onClick={() => linkAsset(p.id)} disabled={!linkingAsset.assetId} className="px-2.5 py-1.5 bg-forge-navy-900 text-white rounded-lg text-xs font-medium hover:bg-forge-navy-800 disabled:opacity-50">Link</button>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Mapped Controls */}
+                        <div className="border-t border-gray-100 pt-4">
+                          <h4 className="text-xs font-semibold text-gray-700 mb-2 flex items-center gap-1">
+                            <svg className="w-3.5 h-3.5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
+                            Mapped Controls ({linkedControls.length})
+                            {linkedControls.length > 1 && <span className="ml-1 text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-700">Multi-Control</span>}
+                          </h4>
+                          <div className="space-y-1.5 max-h-32 overflow-y-auto">
+                            {linkedControls.length === 0 && <p className="text-xs text-gray-400">No controls mapped. Map to SI-2, RA-5, CM-3, etc.</p>}
+                            {linkedControls.map((c: any) => (
+                              <div key={c.id} className="flex items-center justify-between py-1.5 px-2 bg-white rounded border border-gray-100 text-xs">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <span className="text-gray-700 font-medium">{c.control_id}</span>
+                                  <span className="text-gray-400 text-[10px]">{c.framework_name || c.framework_id}</span>
+                                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${MAPPING_TYPE_COLORS[c.mapping_type] || 'bg-gray-100 text-gray-600'}`}>{c.mapping_type}</span>
+                                </div>
+                                {canEdit && (
+                                  <button onClick={() => unlinkControl(p.id, c.id)} className="text-red-500 hover:text-red-700 p-1">
+                                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                                  </button>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                          {canEdit && (
+                            <div className="flex items-center gap-2 mt-2">
+                              <select value={linkingControl.frameworkId} onChange={(e) => setLinkingControl({ ...linkingControl, poamId: p.id, frameworkId: e.target.value })} className="px-2 py-1.5 border border-gray-300 rounded-lg text-xs">
+                                <option value="">Framework...</option>
+                                {frameworks.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+                              </select>
+                              <input type="text" placeholder="Control ID (e.g. SI-2)" value={linkingControl.controlId} onChange={(e) => setLinkingControl({ ...linkingControl, controlId: e.target.value.toUpperCase() })} className="w-24 px-2 py-1.5 border border-gray-300 rounded-lg text-xs" />
+                              <select value={linkingControl.type} onChange={(e) => setLinkingControl({ ...linkingControl, type: e.target.value })} className="px-2 py-1.5 border border-gray-300 rounded-lg text-xs">
+                                <option value="primary">Primary</option>
+                                <option value="related">Related</option>
+                                <option value="inherited">Inherited</option>
+                              </select>
+                              <button onClick={() => linkControl(p.id)} disabled={!linkingControl.frameworkId || !linkingControl.controlId} className="px-2.5 py-1.5 bg-forge-navy-900 text-white rounded-lg text-xs font-medium hover:bg-forge-navy-800 disabled:opacity-50">Map</button>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Evidence */}
+                        <div className="border-t border-gray-100 pt-4">
+                          <h4 className="text-xs font-semibold text-gray-700 mb-2 flex items-center gap-1">
+                            <svg className="w-3.5 h-3.5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" /></svg>
+                            Evidence ({linkedEvidence.length})
+                            {linkedEvidence.some(e => e.purpose === 'closure') && <span className="ml-1 text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-700">Closure Ready</span>}
+                          </h4>
+                          <div className="space-y-1.5 max-h-32 overflow-y-auto">
+                            {linkedEvidence.length === 0 && <p className="text-xs text-gray-400">No evidence attached. Link closure evidence before completing.</p>}
+                            {linkedEvidence.map((e: any) => (
+                              <div key={e.id} className="flex items-center justify-between py-1.5 px-2 bg-white rounded border border-gray-100 text-xs">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <span className="text-gray-700 truncate font-medium">{e.evidence_title || e.file_name}</span>
+                                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${PURPOSE_COLORS[e.purpose] || 'bg-gray-100 text-gray-600'}`}>{e.purpose}</span>
+                                </div>
+                                {canEdit && (
+                                  <button onClick={() => unlinkEvidence(p.id, e.id)} className="text-red-500 hover:text-red-700 p-1">
+                                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                                  </button>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                          {canEdit && (
+                            <div className="flex items-center gap-2 mt-2">
+                              <select value={linkingEvidence.evidenceId} onChange={(e) => setLinkingEvidence({ ...linkingEvidence, poamId: p.id, evidenceId: e.target.value })} className="flex-1 px-2 py-1.5 border border-gray-300 rounded-lg text-xs">
+                                <option value="">Select evidence...</option>
+                                {availableEvidence.filter(e => !linkedEvidence.find(le => le.evidence_id === e.id && le.purpose === linkingEvidence.purpose)).map((e) => (
+                                  <option key={e.id} value={e.id}>{e.title || e.file_name}</option>
+                                ))}
+                              </select>
+                              <select value={linkingEvidence.purpose} onChange={(e) => setLinkingEvidence({ ...linkingEvidence, purpose: e.target.value })} className="px-2 py-1.5 border border-gray-300 rounded-lg text-xs">
+                                <option value="identification">Identification</option>
+                                <option value="remediation">Remediation</option>
+                                <option value="closure">Closure</option>
+                                <option value="verification">Verification</option>
+                                <option value="deviation">Deviation</option>
+                              </select>
+                              <button onClick={() => linkEvidence(p.id)} disabled={!linkingEvidence.evidenceId} className="px-2.5 py-1.5 bg-forge-navy-900 text-white rounded-lg text-xs font-medium hover:bg-forge-navy-800 disabled:opacity-50">Link</button>
                             </div>
                           )}
                         </div>
