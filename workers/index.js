@@ -1777,7 +1777,8 @@ async function handleCreatePoam(request, env, org, user) {
   if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
   const body = await request.json();
   const { system_id, weakness_name, weakness_description, control_id, framework_id, risk_level, scheduled_completion, responsible_party, assigned_to,
-    data_classification, cui_category, risk_register_id, impact_confidentiality, impact_integrity, impact_availability } = body;
+    data_classification, cui_category, risk_register_id, impact_confidentiality, impact_integrity, impact_availability,
+    asset_owner_id, asset_owner_name } = body;
 
   const valErrors = validateBody(body, {
     weakness_name: { required: true, type: 'string', maxLength: 500 },
@@ -1795,10 +1796,10 @@ async function handleCreatePoam(request, env, org, user) {
 
   await env.DB.prepare(
     `INSERT INTO poams (id, org_id, system_id, poam_id, weakness_name, weakness_description, control_id, framework_id, risk_level, status, scheduled_completion, responsible_party, assigned_to, created_by,
-     data_classification, cui_category, risk_register_id, impact_confidentiality, impact_integrity, impact_availability)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     data_classification, cui_category, risk_register_id, impact_confidentiality, impact_integrity, impact_availability, asset_owner_id, asset_owner_name)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).bind(id, org.id, system_id, poamId, weakness_name, weakness_description || null, control_id || null, framework_id || null, risk_level || 'moderate', scheduled_completion || null, responsible_party || null, assigned_to || null, user.id,
-    data_classification || 'internal', cui_category || null, risk_register_id || null, impact_confidentiality || null, impact_integrity || null, impact_availability || null).run();
+    data_classification || 'internal', cui_category || null, risk_register_id || null, impact_confidentiality || null, impact_integrity || null, impact_availability || null, asset_owner_id || null, asset_owner_name || null).run();
 
   await auditLog(env, org.id, user.id, 'create', 'poam', id, { poam_id: poamId, weakness_name, data_classification });
   await notifyOrgRole(env, org.id, user.id, 'manager', 'poam_update', 'New POA&M Created', 'POA&M "' + weakness_name + '" was created', 'poam', id, {});
@@ -1817,7 +1818,8 @@ async function handleUpdatePoam(request, env, org, user, poamId) {
 
   const fields = ['weakness_name', 'weakness_description', 'risk_level', 'status', 'scheduled_completion', 'actual_completion', 'milestones', 'responsible_party', 'resources_required', 'cost_estimate', 'comments', 'assigned_to', 'vendor_dependency',
     'data_classification', 'cui_category', 'risk_register_id', 'impact_confidentiality', 'impact_integrity', 'impact_availability',
-    'deviation_type', 'deviation_rationale', 'deviation_expires_at', 'deviation_review_frequency', 'deviation_next_review', 'compensating_control_description'];
+    'deviation_type', 'deviation_rationale', 'deviation_expires_at', 'deviation_review_frequency', 'deviation_next_review', 'compensating_control_description',
+    'asset_owner_id', 'asset_owner_name'];
   const updates = [];
   const values = [];
 
@@ -1992,18 +1994,20 @@ async function handleLinkPoamAsset(request, env, org, user, poamId) {
   const poam = await env.DB.prepare('SELECT id FROM poams WHERE id = ? AND org_id = ?').bind(poamId, org.id).first();
   if (!poam) return jsonResponse({ error: 'POA&M not found' }, 404);
   const body = await request.json();
-  const { asset_id, link_reason, notes } = body;
+  const { asset_id, link_reason, notes, responsibility_model, impact_description } = body;
   if (!asset_id) return jsonResponse({ error: 'asset_id required' }, 400);
   const asset = await env.DB.prepare('SELECT id FROM assets WHERE id = ? AND org_id = ?').bind(asset_id, org.id).first();
   if (!asset) return jsonResponse({ error: 'Asset not found' }, 404);
   const id = generateId();
   try {
-    await env.DB.prepare('INSERT INTO poam_affected_assets (id, poam_id, asset_id, link_reason, notes, linked_by) VALUES (?, ?, ?, ?, ?, ?)').bind(id, poamId, asset_id, link_reason || 'affected', notes || null, user.id).run();
+    await env.DB.prepare(
+      'INSERT INTO poam_affected_assets (id, poam_id, asset_id, link_reason, notes, responsibility_model, impact_description, linked_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    ).bind(id, poamId, asset_id, link_reason || 'affected', notes || null, responsibility_model || 'csp', impact_description || null, user.id).run();
   } catch (e) {
     if (e.message?.includes('UNIQUE')) return jsonResponse({ error: 'Asset already linked to this POA&M' }, 409);
     throw e;
   }
-  await auditLog(env, org.id, user.id, 'link', 'poam_asset', id, { poam_id: poamId, asset_id, link_reason });
+  await auditLog(env, org.id, user.id, 'link', 'poam_asset', id, { poam_id: poamId, asset_id, link_reason, responsibility_model });
   return jsonResponse({ message: 'Asset linked to POA&M', id }, 201);
 }
 
@@ -7147,17 +7151,18 @@ async function handleCreateAsset(request, env, org, user) {
     INSERT INTO assets (
       id, org_id, system_id, hostname, ip_address, mac_address,
       fqdn, netbios_name, os_type, asset_type, discovery_source,
-      scan_credentialed, open_ports, last_seen_at, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', 0, ?, datetime('now'), datetime('now'), datetime('now'))
+      scan_credentialed, open_ports, environment, boundary_id, data_zone,
+      last_seen_at, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', 0, ?, ?, ?, ?, datetime('now'), datetime('now'), datetime('now'))
   `).bind(
     assetId, org.id, body.system_id || null, body.hostname || null,
     body.ip_address || null, body.mac_address || null, body.fqdn || null,
     body.netbios_name || null, body.os_type || null, body.asset_type || 'server',
-    body.open_ports || null
+    body.open_ports || null, body.environment || 'production', body.boundary_id || null, body.data_zone || null
   ).run();
 
   await auditLog(env, org.id, user.id, 'create', 'asset', assetId,
-    { hostname: body.hostname, ip_address: body.ip_address });
+    { hostname: body.hostname, ip_address: body.ip_address, environment: body.environment });
 
   return jsonResponse({ id: assetId, message: 'Asset created' }, 201);
 }
@@ -7184,11 +7189,15 @@ async function handleUpdateAsset(request, env, org, user, assetId) {
       os_type = COALESCE(?, os_type),
       asset_type = COALESCE(?, asset_type),
       open_ports = COALESCE(?, open_ports),
+      environment = COALESCE(?, environment),
+      boundary_id = COALESCE(?, boundary_id),
+      data_zone = COALESCE(?, data_zone),
       updated_at = datetime('now')
     WHERE id = ? AND org_id = ?
   `).bind(
     body.system_id, body.hostname, body.ip_address, body.mac_address,
     body.fqdn, body.netbios_name, body.os_type, body.asset_type, body.open_ports,
+    body.environment, body.boundary_id, body.data_zone,
     assetId, org.id
   ).run();
 

@@ -23,6 +23,9 @@ interface Asset {
   updated_at: string;
   system_id: string | null;
   system_name: string | null;
+  environment: string | null;
+  boundary_id: string | null;
+  data_zone: string | null;
   critical_count: number;
   high_count: number;
   medium_count: number;
@@ -30,6 +33,26 @@ interface Asset {
   total_findings: number;
   recent_findings?: { id: string; title: string; severity: string; status: string }[];
 }
+
+const ENVIRONMENT_LABELS: Record<string, string> = {
+  production: 'Production', staging: 'Staging', development: 'Development',
+  govcloud: 'GovCloud', commercial: 'Commercial', shared: 'Shared', enclave: 'Enclave'
+};
+const ENVIRONMENT_COLORS: Record<string, string> = {
+  production: 'bg-red-100 text-red-700', staging: 'bg-yellow-100 text-yellow-700',
+  development: 'bg-gray-100 text-gray-600', govcloud: 'bg-blue-100 text-blue-700',
+  commercial: 'bg-green-100 text-green-700', shared: 'bg-purple-100 text-purple-700',
+  enclave: 'bg-orange-100 text-orange-700'
+};
+const DATA_ZONE_LABELS: Record<string, string> = {
+  cui: 'CUI', pii: 'PII', phi: 'PHI', pci: 'PCI', public: 'Public', internal: 'Internal', classified: 'Classified'
+};
+const DATA_ZONE_COLORS: Record<string, string> = {
+  cui: 'bg-orange-100 text-orange-700', pii: 'bg-yellow-100 text-yellow-700',
+  phi: 'bg-red-100 text-red-700', pci: 'bg-purple-100 text-purple-700',
+  public: 'bg-gray-100 text-gray-600', internal: 'bg-blue-100 text-blue-700',
+  classified: 'bg-red-200 text-red-800'
+};
 
 interface System {
   id: string;
@@ -68,6 +91,8 @@ export function AssetsPage() {
     os_type: '',
     asset_type: 'server',
     system_id: '',
+    environment: 'production',
+    data_zone: '',
   });
   const [saving, setSaving] = useState(false);
 
@@ -142,6 +167,8 @@ export function AssetsPage() {
       os_type: '',
       asset_type: 'server',
       system_id: '',
+      environment: 'production',
+      data_zone: '',
     });
     setShowModal(true);
   };
@@ -156,6 +183,8 @@ export function AssetsPage() {
       os_type: asset.os_type || '',
       asset_type: asset.asset_type || 'server',
       system_id: asset.system_id || '',
+      environment: asset.environment || 'production',
+      data_zone: asset.data_zone || '',
     });
     setShowModal(true);
   };
@@ -391,6 +420,7 @@ export function AssetsPage() {
                     <th className={`px-6 py-3 text-left ${TYPOGRAPHY.tableHeader}`}>Hostname / IP</th>
                     <th className={`px-6 py-3 text-left ${TYPOGRAPHY.tableHeader}`}>System</th>
                     <th className={`px-6 py-3 text-left ${TYPOGRAPHY.tableHeader}`}>OS Type</th>
+                    <th className={`px-6 py-3 text-left ${TYPOGRAPHY.tableHeader}`}>Environment</th>
                     <th className={`px-6 py-3 text-left ${TYPOGRAPHY.tableHeader}`}>Source</th>
                     <th className={`px-6 py-3 text-left ${TYPOGRAPHY.tableHeader}`}>Last Seen</th>
                     <th className={`px-6 py-3 text-left ${TYPOGRAPHY.tableHeader}`}>Findings</th>
@@ -418,6 +448,20 @@ export function AssetsPage() {
                         <td className="px-6 py-4 text-sm text-gray-700 dark:text-gray-300">
                           {asset.os_type || '-'}
                         </td>
+                        <td className="px-6 py-4">
+                          <div className="flex flex-wrap gap-1">
+                            {asset.environment && asset.environment !== 'production' && (
+                              <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${ENVIRONMENT_COLORS[asset.environment] || 'bg-gray-100 text-gray-600'}`}>
+                                {ENVIRONMENT_LABELS[asset.environment] || asset.environment}
+                              </span>
+                            )}
+                            {asset.data_zone && (
+                              <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${DATA_ZONE_COLORS[asset.data_zone] || 'bg-gray-100 text-gray-600'}`}>
+                                {DATA_ZONE_LABELS[asset.data_zone] || asset.data_zone}
+                              </span>
+                            )}
+                          </div>
+                        </td>
                         <td className="px-6 py-4">{sourceBadge(asset.discovery_source)}</td>
                         <td className="px-6 py-4 text-sm text-gray-700 dark:text-gray-300">
                           {asset.last_seen_at ? new Date(asset.last_seen_at).toLocaleDateString() : '-'}
@@ -441,7 +485,7 @@ export function AssetsPage() {
                       </tr>
                       {expandedId === asset.id && (
                         <tr>
-                          <td colSpan={7} className="px-6 py-4 bg-gray-50 dark:bg-gray-700/30">
+                          <td colSpan={8} className="px-6 py-4 bg-gray-50 dark:bg-gray-700/30">
                             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm mb-4">
                               <div>
                                 <span className="text-gray-500 dark:text-gray-400">FQDN:</span>
@@ -623,6 +667,39 @@ export function AssetsPage() {
                   {systems.map((s) => (
                     <option key={s.id} value={s.id}>{s.name}</option>
                   ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Environment</label>
+                <select
+                  value={formData.environment}
+                  onChange={(e) => setFormData({ ...formData, environment: e.target.value })}
+                  className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-2 text-sm"
+                >
+                  <option value="production">Production</option>
+                  <option value="staging">Staging</option>
+                  <option value="development">Development</option>
+                  <option value="govcloud">GovCloud</option>
+                  <option value="commercial">Commercial</option>
+                  <option value="shared">Shared</option>
+                  <option value="enclave">Enclave</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Data Zone</label>
+                <select
+                  value={formData.data_zone}
+                  onChange={(e) => setFormData({ ...formData, data_zone: e.target.value })}
+                  className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-2 text-sm"
+                >
+                  <option value="">None</option>
+                  <option value="cui">CUI</option>
+                  <option value="pii">PII</option>
+                  <option value="phi">PHI</option>
+                  <option value="pci">PCI</option>
+                  <option value="internal">Internal</option>
+                  <option value="public">Public</option>
+                  <option value="classified">Classified</option>
                 </select>
               </div>
             </div>
