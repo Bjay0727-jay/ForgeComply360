@@ -12,10 +12,10 @@ describe('Token Management', () => {
     mockFetch.mockReset();
   });
 
-  it('setTokens stores tokens in sessionStorage', () => {
+  it('setTokens stores tokens in localStorage', () => {
     setTokens('access-123', 'refresh-456');
-    expect(sessionStorage.getItem('accessToken')).toBe('access-123');
-    expect(sessionStorage.getItem('refreshToken')).toBe('refresh-456');
+    expect(localStorage.getItem('accessToken')).toBe('access-123');
+    expect(localStorage.getItem('refreshToken')).toBe('refresh-456');
   });
 
   it('getAccessToken returns current token', () => {
@@ -27,8 +27,8 @@ describe('Token Management', () => {
     setTokens('access', 'refresh');
     clearTokens();
     expect(getAccessToken()).toBeNull();
-    expect(sessionStorage.getItem('accessToken')).toBeNull();
-    expect(sessionStorage.getItem('refreshToken')).toBeNull();
+    expect(localStorage.getItem('accessToken')).toBeNull();
+    expect(localStorage.getItem('refreshToken')).toBeNull();
   });
 });
 
