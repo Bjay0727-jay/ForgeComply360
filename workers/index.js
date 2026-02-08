@@ -76,8 +76,13 @@ export default {
 
     try {
       if (event.cron === '0 8 * * 1') {
+        // Weekly digest - Mondays at 8 AM UTC
         ctx.waitUntil(handleWeeklyDigest(env));
+      } else if (event.cron === '0 2 * * *') {
+        // Daily backup - 2 AM UTC
+        ctx.waitUntil(handleScheduledBackup(env));
       } else {
+        // Daily evidence checks and alerts - 6 AM UTC
         ctx.waitUntil(
           handleScheduledEvidenceChecks(env)
             .then(() => handleScheduledComplianceAlerts(env))
@@ -447,6 +452,13 @@ async function handleRequest(request, env, url, ctx) {
   if (path === '/api/v1/activity/recent' && method === 'GET') return handleGetRecentActivity(env, url, org, user);
   if (path.match(/^\/api\/v1\/activity\/[\w_-]+\/[\w-]+$/) && method === 'GET') return handleGetResourceActivity(env, url, org, user, path.split('/')[4], path.split('/')[5]);
   if (path === '/api/v1/search' && method === 'GET') return handleGlobalSearch(env, url, org, user);
+
+  // Backup & Restore (admin/owner only)
+  if (path === '/api/v1/backups' && method === 'GET') return handleListBackups(env, org, user);
+  if (path === '/api/v1/backups' && method === 'POST') return handleTriggerBackup(env, org, user);
+  if (path.match(/^\/api\/v1\/backups\/[\w-]+$/) && method === 'GET') return handleGetBackup(env, org, user, path.split('/').pop());
+  if (path.match(/^\/api\/v1\/backups\/[\w-]+\/restore$/) && method === 'POST') return handleRestoreBackup(request, env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/backups\/[\w-]+$/) && method === 'DELETE') return handleDeleteBackup(env, org, user, path.split('/').pop());
 
   // Notifications
   if (path === '/api/v1/notifications' && method === 'GET') return handleGetNotifications(env, url, user);
@@ -3222,79 +3234,76 @@ async function handleDashboardStats(env, org) {
 
 async function handleAssetSummary(env, org) {
   try {
-    const [
-      totalAssets,
-      assetsBySystem,
-      assetsByEnvironment,
-      criticalVulnAssets,
-      recentlyDiscovered,
-      topRiskAssets
-    ] = await Promise.all([
-      // Total asset count
-      env.DB.prepare('SELECT COUNT(*) as count FROM assets WHERE org_id = ?').bind(org.id).first(),
+    // Core asset queries (don't depend on vulnerability_findings table)
+    let totalAssets = { count: 0 };
+    let assetsBySystem = { results: [] };
+    let assetsByEnvironment = { results: [] };
+    let recentlyDiscovered = { results: [] };
+    let topRiskAssets = { results: [] };
 
-      // Assets grouped by system
-      env.DB.prepare(`
-        SELECT s.name as system_name, s.id as system_id, COUNT(a.id) as count
-        FROM assets a
-        LEFT JOIN systems s ON s.id = a.system_id
-        WHERE a.org_id = ?
-        GROUP BY a.system_id
-        ORDER BY count DESC
-        LIMIT 5
-      `).bind(org.id).all(),
+    // These may fail if assets table doesn't exist yet
+    try {
+      [totalAssets, assetsBySystem, assetsByEnvironment, recentlyDiscovered] = await Promise.all([
+        env.DB.prepare('SELECT COUNT(*) as count FROM assets WHERE org_id = ?').bind(org.id).first(),
+        env.DB.prepare(`
+          SELECT s.name as system_name, s.id as system_id, COUNT(a.id) as count
+          FROM assets a
+          LEFT JOIN systems s ON s.id = a.system_id
+          WHERE a.org_id = ?
+          GROUP BY a.system_id
+          ORDER BY count DESC
+          LIMIT 5
+        `).bind(org.id).all(),
+        env.DB.prepare(`
+          SELECT environment, COUNT(*) as count
+          FROM assets WHERE org_id = ?
+          GROUP BY environment
+          ORDER BY count DESC
+        `).bind(org.id).all(),
+        env.DB.prepare(`
+          SELECT id, hostname, ip_address, discovery_source, first_seen_at, risk_score
+          FROM assets
+          WHERE org_id = ? AND first_seen_at >= datetime('now', '-7 days')
+          ORDER BY first_seen_at DESC
+          LIMIT 5
+        `).bind(org.id).all()
+      ]);
+    } catch (assetErr) {
+      console.log('[handleAssetSummary] Assets query failed (table may not exist):', assetErr.message);
+    }
 
-      // Assets grouped by environment
-      env.DB.prepare(`
-        SELECT environment, COUNT(*) as count
-        FROM assets WHERE org_id = ?
-        GROUP BY environment
-        ORDER BY count DESC
-      `).bind(org.id).all(),
-
-      // Assets with critical vulnerabilities
-      env.DB.prepare(`
-        SELECT COUNT(DISTINCT a.id) as count
-        FROM assets a
-        JOIN vulnerability_findings vf ON vf.asset_id = a.id
-        WHERE a.org_id = ? AND vf.severity = 'critical' AND vf.status = 'open'
-      `).bind(org.id).first(),
-
-      // Recently discovered assets (last 7 days)
-      env.DB.prepare(`
-        SELECT id, hostname, ip_address, discovery_source, first_seen_at, risk_score
-        FROM assets
-        WHERE org_id = ? AND first_seen_at >= datetime('now', '-7 days')
-        ORDER BY first_seen_at DESC
-        LIMIT 5
-      `).bind(org.id).all(),
-
-      // Top risk score assets
-      env.DB.prepare(`
-        SELECT a.id, a.hostname, a.ip_address, a.risk_score, a.environment, s.name as system_name,
-          (SELECT COUNT(*) FROM vulnerability_findings vf WHERE vf.asset_id = a.id AND vf.status = 'open' AND vf.severity = 'critical') as critical_count,
-          (SELECT COUNT(*) FROM vulnerability_findings vf WHERE vf.asset_id = a.id AND vf.status = 'open' AND vf.severity = 'high') as high_count
+    // Top risk assets (without vulnerability subqueries to avoid dependency)
+    try {
+      topRiskAssets = await env.DB.prepare(`
+        SELECT a.id, a.hostname, a.ip_address, a.risk_score, a.environment, s.name as system_name
         FROM assets a
         LEFT JOIN systems s ON s.id = a.system_id
         WHERE a.org_id = ? AND a.risk_score > 0
         ORDER BY a.risk_score DESC
         LIMIT 5
-      `).bind(org.id).all()
-    ]);
+      `).bind(org.id).all();
+    } catch (riskErr) {
+      console.log('[handleAssetSummary] Top risk assets query failed:', riskErr.message);
+    }
 
-    // Calculate vulnerability summary
-    const vulnSummary = await env.DB.prepare(`
-      SELECT
-        COUNT(DISTINCT CASE WHEN vf.severity = 'critical' THEN a.id END) as assets_with_critical,
-        COUNT(DISTINCT CASE WHEN vf.severity = 'high' THEN a.id END) as assets_with_high,
-        SUM(CASE WHEN vf.severity = 'critical' THEN 1 ELSE 0 END) as total_critical,
-        SUM(CASE WHEN vf.severity = 'high' THEN 1 ELSE 0 END) as total_high,
-        SUM(CASE WHEN vf.severity = 'medium' THEN 1 ELSE 0 END) as total_medium,
-        SUM(CASE WHEN vf.severity = 'low' THEN 1 ELSE 0 END) as total_low
-      FROM assets a
-      LEFT JOIN vulnerability_findings vf ON vf.asset_id = a.id AND vf.status = 'open'
-      WHERE a.org_id = ?
-    `).bind(org.id).first();
+    // Vulnerability summary - may fail if table doesn't exist
+    let vulnSummary = null;
+    try {
+      vulnSummary = await env.DB.prepare(`
+        SELECT
+          COUNT(DISTINCT CASE WHEN vf.severity = 'critical' THEN a.id END) as assets_with_critical,
+          COUNT(DISTINCT CASE WHEN vf.severity = 'high' THEN a.id END) as assets_with_high,
+          SUM(CASE WHEN vf.severity = 'critical' THEN 1 ELSE 0 END) as total_critical,
+          SUM(CASE WHEN vf.severity = 'high' THEN 1 ELSE 0 END) as total_high,
+          SUM(CASE WHEN vf.severity = 'medium' THEN 1 ELSE 0 END) as total_medium,
+          SUM(CASE WHEN vf.severity = 'low' THEN 1 ELSE 0 END) as total_low
+        FROM assets a
+        LEFT JOIN vulnerability_findings vf ON vf.asset_id = a.id AND vf.status = 'open'
+        WHERE a.org_id = ?
+      `).bind(org.id).first();
+    } catch (vulnErr) {
+      console.log('[handleAssetSummary] Vulnerability summary query failed (table may not exist):', vulnErr.message);
+    }
 
     return jsonResponse({
       summary: {
@@ -9186,6 +9195,410 @@ ${deadlineRows}</table>` : ''}
 <tr><td style="padding:16px 32px;background:#f9fafb;border-top:1px solid #e5e7eb">
 <p style="margin:0;color:#9ca3af;font-size:12px">Weekly digest from ForgeComply 360. Manage in <a href="https://forgecomply360.pages.dev/settings" style="color:#3b82f6">Settings</a>.</p>
 </td></tr></table></td></tr></table></body></html>`;
+}
+
+// ─── BACKUP & RESTORE ─────────────────────────────────────────────────────────
+
+const BACKUP_TABLES = [
+  'organizations', 'users', 'refresh_tokens',
+  'systems', 'control_implementations', 'organization_frameworks',
+  'evidence', 'evidence_control_links', 'evidence_schedules',
+  'poams', 'poam_milestones', 'poam_comments', 'poam_affected_assets',
+  'risks', 'vendors', 'policies', 'policy_attestations', 'policy_control_links',
+  'ssp_documents', 'monitoring_checks', 'monitoring_check_results',
+  'approval_requests', 'notifications', 'notification_preferences',
+  'audit_logs', 'audit_checklist_items',
+  'experience_configs', 'ai_templates', 'ai_documents',
+  'compliance_snapshots', 'addon_modules', 'organization_addons',
+  'scan_imports', 'vulnerability_findings', 'assets', 'asset_scan_history',
+  'questionnaires', 'questionnaire_responses'
+];
+
+async function handleScheduledBackup(env) {
+  console.log('[CRON] Starting scheduled backup...');
+
+  try {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupId = `backup-${timestamp}`;
+
+    // 1. Export all database tables
+    const dbBackup = {};
+    let totalRows = 0;
+
+    for (const table of BACKUP_TABLES) {
+      try {
+        const { results } = await env.DB.prepare(`SELECT * FROM ${table}`).all();
+        dbBackup[table] = results || [];
+        totalRows += (results?.length || 0);
+        console.log(`[BACKUP] ${table}: ${results?.length || 0} rows`);
+      } catch (err) {
+        console.log(`[BACKUP] Skipping ${table}: ${err.message}`);
+        dbBackup[table] = [];
+      }
+    }
+
+    // 2. Create backup manifest
+    const manifest = {
+      id: backupId,
+      created_at: new Date().toISOString(),
+      type: 'scheduled',
+      tables: Object.keys(dbBackup).length,
+      total_rows: totalRows,
+      evidence_files: 0
+    };
+
+    // 3. Save database backup to R2
+    await env.BACKUP_BUCKET.put(
+      `${backupId}/database.json`,
+      JSON.stringify(dbBackup, null, 2),
+      { customMetadata: { created: manifest.created_at, type: 'database' } }
+    );
+
+    // 4. Copy evidence files from EVIDENCE_VAULT to BACKUP_BUCKET
+    let evidenceCount = 0;
+    try {
+      const evidenceList = await env.EVIDENCE_VAULT.list({ limit: 1000 });
+      for (const obj of evidenceList.objects || []) {
+        const file = await env.EVIDENCE_VAULT.get(obj.key);
+        if (file) {
+          await env.BACKUP_BUCKET.put(
+            `${backupId}/evidence/${obj.key}`,
+            file.body,
+            { customMetadata: obj.customMetadata || {} }
+          );
+          evidenceCount++;
+        }
+      }
+      manifest.evidence_files = evidenceCount;
+    } catch (err) {
+      console.log(`[BACKUP] Evidence copy error: ${err.message}`);
+    }
+
+    // 5. Save manifest
+    await env.BACKUP_BUCKET.put(
+      `${backupId}/manifest.json`,
+      JSON.stringify(manifest, null, 2),
+      { customMetadata: { created: manifest.created_at, type: 'manifest' } }
+    );
+
+    // 6. Clean up old backups (keep last 30 days)
+    await cleanupOldBackups(env, 30);
+
+    console.log(`[CRON] Backup complete: ${backupId} (${totalRows} rows, ${evidenceCount} files)`);
+    return { success: true, backupId, manifest };
+
+  } catch (error) {
+    console.error('[CRON] Backup failed:', error.message);
+    return { success: false, error: error.message };
+  }
+}
+
+async function cleanupOldBackups(env, retentionDays) {
+  try {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - retentionDays);
+
+    const list = await env.BACKUP_BUCKET.list({ prefix: 'backup-' });
+    const backupDirs = new Set();
+
+    for (const obj of list.objects || []) {
+      const backupDir = obj.key.split('/')[0];
+      backupDirs.add(backupDir);
+    }
+
+    for (const dir of backupDirs) {
+      // Parse date from backup-YYYY-MM-DDTHH-MM-SS-XXXZ
+      const dateMatch = dir.match(/backup-(\d{4}-\d{2}-\d{2})/);
+      if (dateMatch) {
+        const backupDate = new Date(dateMatch[1]);
+        if (backupDate < cutoff) {
+          // Delete all files in this backup
+          const files = await env.BACKUP_BUCKET.list({ prefix: `${dir}/` });
+          for (const file of files.objects || []) {
+            await env.BACKUP_BUCKET.delete(file.key);
+          }
+          console.log(`[BACKUP] Deleted old backup: ${dir}`);
+        }
+      }
+    }
+  } catch (err) {
+    console.log(`[BACKUP] Cleanup error: ${err.message}`);
+  }
+}
+
+// API Handlers for Backup Management
+
+async function handleListBackups(env, org, user) {
+  if (!requireRole(user, 'admin')) {
+    return jsonResponse({ error: 'Admin access required' }, 403);
+  }
+
+  try {
+    const list = await env.BACKUP_BUCKET.list({ prefix: 'backup-' });
+    const backups = new Map();
+
+    for (const obj of list.objects || []) {
+      const parts = obj.key.split('/');
+      const backupId = parts[0];
+
+      if (!backups.has(backupId)) {
+        backups.set(backupId, { id: backupId, files: [], size: 0 });
+      }
+
+      const backup = backups.get(backupId);
+      backup.files.push(obj.key);
+      backup.size += obj.size || 0;
+
+      if (parts[1] === 'manifest.json') {
+        // Load manifest for metadata
+        const manifest = await env.BACKUP_BUCKET.get(obj.key);
+        if (manifest) {
+          const data = await manifest.json();
+          backup.created_at = data.created_at;
+          backup.type = data.type;
+          backup.tables = data.tables;
+          backup.total_rows = data.total_rows;
+          backup.evidence_files = data.evidence_files;
+        }
+      }
+    }
+
+    const backupList = Array.from(backups.values())
+      .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
+      .slice(0, 50);
+
+    return jsonResponse({ backups: backupList });
+  } catch (err) {
+    return jsonResponse({ error: 'Failed to list backups: ' + err.message }, 500);
+  }
+}
+
+async function handleTriggerBackup(env, org, user) {
+  if (!requireRole(user, 'admin')) {
+    return jsonResponse({ error: 'Admin access required' }, 403);
+  }
+
+  try {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupId = `backup-${timestamp}`;
+
+    // Export database
+    const dbBackup = {};
+    let totalRows = 0;
+
+    for (const table of BACKUP_TABLES) {
+      try {
+        const { results } = await env.DB.prepare(`SELECT * FROM ${table}`).all();
+        dbBackup[table] = results || [];
+        totalRows += (results?.length || 0);
+      } catch {
+        dbBackup[table] = [];
+      }
+    }
+
+    // Create manifest
+    const manifest = {
+      id: backupId,
+      created_at: new Date().toISOString(),
+      type: 'manual',
+      triggered_by: user.id,
+      triggered_by_name: user.name,
+      tables: Object.keys(dbBackup).length,
+      total_rows: totalRows,
+      evidence_files: 0
+    };
+
+    // Save database backup
+    await env.BACKUP_BUCKET.put(
+      `${backupId}/database.json`,
+      JSON.stringify(dbBackup, null, 2),
+      { customMetadata: { created: manifest.created_at, type: 'database' } }
+    );
+
+    // Copy evidence files
+    let evidenceCount = 0;
+    try {
+      const evidenceList = await env.EVIDENCE_VAULT.list({ limit: 1000 });
+      for (const obj of evidenceList.objects || []) {
+        const file = await env.EVIDENCE_VAULT.get(obj.key);
+        if (file) {
+          await env.BACKUP_BUCKET.put(
+            `${backupId}/evidence/${obj.key}`,
+            file.body,
+            { customMetadata: obj.customMetadata || {} }
+          );
+          evidenceCount++;
+        }
+      }
+      manifest.evidence_files = evidenceCount;
+    } catch {}
+
+    // Save manifest
+    await env.BACKUP_BUCKET.put(
+      `${backupId}/manifest.json`,
+      JSON.stringify(manifest, null, 2)
+    );
+
+    await auditLog(env, org.id, user.id, 'create', 'backup', backupId, { type: 'manual', rows: totalRows, files: evidenceCount });
+
+    return jsonResponse({ success: true, backup: manifest });
+  } catch (err) {
+    return jsonResponse({ error: 'Backup failed: ' + err.message }, 500);
+  }
+}
+
+async function handleGetBackup(env, org, user, backupId) {
+  if (!requireRole(user, 'admin')) {
+    return jsonResponse({ error: 'Admin access required' }, 403);
+  }
+
+  try {
+    const manifest = await env.BACKUP_BUCKET.get(`${backupId}/manifest.json`);
+    if (!manifest) {
+      return jsonResponse({ error: 'Backup not found' }, 404);
+    }
+
+    const data = await manifest.json();
+
+    // Get file list
+    const files = await env.BACKUP_BUCKET.list({ prefix: `${backupId}/` });
+    data.files = (files.objects || []).map(f => ({
+      key: f.key,
+      size: f.size,
+      uploaded: f.uploaded
+    }));
+
+    return jsonResponse({ backup: data });
+  } catch (err) {
+    return jsonResponse({ error: 'Failed to get backup: ' + err.message }, 500);
+  }
+}
+
+async function handleDeleteBackup(env, org, user, backupId) {
+  if (!requireRole(user, 'owner')) {
+    return jsonResponse({ error: 'Owner access required' }, 403);
+  }
+
+  try {
+    const files = await env.BACKUP_BUCKET.list({ prefix: `${backupId}/` });
+    let deleted = 0;
+
+    for (const file of files.objects || []) {
+      await env.BACKUP_BUCKET.delete(file.key);
+      deleted++;
+    }
+
+    await auditLog(env, org.id, user.id, 'delete', 'backup', backupId, { files_deleted: deleted });
+
+    return jsonResponse({ success: true, deleted });
+  } catch (err) {
+    return jsonResponse({ error: 'Failed to delete backup: ' + err.message }, 500);
+  }
+}
+
+async function handleRestoreBackup(request, env, org, user, backupId) {
+  if (!requireRole(user, 'owner')) {
+    return jsonResponse({ error: 'Owner access required for restore' }, 403);
+  }
+
+  try {
+    const body = await request.json().catch(() => ({}));
+    const { confirm, restore_evidence = false } = body;
+
+    if (confirm !== 'RESTORE') {
+      return jsonResponse({
+        error: 'Restore requires confirmation. Send { "confirm": "RESTORE" } to proceed.',
+        warning: 'This will OVERWRITE all current data. This action cannot be undone.'
+      }, 400);
+    }
+
+    // Load database backup
+    const dbFile = await env.BACKUP_BUCKET.get(`${backupId}/database.json`);
+    if (!dbFile) {
+      return jsonResponse({ error: 'Database backup not found' }, 404);
+    }
+
+    const dbBackup = await dbFile.json();
+    let restoredRows = 0;
+    const errors = [];
+
+    // Restore tables in order (respecting foreign keys)
+    const restoreOrder = [
+      'organizations', 'users', 'refresh_tokens',
+      'systems', 'organization_frameworks',
+      'control_implementations',
+      'evidence', 'evidence_control_links', 'evidence_schedules',
+      'poams', 'poam_milestones', 'poam_comments', 'poam_affected_assets',
+      'risks', 'vendors', 'policies', 'policy_attestations', 'policy_control_links',
+      'ssp_documents', 'monitoring_checks', 'monitoring_check_results',
+      'approval_requests', 'notifications', 'notification_preferences',
+      'audit_logs', 'audit_checklist_items',
+      'experience_configs', 'ai_templates', 'ai_documents',
+      'compliance_snapshots', 'addon_modules', 'organization_addons',
+      'scan_imports', 'assets', 'vulnerability_findings', 'asset_scan_history',
+      'questionnaires', 'questionnaire_responses'
+    ];
+
+    for (const table of restoreOrder) {
+      const rows = dbBackup[table];
+      if (!rows || rows.length === 0) continue;
+
+      try {
+        // Clear existing data
+        await env.DB.prepare(`DELETE FROM ${table}`).run();
+
+        // Insert backup data
+        for (const row of rows) {
+          const columns = Object.keys(row);
+          const placeholders = columns.map(() => '?').join(', ');
+          const values = columns.map(c => row[c]);
+
+          await env.DB.prepare(
+            `INSERT INTO ${table} (${columns.join(', ')}) VALUES (${placeholders})`
+          ).bind(...values).run();
+          restoredRows++;
+        }
+      } catch (err) {
+        errors.push({ table, error: err.message });
+      }
+    }
+
+    // Restore evidence files if requested
+    let restoredFiles = 0;
+    if (restore_evidence) {
+      try {
+        const evidenceList = await env.BACKUP_BUCKET.list({ prefix: `${backupId}/evidence/` });
+        for (const obj of evidenceList.objects || []) {
+          const file = await env.BACKUP_BUCKET.get(obj.key);
+          if (file) {
+            const originalKey = obj.key.replace(`${backupId}/evidence/`, '');
+            await env.EVIDENCE_VAULT.put(originalKey, file.body, {
+              customMetadata: obj.customMetadata || {}
+            });
+            restoredFiles++;
+          }
+        }
+      } catch (err) {
+        errors.push({ component: 'evidence', error: err.message });
+      }
+    }
+
+    await auditLog(env, org.id, user.id, 'restore', 'backup', backupId, {
+      restored_rows: restoredRows,
+      restored_files: restoredFiles,
+      errors: errors.length
+    });
+
+    return jsonResponse({
+      success: true,
+      restored_rows: restoredRows,
+      restored_files: restoredFiles,
+      errors: errors.length > 0 ? errors : undefined
+    });
+
+  } catch (err) {
+    return jsonResponse({ error: 'Restore failed: ' + err.message }, 500);
+  }
 }
 
 // ─── AI Risk Scoring & Recommendations ───────────────────────────────────────

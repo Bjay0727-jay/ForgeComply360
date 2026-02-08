@@ -19,6 +19,10 @@ id = "a3323bb1cfa14271a286170864082869"
 binding = "EVIDENCE_VAULT"
 bucket_name = "forge-evidence"
 
+[[r2_buckets]]
+binding = "BACKUP_BUCKET"
+bucket_name = "forge-comply360-backups"
+
 [ai]
 binding = "AI"
 
@@ -45,6 +49,10 @@ id = "a3323bb1cfa14271a286170864082869"
 binding = "EVIDENCE_VAULT"
 bucket_name = "forge-evidence"
 
+[[env.production.r2_buckets]]
+binding = "BACKUP_BUCKET"
+bucket_name = "forge-comply360-backups"
+
 [env.production.ai]
 binding = "AI"
 
@@ -62,10 +70,13 @@ CORS_ORIGIN = "https://forgecomply360.pages.dev"
 #   Production: wrangler secret put RESEND_API_KEY --env production
 
 # ============================================================================
-# CRON TRIGGERS - Evidence Scheduling, Reminders & Email Digests
+# CRON TRIGGERS - Evidence Scheduling, Reminders & Email Digests & Backups
 # ============================================================================
+# 0 6 * * * = Daily at 6 AM UTC (evidence checks, compliance alerts)
+# 0 8 * * 1 = Weekly Monday 8 AM UTC (weekly digest)
+# 0 2 * * * = Daily at 2 AM UTC (automated backup)
 [triggers]
-crons = ["0 6 * * *", "0 8 * * 1"]
+crons = ["0 6 * * *", "0 8 * * 1", "0 2 * * *"]
 
 [env.production.triggers]
-crons = ["0 6 * * *", "0 8 * * 1"]
+crons = ["0 6 * * *", "0 8 * * 1", "0 2 * * *"]
