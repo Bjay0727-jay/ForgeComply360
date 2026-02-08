@@ -46,6 +46,7 @@ export function ScanImportPage() {
   // Upload state
   const [file, setFile] = useState<File | null>(null);
   const [systemId, setSystemId] = useState('');
+  const [scannerType, setScannerType] = useState('auto');
   const [autoCreateAssets, setAutoCreateAssets] = useState(true);
   const [autoMapControls, setAutoMapControls] = useState(true);
   const [minSeverity, setMinSeverity] = useState('low');
@@ -113,6 +114,7 @@ export function ScanImportPage() {
       const formData = new FormData();
       formData.append('file', file);
       formData.append('system_id', systemId);
+      formData.append('scanner_type', scannerType);
       formData.append('auto_create_assets', String(autoCreateAssets));
       formData.append('auto_map_controls', String(autoMapControls));
       formData.append('min_severity', minSeverity);
@@ -231,6 +233,20 @@ export function ScanImportPage() {
     );
   };
 
+  const scannerTypeBadge = (type: string) => {
+    const styles: Record<string, { bg: string; label: string }> = {
+      nessus: { bg: 'bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300', label: 'Nessus' },
+      qualys: { bg: 'bg-indigo-100 text-indigo-800 dark:bg-indigo-900/30 dark:text-indigo-300', label: 'Qualys' },
+      tenable: { bg: 'bg-cyan-100 text-cyan-800 dark:bg-cyan-900/30 dark:text-cyan-300', label: 'Tenable' },
+    };
+    const style = styles[type] || { bg: 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300', label: type };
+    return (
+      <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${style.bg}`}>
+        {style.label}
+      </span>
+    );
+  };
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -241,18 +257,36 @@ export function ScanImportPage() {
       {/* Upload Section */}
       <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
         <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Import Scan File</h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
           <div className="lg:col-span-2">
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              Scan File (.nessus)
+              Scan File
             </label>
             <input
               id="scan-file-input"
               type="file"
-              accept=".nessus"
+              accept=".nessus,.csv"
               onChange={(e) => setFile(e.target.files?.[0] || null)}
               className="block w-full text-sm text-gray-500 dark:text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 dark:file:bg-blue-900/30 dark:file:text-blue-300 hover:file:bg-blue-100 dark:hover:file:bg-blue-900/50 cursor-pointer"
             />
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+              Supports: Nessus (.nessus), Qualys CSV, Tenable.io CSV
+            </p>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              Scanner Type
+            </label>
+            <select
+              value={scannerType}
+              onChange={(e) => setScannerType(e.target.value)}
+              className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-2 text-sm"
+            >
+              <option value="auto">Auto-detect</option>
+              <option value="nessus">Nessus</option>
+              <option value="qualys">Qualys</option>
+              <option value="tenable">Tenable.io</option>
+            </select>
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
@@ -353,6 +387,7 @@ export function ScanImportPage() {
               <thead>
                 <tr>
                   <th className={`px-6 py-3 text-left ${TYPOGRAPHY.tableHeader}`}>Scan Name</th>
+                  <th className={`px-6 py-3 text-left ${TYPOGRAPHY.tableHeader}`}>Scanner</th>
                   <th className={`px-6 py-3 text-left ${TYPOGRAPHY.tableHeader}`}>System</th>
                   <th className={`px-6 py-3 text-left ${TYPOGRAPHY.tableHeader}`}>Date</th>
                   <th className={`px-6 py-3 text-left ${TYPOGRAPHY.tableHeader}`}>Hosts</th>
@@ -373,6 +408,9 @@ export function ScanImportPage() {
                           {scan.scan_name || scan.file_name}
                         </div>
                         <div className="text-xs text-gray-500 dark:text-gray-400">{scan.file_name}</div>
+                      </td>
+                      <td className="px-6 py-4">
+                        {scannerTypeBadge(scan.scanner_type)}
                       </td>
                       <td className="px-6 py-4 text-sm text-gray-700 dark:text-gray-300">
                         {scan.system_name || '—'}
@@ -403,7 +441,7 @@ export function ScanImportPage() {
                     </tr>
                     {expandedId === scan.id && (
                       <tr>
-                        <td colSpan={7} className="px-6 py-4 bg-gray-50 dark:bg-gray-700/30">
+                        <td colSpan={8} className="px-6 py-4 bg-gray-50 dark:bg-gray-700/30">
                           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
                             <div>
                               <span className="text-gray-500 dark:text-gray-400">Scanner:</span>

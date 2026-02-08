@@ -227,8 +227,13 @@ async function handleRequest(request, env, url, ctx) {
   const { user, org } = auth;
 
   // Rate limit API endpoints per user (120 requests per minute)
-  const rl = await checkRateLimit(env, `api:${user.id}`, 120, 60);
-  if (rl.limited) return rateLimitResponse(rl.retryAfter);
+  const userRl = await checkRateLimit(env, `api:${user.id}`, 120, 60);
+  if (userRl.limited) return rateLimitResponse(userRl.retryAfter);
+
+  // Rate limit API endpoints per organization (600 requests per minute across all users)
+  // This prevents one organization from consuming all system resources
+  const orgRl = await checkRateLimit(env, `org:${org.id}`, 600, 60);
+  if (orgRl.limited) return rateLimitResponse(orgRl.retryAfter);
 
   // Auth
   if (path === '/api/v1/auth/me' && method === 'GET') {
@@ -403,6 +408,7 @@ async function handleRequest(request, env, url, ctx) {
   if (path === '/api/v1/dashboard/executive-summary' && method === 'GET') return handleExecutiveSummary(env, org, user);
   if (path === '/api/v1/dashboard/framework-stats' && method === 'GET') return handleFrameworkStats(env, org);
   if (path === '/api/v1/dashboard/my-work' && method === 'GET') return handleMyWork(env, org, user);
+  if (path === '/api/v1/dashboard/asset-summary' && method === 'GET') return handleAssetSummary(env, org);
   if (path === '/api/v1/dashboard/system-comparison' && method === 'GET') return handleSystemComparison(env, org, user);
   if (path === '/api/v1/compliance/snapshot' && method === 'POST') return handleCreateComplianceSnapshot(request, env, org, user);
   if (path === '/api/v1/compliance/trends' && method === 'GET') return handleGetComplianceTrends(env, url, org);
@@ -3023,6 +3029,110 @@ async function handleDashboardStats(env, org) {
   } catch (err) {
     console.error('[handleDashboardStats]', err.message);
     return jsonResponse({ error: 'Failed to load dashboard stats' }, 500);
+  }
+}
+
+// ============================================================================
+// ASSET SUMMARY (for dashboard widget)
+// ============================================================================
+
+async function handleAssetSummary(env, org) {
+  try {
+    const [
+      totalAssets,
+      assetsBySystem,
+      assetsByEnvironment,
+      criticalVulnAssets,
+      recentlyDiscovered,
+      topRiskAssets
+    ] = await Promise.all([
+      // Total asset count
+      env.DB.prepare('SELECT COUNT(*) as count FROM assets WHERE org_id = ?').bind(org.id).first(),
+
+      // Assets grouped by system
+      env.DB.prepare(`
+        SELECT s.name as system_name, s.id as system_id, COUNT(a.id) as count
+        FROM assets a
+        LEFT JOIN systems s ON s.id = a.system_id
+        WHERE a.org_id = ?
+        GROUP BY a.system_id
+        ORDER BY count DESC
+        LIMIT 5
+      `).bind(org.id).all(),
+
+      // Assets grouped by environment
+      env.DB.prepare(`
+        SELECT environment, COUNT(*) as count
+        FROM assets WHERE org_id = ?
+        GROUP BY environment
+        ORDER BY count DESC
+      `).bind(org.id).all(),
+
+      // Assets with critical vulnerabilities
+      env.DB.prepare(`
+        SELECT COUNT(DISTINCT a.id) as count
+        FROM assets a
+        JOIN vulnerability_findings vf ON vf.asset_id = a.id
+        WHERE a.org_id = ? AND vf.severity = 'critical' AND vf.status = 'open'
+      `).bind(org.id).first(),
+
+      // Recently discovered assets (last 7 days)
+      env.DB.prepare(`
+        SELECT id, hostname, ip_address, discovery_source, first_seen_at, risk_score
+        FROM assets
+        WHERE org_id = ? AND first_seen_at >= datetime('now', '-7 days')
+        ORDER BY first_seen_at DESC
+        LIMIT 5
+      `).bind(org.id).all(),
+
+      // Top risk score assets
+      env.DB.prepare(`
+        SELECT a.id, a.hostname, a.ip_address, a.risk_score, a.environment, s.name as system_name,
+          (SELECT COUNT(*) FROM vulnerability_findings vf WHERE vf.asset_id = a.id AND vf.status = 'open' AND vf.severity = 'critical') as critical_count,
+          (SELECT COUNT(*) FROM vulnerability_findings vf WHERE vf.asset_id = a.id AND vf.status = 'open' AND vf.severity = 'high') as high_count
+        FROM assets a
+        LEFT JOIN systems s ON s.id = a.system_id
+        WHERE a.org_id = ? AND a.risk_score > 0
+        ORDER BY a.risk_score DESC
+        LIMIT 5
+      `).bind(org.id).all()
+    ]);
+
+    // Calculate vulnerability summary
+    const vulnSummary = await env.DB.prepare(`
+      SELECT
+        COUNT(DISTINCT CASE WHEN vf.severity = 'critical' THEN a.id END) as assets_with_critical,
+        COUNT(DISTINCT CASE WHEN vf.severity = 'high' THEN a.id END) as assets_with_high,
+        SUM(CASE WHEN vf.severity = 'critical' THEN 1 ELSE 0 END) as total_critical,
+        SUM(CASE WHEN vf.severity = 'high' THEN 1 ELSE 0 END) as total_high,
+        SUM(CASE WHEN vf.severity = 'medium' THEN 1 ELSE 0 END) as total_medium,
+        SUM(CASE WHEN vf.severity = 'low' THEN 1 ELSE 0 END) as total_low
+      FROM assets a
+      LEFT JOIN vulnerability_findings vf ON vf.asset_id = a.id AND vf.status = 'open'
+      WHERE a.org_id = ?
+    `).bind(org.id).first();
+
+    return jsonResponse({
+      summary: {
+        total_assets: totalAssets?.count || 0,
+        assets_with_critical: vulnSummary?.assets_with_critical || 0,
+        assets_with_high: vulnSummary?.assets_with_high || 0,
+        recently_discovered: recentlyDiscovered?.results?.length || 0,
+        vulnerabilities: {
+          critical: vulnSummary?.total_critical || 0,
+          high: vulnSummary?.total_high || 0,
+          medium: vulnSummary?.total_medium || 0,
+          low: vulnSummary?.total_low || 0
+        }
+      },
+      by_system: assetsBySystem?.results || [],
+      by_environment: assetsByEnvironment?.results || [],
+      recently_discovered: recentlyDiscovered?.results || [],
+      top_risk_assets: topRiskAssets?.results || []
+    });
+  } catch (err) {
+    console.error('[handleAssetSummary]', err.message);
+    return jsonResponse({ error: 'Failed to load asset summary' }, 500);
   }
 }
 
@@ -6712,6 +6822,315 @@ function generateFindingKey(finding, assetId) {
   return [finding.pluginId, assetId, finding.port.toString(), finding.protocol].join('|');
 }
 
+// ============================================================================
+// QUALYS CSV PARSER
+// Parses Qualys VM exported CSV files
+// Expected columns: IP, DNS, QID, Title, Severity, CVE ID, CVSS, CVSS3.1, Solution, Results, etc.
+// ============================================================================
+
+function parseQualysCSV(csvContent) {
+  const lines = csvContent.split('\n');
+  if (lines.length < 2) {
+    throw new Error('Invalid Qualys CSV: file is empty or has no data rows');
+  }
+
+  // Find header row (Qualys CSVs sometimes have metadata rows before headers)
+  let headerIndex = 0;
+  for (let i = 0; i < Math.min(10, lines.length); i++) {
+    if (lines[i].toLowerCase().includes('ip') && lines[i].toLowerCase().includes('qid')) {
+      headerIndex = i;
+      break;
+    }
+  }
+
+  const headers = parseCSVLine(lines[headerIndex]);
+  const headerMap = {};
+  headers.forEach((h, idx) => {
+    headerMap[h.toLowerCase().trim()] = idx;
+  });
+
+  // Required columns
+  const requiredCols = ['ip', 'qid', 'title', 'severity'];
+  for (const col of requiredCols) {
+    if (headerMap[col] === undefined) {
+      throw new Error(`Invalid Qualys CSV: missing required column "${col}"`);
+    }
+  }
+
+  const hostMap = new Map();
+  const findings = [];
+  const summary = { hostsScanned: 0, critical: 0, high: 0, medium: 0, low: 0, info: 0, total: 0 };
+
+  for (let i = headerIndex + 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+
+    const values = parseCSVLine(line);
+    const ip = values[headerMap['ip']]?.trim();
+    const qid = values[headerMap['qid']]?.trim();
+    const title = values[headerMap['title']]?.trim();
+    const severityRaw = values[headerMap['severity']]?.trim();
+
+    if (!ip || !qid) continue;
+
+    // Track unique hosts
+    if (!hostMap.has(ip)) {
+      hostMap.set(ip, {
+        ipAddress: ip,
+        hostname: values[headerMap['dns']]?.trim() || values[headerMap['hostname']]?.trim() || ip,
+        fqdn: values[headerMap['dns']]?.trim() || null,
+        netbiosName: values[headerMap['netbios']]?.trim() || null,
+        macAddress: null,
+        osType: values[headerMap['os']]?.trim() || null,
+        credentialed: false
+      });
+    }
+
+    // Map Qualys severity (1-5) to standard
+    const severity = mapQualysSeverity(severityRaw);
+
+    // Extract CVEs
+    const cveRaw = values[headerMap['cve id']] || values[headerMap['cve']] || '';
+    const cves = cveRaw.split(/[,;\s]+/).filter(c => c.match(/CVE-\d{4}-\d+/i));
+
+    // Extract port
+    const portRaw = values[headerMap['port']] || values[headerMap['service']] || '';
+    const portMatch = portRaw.match(/(\d+)/);
+    const port = portMatch ? parseInt(portMatch[1], 10) : 0;
+
+    findings.push({
+      pluginId: `QID-${qid}`,
+      pluginName: title,
+      pluginFamily: values[headerMap['category']]?.trim() || values[headerMap['type']]?.trim() || 'Qualys',
+      port,
+      protocol: values[headerMap['protocol']]?.trim()?.toLowerCase() || 'tcp',
+      severity,
+      severityNum: getSeverityNum(severity),
+      hostIp: ip,
+      hostFqdn: hostMap.get(ip)?.fqdn || null,
+      title,
+      description: values[headerMap['threat']]?.trim() || values[headerMap['description']]?.trim() || '',
+      synopsis: values[headerMap['impact']]?.trim() || '',
+      solution: values[headerMap['solution']]?.trim() || '',
+      pluginOutput: values[headerMap['results']]?.trim() || values[headerMap['result']]?.trim() || '',
+      cvssScore: parseFloat(values[headerMap['cvss']] || values[headerMap['cvss base']]) || null,
+      cvss3Score: parseFloat(values[headerMap['cvss3'] || headerMap['cvss3.1'] || headerMap['cvss v3']]) || null,
+      cvss3Vector: values[headerMap['cvss3 vector']]?.trim() || null,
+      attackVector: null,
+      cves,
+      seeAlso: [],
+      exploitAvailable: (values[headerMap['exploitability']] || '').toLowerCase().includes('yes'),
+      exploitabilityEase: null,
+      patchPublished: values[headerMap['patch available']]?.trim() || null,
+      vulnPublished: values[headerMap['first detected']]?.trim() || null
+    });
+
+    summary[severity]++;
+    summary.total++;
+  }
+
+  summary.hostsScanned = hostMap.size;
+
+  return {
+    scanName: 'Qualys VM Scan',
+    scannerVersion: 'Qualys',
+    hosts: Array.from(hostMap.values()),
+    findings,
+    summary
+  };
+}
+
+function mapQualysSeverity(raw) {
+  const num = parseInt(raw, 10);
+  if (num >= 5) return 'critical';
+  if (num === 4) return 'high';
+  if (num === 3) return 'medium';
+  if (num === 2) return 'low';
+  return 'info';
+}
+
+// ============================================================================
+// TENABLE.IO CSV PARSER
+// Parses Tenable.io/Nessus exported CSV files
+// Expected columns: Plugin ID, CVE, CVSS, Risk, Host, Protocol, Port, Name, Synopsis, Description, Solution, etc.
+// ============================================================================
+
+function parseTenableCSV(csvContent) {
+  const lines = csvContent.split('\n');
+  if (lines.length < 2) {
+    throw new Error('Invalid Tenable CSV: file is empty or has no data rows');
+  }
+
+  // Find header row
+  let headerIndex = 0;
+  for (let i = 0; i < Math.min(10, lines.length); i++) {
+    const lower = lines[i].toLowerCase();
+    if (lower.includes('plugin id') || lower.includes('plugin') && lower.includes('host')) {
+      headerIndex = i;
+      break;
+    }
+  }
+
+  const headers = parseCSVLine(lines[headerIndex]);
+  const headerMap = {};
+  headers.forEach((h, idx) => {
+    headerMap[h.toLowerCase().trim().replace(/\s+/g, ' ')] = idx;
+  });
+
+  // Required columns
+  const pluginIdKey = Object.keys(headerMap).find(k => k.includes('plugin') && k.includes('id')) || 'plugin id';
+  const hostKey = Object.keys(headerMap).find(k => k === 'host' || k === 'ip' || k === 'ip address') || 'host';
+
+  if (headerMap[pluginIdKey] === undefined || headerMap[hostKey] === undefined) {
+    throw new Error('Invalid Tenable CSV: missing required columns (Plugin ID, Host)');
+  }
+
+  const hostMap = new Map();
+  const findings = [];
+  const summary = { hostsScanned: 0, critical: 0, high: 0, medium: 0, low: 0, info: 0, total: 0 };
+
+  for (let i = headerIndex + 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+
+    const values = parseCSVLine(line);
+    const pluginId = values[headerMap[pluginIdKey]]?.trim();
+    const host = values[headerMap[hostKey]]?.trim();
+
+    if (!pluginId || !host) continue;
+
+    // Track unique hosts
+    if (!hostMap.has(host)) {
+      const dnsKey = Object.keys(headerMap).find(k => k.includes('dns') || k.includes('fqdn'));
+      const netbiosKey = Object.keys(headerMap).find(k => k.includes('netbios'));
+      const osKey = Object.keys(headerMap).find(k => k.includes('operating system') || k === 'os');
+      const macKey = Object.keys(headerMap).find(k => k.includes('mac'));
+
+      hostMap.set(host, {
+        ipAddress: host,
+        hostname: dnsKey ? values[headerMap[dnsKey]]?.trim() || host : host,
+        fqdn: dnsKey ? values[headerMap[dnsKey]]?.trim() || null : null,
+        netbiosName: netbiosKey ? values[headerMap[netbiosKey]]?.trim() || null : null,
+        macAddress: macKey ? values[headerMap[macKey]]?.trim() || null : null,
+        osType: osKey ? values[headerMap[osKey]]?.trim() || null : null,
+        credentialed: false
+      });
+    }
+
+    // Map Risk/Severity
+    const riskKey = Object.keys(headerMap).find(k => k === 'risk' || k === 'severity' || k.includes('risk'));
+    const severityRaw = riskKey ? values[headerMap[riskKey]]?.trim()?.toLowerCase() : 'info';
+    const severity = mapTenableSeverity(severityRaw);
+
+    // Extract CVEs
+    const cveKey = Object.keys(headerMap).find(k => k === 'cve' || k.includes('cve'));
+    const cveRaw = cveKey ? values[headerMap[cveKey]] || '' : '';
+    const cves = cveRaw.split(/[,;\s]+/).filter(c => c.match(/CVE-\d{4}-\d+/i));
+
+    // Find column keys
+    const nameKey = Object.keys(headerMap).find(k => k === 'name' || k === 'plugin name');
+    const familyKey = Object.keys(headerMap).find(k => k.includes('family') || k.includes('plugin family'));
+    const portKey = Object.keys(headerMap).find(k => k === 'port');
+    const protocolKey = Object.keys(headerMap).find(k => k === 'protocol');
+    const synopsisKey = Object.keys(headerMap).find(k => k === 'synopsis');
+    const descKey = Object.keys(headerMap).find(k => k === 'description');
+    const solutionKey = Object.keys(headerMap).find(k => k === 'solution');
+    const outputKey = Object.keys(headerMap).find(k => k.includes('plugin output') || k.includes('output'));
+    const cvssKey = Object.keys(headerMap).find(k => k === 'cvss' || k.includes('cvss base') || k.includes('cvss v2'));
+    const cvss3Key = Object.keys(headerMap).find(k => k.includes('cvss v3') || k.includes('cvss3'));
+    const exploitKey = Object.keys(headerMap).find(k => k.includes('exploit'));
+
+    const title = nameKey ? values[headerMap[nameKey]]?.trim() || `Plugin ${pluginId}` : `Plugin ${pluginId}`;
+
+    findings.push({
+      pluginId,
+      pluginName: title,
+      pluginFamily: familyKey ? values[headerMap[familyKey]]?.trim() || 'Tenable' : 'Tenable',
+      port: portKey ? parseInt(values[headerMap[portKey]] || '0', 10) : 0,
+      protocol: protocolKey ? values[headerMap[protocolKey]]?.trim()?.toLowerCase() || 'tcp' : 'tcp',
+      severity,
+      severityNum: getSeverityNum(severity),
+      hostIp: host,
+      hostFqdn: hostMap.get(host)?.fqdn || null,
+      title,
+      description: descKey ? values[headerMap[descKey]]?.trim() || '' : '',
+      synopsis: synopsisKey ? values[headerMap[synopsisKey]]?.trim() || '' : '',
+      solution: solutionKey ? values[headerMap[solutionKey]]?.trim() || '' : '',
+      pluginOutput: outputKey ? values[headerMap[outputKey]]?.trim() || '' : '',
+      cvssScore: cvssKey ? parseFloat(values[headerMap[cvssKey]]) || null : null,
+      cvss3Score: cvss3Key ? parseFloat(values[headerMap[cvss3Key]]) || null : null,
+      cvss3Vector: null,
+      attackVector: null,
+      cves,
+      seeAlso: [],
+      exploitAvailable: exploitKey ? (values[headerMap[exploitKey]] || '').toLowerCase().includes('true') : false,
+      exploitabilityEase: null,
+      patchPublished: null,
+      vulnPublished: null
+    });
+
+    summary[severity]++;
+    summary.total++;
+  }
+
+  summary.hostsScanned = hostMap.size;
+
+  return {
+    scanName: 'Tenable.io Scan',
+    scannerVersion: 'Tenable.io',
+    hosts: Array.from(hostMap.values()),
+    findings,
+    summary
+  };
+}
+
+function mapTenableSeverity(raw) {
+  const lower = raw?.toLowerCase() || '';
+  if (lower === 'critical' || lower === '4') return 'critical';
+  if (lower === 'high' || lower === '3') return 'high';
+  if (lower === 'medium' || lower === '2') return 'medium';
+  if (lower === 'low' || lower === '1') return 'low';
+  return 'info';
+}
+
+function getSeverityNum(severity) {
+  const map = { 'critical': 4, 'high': 3, 'medium': 2, 'low': 1, 'info': 0 };
+  return map[severity] || 0;
+}
+
+// ============================================================================
+// CSV PARSING HELPER
+// Handles quoted fields, escaped quotes, commas within quotes
+// ============================================================================
+
+function parseCSVLine(line) {
+  const result = [];
+  let current = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    const nextChar = line[i + 1];
+
+    if (char === '"') {
+      if (inQuotes && nextChar === '"') {
+        current += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (char === ',' && !inQuotes) {
+      result.push(current);
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  result.push(current);
+
+  return result;
+}
+
 async function mapFindingToControls(db, finding) {
   const controls = new Set();
 
@@ -6856,10 +7275,15 @@ async function computeSHA256(data) {
 async function handleScanImport(request, env, org, user, ctx) {
   if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Insufficient permissions' }, 403);
 
+  // Rate limit scan imports: 10 per hour per organization (expensive operation)
+  const scanRl = await checkRateLimit(env, `scan:${org.id}`, 10, 3600);
+  if (scanRl.limited) return rateLimitResponse(scanRl.retryAfter);
+
   try {
     const formData = await request.formData();
     const file = formData.get('file');
     const systemId = formData.get('system_id');
+    const scannerType = formData.get('scanner_type') || 'auto'; // auto, nessus, qualys, tenable
     const autoCreateAssets = formData.get('auto_create_assets') !== 'false';
     const autoMapControls = formData.get('auto_map_controls') !== 'false';
     const minSeverity = formData.get('min_severity') || 'low';
@@ -6868,8 +7292,27 @@ async function handleScanImport(request, env, org, user, ctx) {
     if (!systemId) return jsonResponse({ error: 'system_id is required' }, 400);
 
     const fileName = file.name;
-    if (!fileName.endsWith('.nessus')) {
-      return jsonResponse({ error: 'File must be a .nessus file' }, 400);
+    const lowerName = fileName.toLowerCase();
+
+    // Determine scanner type from file extension or explicit parameter
+    let detectedType = scannerType;
+    if (scannerType === 'auto') {
+      if (lowerName.endsWith('.nessus')) {
+        detectedType = 'nessus';
+      } else if (lowerName.endsWith('.csv')) {
+        // Will be determined during parsing by examining headers
+        detectedType = 'csv';
+      } else {
+        return jsonResponse({ error: 'Unsupported file type. Supported: .nessus, .csv (Qualys/Tenable)' }, 400);
+      }
+    }
+
+    // Validate explicit scanner type matches file
+    if (detectedType === 'nessus' && !lowerName.endsWith('.nessus')) {
+      return jsonResponse({ error: 'File must be a .nessus file for Nessus scanner type' }, 400);
+    }
+    if ((detectedType === 'qualys' || detectedType === 'tenable') && !lowerName.endsWith('.csv')) {
+      return jsonResponse({ error: 'File must be a .csv file for Qualys/Tenable scanner type' }, 400);
     }
 
     const fileBuffer = await file.arrayBuffer();
@@ -6890,22 +7333,41 @@ async function handleScanImport(request, env, org, user, ctx) {
     const scanImportId = generateId();
     const r2Path = `scans/${org.id}/${scanImportId}/${fileName}`;
 
+    // For CSV files, determine type from content if auto-detect
+    let finalScannerType = detectedType;
+    if (detectedType === 'csv') {
+      // Peek at CSV headers to determine scanner
+      const decoder = new TextDecoder('utf-8');
+      const csvContent = decoder.decode(fileBuffer);
+      const firstLines = csvContent.substring(0, 2000).toLowerCase();
+
+      if (firstLines.includes('qid') && (firstLines.includes('qualys') || firstLines.includes('ip') && firstLines.includes('dns'))) {
+        finalScannerType = 'qualys';
+      } else if (firstLines.includes('plugin id') || firstLines.includes('plugin') && firstLines.includes('risk')) {
+        finalScannerType = 'tenable';
+      } else {
+        return jsonResponse({ error: 'Unable to detect CSV format. Please specify scanner_type as "qualys" or "tenable".' }, 400);
+      }
+    }
+
     await env.DB.prepare(`
       INSERT INTO scan_imports (
         id, organization_id, system_id, scanner_type, file_name,
         file_hash, file_path, status, imported_by
-      ) VALUES (?, ?, ?, 'nessus', ?, ?, ?, 'pending', ?)
-    `).bind(scanImportId, org.id, systemId, fileName, fileHash, r2Path, user.id).run();
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+    `).bind(scanImportId, org.id, systemId, finalScannerType, fileName, fileHash, r2Path, user.id).run();
 
     await env.EVIDENCE_VAULT.put(r2Path, fileBuffer, {
       customMetadata: {
         organization_id: org.id,
         scan_import_id: scanImportId,
-        uploaded_by: user.id
+        uploaded_by: user.id,
+        scanner_type: finalScannerType
       }
     });
 
-    ctx.waitUntil(processNessusScan(env, {
+    // Process based on scanner type
+    ctx.waitUntil(processScanFile(env, {
       scanImportId,
       orgId: org.id,
       systemId,
@@ -6913,14 +7375,17 @@ async function handleScanImport(request, env, org, user, ctx) {
       autoCreateAssets,
       autoMapControls,
       minSeverity,
-      fileBuffer
+      fileBuffer,
+      scannerType: finalScannerType,
+      importedBy: user.id
     }));
 
-    await auditLog(env, org.id, user.id, 'import', 'scan', scanImportId, { file_name: fileName, system_id: systemId }, request);
+    await auditLog(env, org.id, user.id, 'import', 'scan', scanImportId, { file_name: fileName, system_id: systemId, scanner_type: finalScannerType }, request);
 
     return jsonResponse({
       scan_import_id: scanImportId,
       status: 'processing',
+      scanner_type: finalScannerType,
       file_name: fileName,
       file_hash: `sha256:${fileHash}`,
       message: 'Scan file queued for processing'
@@ -7396,6 +7861,10 @@ async function handleRecalculateRiskScores(request, env, org, user) {
 async function handleBulkUpdateAssets(request, env, org, user) {
   if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Permission denied. Analyst role required.' }, 403);
 
+  // Rate limit bulk operations: 30 per hour per organization
+  const bulkRl = await checkRateLimit(env, `bulk:${org.id}`, 30, 3600);
+  if (bulkRl.limited) return rateLimitResponse(bulkRl.retryAfter);
+
   const { asset_ids, system_id, environment, data_zone, boundary_id } = await request.json();
 
   if (!asset_ids?.length) return jsonResponse({ error: 'asset_ids required' }, 400);
@@ -7481,6 +7950,10 @@ async function handleBulkDeleteAssets(request, env, org, user) {
 
 async function handleExportAssetsCSV(env, org, user) {
   if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Permission denied' }, 403);
+
+  // Rate limit exports: 20 per hour per organization
+  const exportRl = await checkRateLimit(env, `export:${org.id}`, 20, 3600);
+  if (exportRl.limited) return rateLimitResponse(exportRl.retryAfter);
 
   const assets = await env.DB.prepare(`
     SELECT
@@ -7644,6 +8117,254 @@ function parseCSVLine(line) {
   }
   result.push(current);
   return result;
+}
+
+// ============================================================================
+// UNIFIED SCAN PROCESSOR
+// Routes to appropriate parser based on scanner type
+// ============================================================================
+
+async function processScanFile(env, options) {
+  const { scanImportId, orgId, systemId, scannerType, fileBuffer, autoCreateAssets, autoMapControls, minSeverity, importedBy } = options;
+
+  try {
+    await env.DB.prepare(`UPDATE scan_imports SET status = 'processing' WHERE id = ?`).bind(scanImportId).run();
+
+    const decoder = new TextDecoder('utf-8');
+    const content = decoder.decode(fileBuffer);
+
+    let scanData;
+    let discoverySource;
+
+    switch (scannerType) {
+      case 'nessus':
+        scanData = await parseNessusXML(content);
+        discoverySource = 'nessus_scan';
+        break;
+      case 'qualys':
+        scanData = parseQualysCSV(content);
+        discoverySource = 'qualys_scan';
+        break;
+      case 'tenable':
+        scanData = parseTenableCSV(content);
+        discoverySource = 'tenable_scan';
+        break;
+      default:
+        throw new Error(`Unsupported scanner type: ${scannerType}`);
+    }
+
+    // Update scan import metadata
+    await env.DB.prepare(`
+      UPDATE scan_imports SET scanner_version = ?, scan_name = ?, hosts_scanned = ? WHERE id = ?
+    `).bind(scanData.scannerVersion, scanData.scanName, scanData.summary.hostsScanned, scanImportId).run();
+
+    // Process hosts and findings using common logic
+    await processScannedData(env, {
+      scanImportId,
+      orgId,
+      systemId,
+      scanData,
+      discoverySource,
+      autoCreateAssets,
+      autoMapControls,
+      minSeverity,
+      importedBy
+    });
+
+  } catch (error) {
+    console.error('Scan processing error:', error);
+    await env.DB.prepare(
+      `UPDATE scan_imports SET status = 'failed', error_message = ? WHERE id = ?`
+    ).bind(error.message, scanImportId).run();
+  }
+}
+
+// Common processing logic for all scanner types
+async function processScannedData(env, options) {
+  const { scanImportId, orgId, systemId, scanData, discoverySource, autoCreateAssets, autoMapControls, minSeverity, importedBy } = options;
+
+  const assetMap = new Map();
+
+  // Process hosts
+  for (const host of scanData.hosts) {
+    let asset = await env.DB.prepare(
+      `SELECT id FROM assets WHERE org_id = ? AND (ip_address = ? OR hostname = ?)`
+    ).bind(orgId, host.ipAddress, host.hostname).first();
+
+    if (!asset && autoCreateAssets) {
+      const assetId = generateId();
+      await env.DB.prepare(`
+        INSERT INTO assets (
+          id, org_id, system_id, hostname, ip_address, mac_address,
+          fqdn, netbios_name, os_type, asset_type, discovery_source,
+          scan_credentialed, last_seen_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'server', ?, ?, datetime('now'))
+      `).bind(
+        assetId, orgId, systemId, host.hostname, host.ipAddress,
+        host.macAddress, host.fqdn, host.netbiosName, host.osType,
+        discoverySource, host.credentialed ? 1 : 0
+      ).run();
+      asset = { id: assetId };
+    } else if (asset) {
+      await env.DB.prepare(`
+        UPDATE assets SET
+          fqdn = COALESCE(?, fqdn), netbios_name = COALESCE(?, netbios_name),
+          os_type = COALESCE(?, os_type), scan_credentialed = ?, last_seen_at = datetime('now')
+        WHERE id = ?
+      `).bind(host.fqdn, host.netbiosName, host.osType, host.credentialed ? 1 : 0, asset.id).run();
+    }
+
+    if (asset) assetMap.set(host.ipAddress, asset.id);
+  }
+
+  // Process findings
+  const severityOrder = ['info', 'low', 'medium', 'high', 'critical'];
+  const minIndex = severityOrder.indexOf(minSeverity);
+  const counts = { critical: 0, high: 0, medium: 0, low: 0, info: 0, total: 0 };
+
+  for (const finding of scanData.findings) {
+    const findingSeverityIndex = severityOrder.indexOf(finding.severity);
+    if (findingSeverityIndex < minIndex) continue;
+
+    const assetId = assetMap.get(finding.hostIp);
+    if (!assetId) continue;
+
+    const existing = await env.DB.prepare(
+      `SELECT id, first_seen_at FROM vulnerability_findings WHERE org_id = ? AND asset_id = ? AND plugin_id = ? AND port = ? AND protocol = ?`
+    ).bind(orgId, assetId, finding.pluginId, finding.port, finding.protocol).first();
+
+    let controlMappings = [];
+    if (autoMapControls) {
+      controlMappings = await mapFindingToControls(env.DB, finding);
+    }
+
+    if (existing) {
+      await env.DB.prepare(`
+        UPDATE vulnerability_findings SET
+          scan_import_id = ?, title = ?, description = ?, severity = ?,
+          cvss_score = ?, cvss3_score = ?, cvss3_vector = ?,
+          remediation_guidance = ?, plugin_output = ?, exploit_available = ?,
+          see_also = ?, control_mappings = ?,
+          last_seen_at = datetime('now'), updated_at = datetime('now')
+        WHERE id = ?
+      `).bind(
+        scanImportId, finding.title, finding.description, finding.severity,
+        finding.cvssScore, finding.cvss3Score, finding.cvss3Vector,
+        finding.solution, finding.pluginOutput, finding.exploitAvailable ? 1 : 0,
+        JSON.stringify(finding.seeAlso), JSON.stringify(controlMappings),
+        existing.id
+      ).run();
+    } else {
+      const findingId = generateId();
+      await env.DB.prepare(`
+        INSERT INTO vulnerability_findings (
+          id, org_id, asset_id, scan_import_id, scan_id,
+          plugin_id, plugin_name, plugin_family, port, protocol,
+          title, description, severity, cvss_score, cvss3_score, cvss3_vector,
+          affected_component, remediation_guidance, plugin_output,
+          exploit_available, see_also, control_mappings,
+          first_seen_at, last_seen_at, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), 'open')
+      `).bind(
+        findingId, orgId, assetId, scanImportId, scanImportId,
+        finding.pluginId, finding.pluginName, finding.pluginFamily,
+        finding.port, finding.protocol, finding.title, finding.description,
+        finding.severity, finding.cvssScore, finding.cvss3Score, finding.cvss3Vector,
+        `${finding.hostIp}:${finding.port}`, finding.solution, finding.pluginOutput,
+        finding.exploitAvailable ? 1 : 0, JSON.stringify(finding.seeAlso),
+        JSON.stringify(controlMappings)
+      ).run();
+    }
+
+    counts[finding.severity]++;
+    counts.total++;
+  }
+
+  // Update scan import with results
+  await env.DB.prepare(`
+    UPDATE scan_imports SET
+      status = 'completed', findings_total = ?, findings_critical = ?,
+      findings_high = ?, findings_medium = ?, findings_low = ?
+    WHERE id = ?
+  `).bind(counts.total, counts.critical, counts.high, counts.medium, counts.low, scanImportId).run();
+
+  // Record scan history and update risk scores
+  const assetFindingCounts = new Map();
+  for (const finding of scanData.findings) {
+    const assetId = assetMap.get(finding.hostIp);
+    if (!assetId) continue;
+
+    if (!assetFindingCounts.has(assetId)) {
+      assetFindingCounts.set(assetId, { total: 0, critical: 0, high: 0, medium: 0, low: 0, credentialed: 0 });
+    }
+    const c = assetFindingCounts.get(assetId);
+    c.total++;
+    if (finding.severity === 'critical') c.critical++;
+    else if (finding.severity === 'high') c.high++;
+    else if (finding.severity === 'medium') c.medium++;
+    else if (finding.severity === 'low') c.low++;
+  }
+
+  for (const [ip, assetId] of assetMap.entries()) {
+    const host = scanData.hosts.find(h => h.ipAddress === ip);
+    const assetCounts = assetFindingCounts.get(assetId) || { total: 0, critical: 0, high: 0, medium: 0, low: 0 };
+
+    await env.DB.prepare(`
+      INSERT INTO asset_scan_history (id, asset_id, scan_import_id, findings_count, critical_count, high_count, medium_count, low_count, credentialed, seen_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(asset_id, scan_import_id) DO UPDATE SET
+        findings_count = excluded.findings_count, critical_count = excluded.critical_count,
+        high_count = excluded.high_count, medium_count = excluded.medium_count,
+        low_count = excluded.low_count, credentialed = excluded.credentialed, seen_at = excluded.seen_at
+    `).bind(generateId(), assetId, scanImportId, assetCounts.total, assetCounts.critical, assetCounts.high, assetCounts.medium, assetCounts.low, host?.credentialed ? 1 : 0).run();
+
+    await env.DB.prepare(`
+      UPDATE assets SET first_seen_at = COALESCE(first_seen_at, datetime('now')) WHERE id = ?
+    `).bind(assetId).run();
+
+    const assetData = await env.DB.prepare(`
+      SELECT a.environment, a.data_zone, a.scan_credentialed,
+        (SELECT COUNT(*) FROM vulnerability_findings vf WHERE vf.asset_id = a.id AND vf.status = 'open' AND vf.severity = 'critical') as critical_count,
+        (SELECT COUNT(*) FROM vulnerability_findings vf WHERE vf.asset_id = a.id AND vf.status = 'open' AND vf.severity = 'high') as high_count,
+        (SELECT COUNT(*) FROM vulnerability_findings vf WHERE vf.asset_id = a.id AND vf.status = 'open' AND vf.severity = 'medium') as medium_count,
+        (SELECT COUNT(*) FROM vulnerability_findings vf WHERE vf.asset_id = a.id AND vf.status = 'open' AND vf.severity = 'low') as low_count
+      FROM assets a WHERE a.id = ?
+    `).bind(assetId).first();
+
+    if (assetData) {
+      const riskScore = calculateAssetRiskScore(assetData);
+      await env.DB.prepare(`
+        UPDATE assets SET risk_score = ?, risk_score_updated_at = datetime('now') WHERE id = ?
+      `).bind(riskScore, assetId).run();
+    }
+  }
+
+  // Send notifications
+  if (importedBy) {
+    const scanImport = await env.DB.prepare('SELECT file_name, scan_name FROM scan_imports WHERE id = ?').bind(scanImportId).first();
+    const scanName = scanImport?.scan_name || scanImport?.file_name || 'Scan';
+    const priority = counts.critical > 0 ? 'urgent' : (counts.high > 0 ? 'high' : 'normal');
+
+    await createNotification(
+      env, orgId, importedBy, 'scan_complete',
+      'Scan Processing Complete',
+      `${scanName} completed: ${counts.total} findings (${counts.critical} critical, ${counts.high} high, ${counts.medium} medium, ${counts.low} low).`,
+      'scan_import', scanImportId,
+      { findings_total: counts.total, findings_critical: counts.critical, findings_high: counts.high },
+      priority
+    );
+
+    if (counts.critical > 0) {
+      await notifyOrgRole(
+        env, orgId, importedBy, 'manager',
+        'scan_complete',
+        'Critical Vulnerabilities Detected',
+        `Scan "${scanName}" found ${counts.critical} critical vulnerabilities requiring immediate attention.`,
+        'scan_import', scanImportId,
+        { findings_critical: counts.critical }
+      );
+    }
+  }
 }
 
 async function processNessusScan(env, options) {

@@ -266,7 +266,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           </div>
 
           {/* Nav */}
-          <nav className="flex-1 p-3 space-y-1 overflow-y-auto" role="navigation" aria-label="Main navigation">
+          <nav className="p-3 space-y-1 overflow-y-auto" role="navigation" aria-label="Main navigation">
             {visibleGroups.map((group) => {
               const isExpanded = expandedGroups.has(group.key);
               const groupActive = isGroupActive(group);

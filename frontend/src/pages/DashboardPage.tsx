@@ -101,6 +101,25 @@ interface ComplianceScoresResponse {
   org_score: ComplianceScoreResult;
 }
 
+interface AssetSummary {
+  summary: {
+    total_assets: number;
+    assets_with_critical: number;
+    assets_with_high: number;
+    recently_discovered: number;
+    vulnerabilities: {
+      critical: number;
+      high: number;
+      medium: number;
+      low: number;
+    };
+  };
+  by_system: { system_name: string; system_id: string; count: number }[];
+  by_environment: { environment: string; count: number }[];
+  recently_discovered: { id: string; hostname: string; ip_address: string; discovery_source: string; first_seen_at: string; risk_score: number }[];
+  top_risk_assets: { id: string; hostname: string; ip_address: string; risk_score: number; environment: string; system_name: string; critical_count: number; high_count: number }[];
+}
+
 const DIMENSION_META: Record<string, { label: string; icon: string; href: string }> = {
   control: { label: 'Controls', icon: 'M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z', href: '/controls' },
   poam: { label: 'POA&Ms', icon: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2', href: '/poams' },
@@ -137,6 +156,9 @@ export function DashboardPage() {
   // Executive summary (manager+)
   const [execSummary, setExecSummary] = useState<ExecutiveSummary | null>(null);
 
+  // Asset summary
+  const [assetSummary, setAssetSummary] = useState<AssetSummary | null>(null);
+
   useEffect(() => {
     // Use validatedApi for dashboard stats - ensures all fields have defaults
     validatedApi('/api/v1/dashboard/stats', DashboardStatsResponseSchema)
@@ -157,6 +179,7 @@ export function DashboardPage() {
       api<{ trends: TrendPoint[] }>('/api/v1/compliance/trends?days=30').then((d) => setTrends(d.trends || [])).catch(() => {});
       api<MyWorkData>('/api/v1/dashboard/my-work').then((d) => setMyWork(d)).catch(() => {});
       api('/api/v1/activity/recent?limit=15').then((d: any) => setActivities(d.activities || [])).catch(() => {});
+      api<AssetSummary>('/api/v1/dashboard/asset-summary').then((d) => setAssetSummary(d)).catch(() => {});
     }
 
     if (canManage) {
@@ -602,6 +625,127 @@ export function DashboardPage() {
                 Monitoring data unavailable.{' '}
                 <a href="/monitoring" className="text-forge-navy-700 hover:underline">Configure monitoring</a>
               </p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ================================================================ */}
+      {/* ASSET SUMMARY — analyst+ */}
+      {/* ================================================================ */}
+      {canEdit && assetSummary && assetSummary.summary.total_assets > 0 && (
+        <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
+          <div className="flex items-center gap-2 mb-4">
+            <div className="w-8 h-8 rounded-lg bg-cyan-100 flex items-center justify-center">
+              <svg className="w-4 h-4 text-cyan-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
+              </svg>
+            </div>
+            <h2 className={TYPOGRAPHY.cardTitle}>Asset Inventory</h2>
+            <Link to="/assets" className="ml-auto text-xs text-forge-green-600 hover:text-forge-green-700 font-medium">
+              View All &rarr;
+            </Link>
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+            <div className="text-center p-3 bg-gray-50 rounded-lg">
+              <p className="text-2xl font-bold text-gray-900">{assetSummary.summary.total_assets}</p>
+              <p className="text-xs text-gray-500 mt-1">Total Assets</p>
+            </div>
+            <div className="text-center p-3 bg-red-50 rounded-lg">
+              <p className="text-2xl font-bold text-red-600">{assetSummary.summary.assets_with_critical}</p>
+              <p className="text-xs text-gray-500 mt-1">Critical Vulns</p>
+            </div>
+            <div className="text-center p-3 bg-orange-50 rounded-lg">
+              <p className="text-2xl font-bold text-orange-600">{assetSummary.summary.assets_with_high}</p>
+              <p className="text-xs text-gray-500 mt-1">High Vulns</p>
+            </div>
+            <div className="text-center p-3 bg-green-50 rounded-lg">
+              <p className="text-2xl font-bold text-green-600">{assetSummary.summary.recently_discovered}</p>
+              <p className="text-xs text-gray-500 mt-1">New (7 days)</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Top Risk Assets */}
+            {assetSummary.top_risk_assets.length > 0 && (
+              <div className="border border-gray-100 rounded-lg p-4">
+                <h3 className="text-sm font-medium text-gray-700 mb-3">Highest Risk Assets</h3>
+                <div className="space-y-2">
+                  {assetSummary.top_risk_assets.slice(0, 5).map((asset) => (
+                    <div key={asset.id} className="flex items-center justify-between text-xs">
+                      <div className="flex items-center gap-2 flex-1 min-w-0">
+                        <span className={`w-2 h-2 rounded-full ${asset.risk_score >= 70 ? 'bg-red-500' : asset.risk_score >= 40 ? 'bg-orange-500' : 'bg-yellow-500'}`} />
+                        <span className="text-gray-700 truncate">{asset.hostname || asset.ip_address}</span>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {asset.critical_count > 0 && (
+                          <span className="px-1.5 py-0.5 bg-red-100 text-red-700 rounded text-[10px] font-medium">{asset.critical_count}C</span>
+                        )}
+                        {asset.high_count > 0 && (
+                          <span className="px-1.5 py-0.5 bg-orange-100 text-orange-700 rounded text-[10px] font-medium">{asset.high_count}H</span>
+                        )}
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${asset.risk_score >= 70 ? 'bg-red-100 text-red-700' : asset.risk_score >= 40 ? 'bg-orange-100 text-orange-700' : 'bg-yellow-100 text-yellow-700'}`}>
+                          {asset.risk_score}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Recently Discovered */}
+            {assetSummary.recently_discovered.length > 0 && (
+              <div className="border border-gray-100 rounded-lg p-4">
+                <h3 className="text-sm font-medium text-gray-700 mb-3">Recently Discovered</h3>
+                <div className="space-y-2">
+                  {assetSummary.recently_discovered.slice(0, 5).map((asset) => (
+                    <div key={asset.id} className="flex items-center justify-between text-xs">
+                      <div className="flex items-center gap-2 flex-1 min-w-0">
+                        <span className="text-gray-700 truncate">{asset.hostname || asset.ip_address}</span>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="px-1.5 py-0.5 bg-cyan-100 text-cyan-700 rounded text-[10px] font-medium capitalize">
+                          {(asset.discovery_source || 'manual').replace(/_/g, ' ')}
+                        </span>
+                        <span className="text-gray-400">
+                          {new Date(asset.first_seen_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Assets by System - show if no risk/recent data */}
+            {assetSummary.top_risk_assets.length === 0 && assetSummary.by_system.length > 0 && (
+              <div className="border border-gray-100 rounded-lg p-4">
+                <h3 className="text-sm font-medium text-gray-700 mb-3">Assets by System</h3>
+                <div className="space-y-2">
+                  {assetSummary.by_system.slice(0, 5).map((sys, idx) => (
+                    <div key={idx} className="flex items-center justify-between text-xs">
+                      <span className="text-gray-700 truncate">{sys.system_name || 'Unassigned'}</span>
+                      <span className="text-gray-500 font-medium">{sys.count}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {assetSummary.recently_discovered.length === 0 && assetSummary.by_environment.length > 0 && (
+              <div className="border border-gray-100 rounded-lg p-4">
+                <h3 className="text-sm font-medium text-gray-700 mb-3">Assets by Environment</h3>
+                <div className="space-y-2">
+                  {assetSummary.by_environment.slice(0, 5).map((env, idx) => (
+                    <div key={idx} className="flex items-center justify-between text-xs">
+                      <span className="text-gray-700 truncate capitalize">{env.environment || 'Unclassified'}</span>
+                      <span className="text-gray-500 font-medium">{env.count}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
             )}
           </div>
         </div>
