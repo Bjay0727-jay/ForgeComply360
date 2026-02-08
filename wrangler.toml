@@ -74,9 +74,9 @@ CORS_ORIGIN = "https://forgecomply360.pages.dev"
 # ============================================================================
 # 0 6 * * * = Daily at 6 AM UTC (evidence checks, compliance alerts)
 # 0 8 * * 1 = Weekly Monday 8 AM UTC (weekly digest)
-# 0 2 * * * = Daily at 2 AM UTC (automated backup)
+# 0 2 * * 2,5 = Tuesday & Friday at 2 AM UTC (automated backup)
 [triggers]
-crons = ["0 6 * * *", "0 8 * * 1", "0 2 * * *"]
+crons = ["0 6 * * *", "0 8 * * 1", "0 2 * * 2,5"]
 
 [env.production.triggers]
-crons = ["0 6 * * *", "0 8 * * 1", "0 2 * * *"]
+crons = ["0 6 * * *", "0 8 * * 1", "0 2 * * 2,5"]

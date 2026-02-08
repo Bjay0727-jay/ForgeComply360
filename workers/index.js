@@ -78,8 +78,8 @@ export default {
       if (event.cron === '0 8 * * 1') {
         // Weekly digest - Mondays at 8 AM UTC
         ctx.waitUntil(handleWeeklyDigest(env));
-      } else if (event.cron === '0 2 * * *') {
-        // Daily backup - 2 AM UTC
+      } else if (event.cron === '0 2 * * 2,5') {
+        // Backup - Tuesday & Friday at 2 AM UTC
         ctx.waitUntil(handleScheduledBackup(env));
       } else {
         // Daily evidence checks and alerts - 6 AM UTC
@@ -1061,7 +1061,7 @@ async function sendEmail(env, to, subject, html) {
     const res = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from: 'ForgeComply 360 <notifications@forgecomply360.com>', to: [to], subject, html }),
+      body: JSON.stringify({ from: 'ForgeComply 360 <stanley.riley@forgecomply360.com>', to: [to], subject, html }),
     });
     if (!res.ok) { const err = await res.text(); console.error('[EMAIL] Resend error:', res.status, err); return null; }
     const data = await res.json();
@@ -1117,6 +1117,64 @@ ${sectionsHtml}
 </td></tr>
 <tr><td style="padding:16px 32px;background:#f9fafb;border-top:1px solid #e5e7eb">
 <p style="margin:0;color:#9ca3af;font-size:12px">Email digests are enabled. Opt out in <a href="https://forgecomply360.pages.dev/settings" style="color:#3b82f6">Settings</a>.</p>
+</td></tr></table></td></tr></table></body></html>`;
+}
+
+function buildBackupEmailHtml(status, backupId, stats, errorMsg = null) {
+  const isSuccess = status === 'success';
+  const statusColor = isSuccess ? '#059669' : '#dc2626';
+  const statusBg = isSuccess ? '#d1fae5' : '#fee2e2';
+  const statusIcon = isSuccess ? '&#10003;' : '&#10007;';
+  const statusText = isSuccess ? 'Backup Completed Successfully' : 'Backup Failed';
+  const timestamp = new Date().toLocaleString('en-US', {
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+    hour: '2-digit', minute: '2-digit', timeZoneName: 'short'
+  });
+
+  let statsHtml = '';
+  if (isSuccess && stats) {
+    statsHtml = `
+      <table width="100%" cellpadding="0" cellspacing="0" style="margin:16px 0;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden">
+        <tr style="background:#f9fafb"><td style="padding:12px 16px;border-bottom:1px solid #e5e7eb;font-weight:600;color:#374151">Backup Statistics</td><td style="padding:12px 16px;border-bottom:1px solid #e5e7eb"></td></tr>
+        <tr><td style="padding:10px 16px;border-bottom:1px solid #f3f4f6;color:#6b7280">Backup ID</td><td style="padding:10px 16px;border-bottom:1px solid #f3f4f6;color:#1f2937;font-family:monospace;font-size:12px">${backupId}</td></tr>
+        <tr><td style="padding:10px 16px;border-bottom:1px solid #f3f4f6;color:#6b7280">Tables Backed Up</td><td style="padding:10px 16px;border-bottom:1px solid #f3f4f6;color:#1f2937">${stats.tables || 0}</td></tr>
+        <tr><td style="padding:10px 16px;border-bottom:1px solid #f3f4f6;color:#6b7280">Total Rows</td><td style="padding:10px 16px;border-bottom:1px solid #f3f4f6;color:#1f2937">${(stats.rows || 0).toLocaleString()}</td></tr>
+        <tr><td style="padding:10px 16px;color:#6b7280">Evidence Files</td><td style="padding:10px 16px;color:#1f2937">${stats.evidenceFiles || 0}</td></tr>
+      </table>`;
+  }
+
+  let errorHtml = '';
+  if (!isSuccess && errorMsg) {
+    errorHtml = `
+      <div style="margin:16px 0;padding:16px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px">
+        <p style="margin:0 0 8px;font-weight:600;color:#991b1b">Error Details:</p>
+        <p style="margin:0;color:#7f1d1d;font-family:monospace;font-size:13px">${errorMsg}</p>
+      </div>
+      <p style="margin:16px 0;color:#6b7280;font-size:14px">
+        <strong>Recommended Actions:</strong><br>
+        1. Check Cloudflare Workers logs for detailed error information<br>
+        2. Verify R2 bucket permissions and connectivity<br>
+        3. Manually trigger a backup via the admin API once the issue is resolved
+      </p>`;
+  }
+
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f4f5f7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f5f7;padding:24px 0"><tr><td align="center">
+<table width="600" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.1)">
+<tr><td style="background:#1e40af;padding:24px 32px"><h1 style="margin:0;color:#fff;font-size:20px;font-weight:600">ForgeComply 360</h1><p style="margin:4px 0 0;color:#93c5fd;font-size:13px">Automated Backup Report</p></td></tr>
+<tr><td style="padding:32px">
+<div style="margin:0 0 24px;padding:16px;background:${statusBg};border-radius:8px;text-align:center">
+  <span style="display:inline-block;width:40px;height:40px;line-height:40px;background:${statusColor};color:#fff;border-radius:50%;font-size:20px;margin-bottom:8px">${statusIcon}</span>
+  <p style="margin:8px 0 0;font-size:18px;font-weight:600;color:${statusColor}">${statusText}</p>
+</div>
+<p style="margin:0 0 8px;color:#6b7280;font-size:14px"><strong>Timestamp:</strong> ${timestamp}</p>
+${statsHtml}
+${errorHtml}
+<p style="margin:24px 0 0;color:#6b7280;font-size:13px">This is an automated backup notification. Backups run daily at 2 AM UTC with 30-day retention.</p>
+</td></tr>
+<tr><td style="padding:16px 32px;background:#f9fafb;border-top:1px solid #e5e7eb">
+<p style="margin:0;color:#9ca3af;font-size:12px">ForgeComply 360 - Enterprise GRC Platform | <a href="https://forgecomply360.pages.dev" style="color:#3b82f6">Dashboard</a></p>
 </td></tr></table></td></tr></table></body></html>`;
 }
 
@@ -9285,11 +9343,53 @@ async function handleScheduledBackup(env) {
     await cleanupOldBackups(env, 30);
 
     console.log(`[CRON] Backup complete: ${backupId} (${totalRows} rows, ${evidenceCount} files)`);
+
+    // 7. Send success email to admins/owners
+    await sendBackupNotificationEmail(env, 'success', backupId, {
+      tables: Object.keys(dbBackup).length,
+      rows: totalRows,
+      evidenceFiles: evidenceCount
+    });
+
     return { success: true, backupId, manifest };
 
   } catch (error) {
     console.error('[CRON] Backup failed:', error.message);
+
+    // Send failure email to admins/owners
+    await sendBackupNotificationEmail(env, 'failure', null, null, error.message);
+
     return { success: false, error: error.message };
+  }
+}
+
+async function sendBackupNotificationEmail(env, status, backupId, stats, errorMsg = null) {
+  try {
+    // Get all admin and owner users to notify
+    const { results: admins } = await env.DB.prepare(
+      "SELECT DISTINCT u.email, u.name FROM users u WHERE u.role IN ('admin', 'owner') AND u.status = 'active'"
+    ).all();
+
+    if (!admins || admins.length === 0) {
+      console.log('[BACKUP] No admin/owner users to notify');
+      return;
+    }
+
+    const subject = status === 'success'
+      ? '[ForgeComply 360] Backup Completed Successfully'
+      : '[ForgeComply 360] Backup Failed - Action Required';
+
+    const html = buildBackupEmailHtml(status, backupId, stats, errorMsg);
+
+    // Send email to each admin/owner
+    for (const admin of admins) {
+      if (admin.email) {
+        await sendEmail(env, admin.email, subject, html);
+        console.log(`[BACKUP] Notification sent to ${admin.email}`);
+      }
+    }
+  } catch (err) {
+    console.error('[BACKUP] Failed to send notification email:', err.message);
   }
 }
 
