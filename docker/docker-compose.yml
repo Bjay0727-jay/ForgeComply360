@@ -25,7 +25,7 @@ services:
     environment:
       - PORT=8787
       - DATA_DIR=/data
-      - JWT_SECRET=${JWT_SECRET:-change-this-in-production}
+      - JWT_SECRET=${JWT_SECRET:?FATAL: JWT_SECRET must be set in .env file. Generate with: openssl rand -hex 64}
       - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost:3000}
       - ENVIRONMENT=on-prem
       - OLLAMA_URL=http://ollama:11434
