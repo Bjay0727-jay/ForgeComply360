@@ -36,7 +36,7 @@ services:
     networks:
       - forge-network
 
-  # ── Frontend (nginx) ────────────────────────────────────────────
+  # ── Frontend (nginx + TLS) ─────────────────────────────────────
   frontend:
     build:
       context: ..
@@ -44,7 +44,10 @@ services:
     container_name: forgecomply-frontend
     restart: unless-stopped
     ports:
-      - "${FRONTEND_PORT:-3000}:80"
+      - "${FRONTEND_PORT:-443}:443"
+      - "80:80"
+    volumes:
+      - ${TLS_CERT_DIR:-./certs}:/etc/nginx/certs:ro
     depends_on:
       - api
     networks:
