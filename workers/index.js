@@ -81,6 +81,8 @@ export default {
         ctx.waitUntil(
           handleScheduledEvidenceChecks(env)
             .then(() => handleScheduledComplianceAlerts(env))
+            .then(() => handleSecurityIncidentDetection(env))
+            .then(() => handleAuditLogRetention(env))
             .then(() => handleEmailDigest(env))
         );
       }
@@ -700,10 +702,115 @@ function generateSalt() {
     .join('');
 }
 
+// ============================================================================
+// PASSWORD POLICY (TAC-003 / NIST IA-5 / SP 800-63B)
+// ============================================================================
+
+function validatePasswordPolicy(password) {
+  const errors = [];
+  if (password.length < 12) errors.push('Password must be at least 12 characters');
+  if (!/[A-Z]/.test(password)) errors.push('Password must contain at least one uppercase letter');
+  if (!/[a-z]/.test(password)) errors.push('Password must contain at least one lowercase letter');
+  if (!/[0-9]/.test(password)) errors.push('Password must contain at least one digit');
+  if (!/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?`~]/.test(password)) errors.push('Password must contain at least one special character');
+  // Check for common patterns
+  if (/(.)\1{3,}/.test(password)) errors.push('Password must not contain 4 or more repeating characters');
+  if (/^(password|12345|qwerty|admin|letmein)/i.test(password)) errors.push('Password is too common');
+  return errors.length > 0 ? errors : null;
+}
+
+async function checkPasswordHistory(env, userId, newPassword, historyCount = 12) {
+  try {
+    const { results } = await env.DB.prepare(
+      'SELECT password_hash, salt FROM password_history WHERE user_id = ? ORDER BY created_at DESC LIMIT ?'
+    ).bind(userId, historyCount).all();
+    for (const entry of results) {
+      const hash = await hashPassword(newPassword, entry.salt);
+      if (hash === entry.password_hash) return true; // Password was previously used
+    }
+  } catch { /* password_history table may not exist yet */ }
+  return false;
+}
+
+async function recordPasswordHistory(env, userId, passwordHash, salt) {
+  try {
+    await env.DB.prepare(
+      'INSERT INTO password_history (id, user_id, password_hash, salt) VALUES (?, ?, ?, ?)'
+    ).bind(generateId(), userId, passwordHash, salt).run();
+    // Keep only the last 24 entries per user
+    await env.DB.prepare(
+      "DELETE FROM password_history WHERE user_id = ? AND id NOT IN (SELECT id FROM password_history WHERE user_id = ? ORDER BY created_at DESC LIMIT 24)"
+    ).bind(userId, userId).run();
+  } catch { /* password_history table may not exist yet */ }
+}
+
+async function checkBreachedPassword(password) {
+  // NIST SP 800-63B: Check against known breached passwords via k-Anonymity (Have I Been Pwned)
+  try {
+    const hashBuffer = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(password));
+    const fullHash = Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+    const prefix = fullHash.slice(0, 5);
+    const suffix = fullHash.slice(5);
+    const response = await fetch(`https://api.pwnedpasswords.com/range/${prefix}`, {
+      headers: { 'User-Agent': 'ForgeComply360-PasswordCheck' }
+    });
+    if (!response.ok) return false; // Fail open — don't block registration if API is down
+    const body = await response.text();
+    return body.split('\n').some(line => line.startsWith(suffix));
+  } catch {
+    return false; // Fail open on network errors
+  }
+}
+
 function generateTempPassword() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%&';
   const bytes = crypto.getRandomValues(new Uint8Array(16));
   return Array.from(bytes).map(b => chars[b % chars.length]).join('');
+}
+
+// ============================================================================
+// FIELD-LEVEL ENCRYPTION (AES-256-GCM) — HIPAA 164.312(a)(2)(iv)
+// Encrypts sensitive fields (MFA secrets, backup codes) at rest.
+// Uses the JWT_SECRET to derive a separate encryption key via HKDF.
+// ============================================================================
+
+async function deriveEncryptionKey(env) {
+  const secret = requireJWTSecret(env);
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw', new TextEncoder().encode(secret), 'HKDF', false, ['deriveKey']
+  );
+  return crypto.subtle.deriveKey(
+    { name: 'HKDF', hash: 'SHA-256', salt: new TextEncoder().encode('forgecomply360-field-encryption'), info: new TextEncoder().encode('aes-256-gcm') },
+    keyMaterial,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+}
+
+async function encryptField(env, plaintext) {
+  if (!plaintext) return null;
+  const key = await deriveEncryptionKey(env);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encoded = new TextEncoder().encode(plaintext);
+  const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, encoded);
+  // Store as: base64(iv + ciphertext)
+  const combined = new Uint8Array(iv.length + ciphertext.byteLength);
+  combined.set(iv);
+  combined.set(new Uint8Array(ciphertext), iv.length);
+  return 'enc:' + btoa(String.fromCharCode(...combined));
+}
+
+async function decryptField(env, stored) {
+  if (!stored) return null;
+  // Support unencrypted legacy values (migration path)
+  if (!stored.startsWith('enc:')) return stored;
+  const key = await deriveEncryptionKey(env);
+  const raw = Uint8Array.from(atob(stored.slice(4)), c => c.charCodeAt(0));
+  const iv = raw.slice(0, 12);
+  const ciphertext = raw.slice(12);
+  const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext);
+  return new TextDecoder().decode(decrypted);
 }
 
 // ============================================================================
@@ -804,21 +911,41 @@ function requireRole(user, minimumRole) {
 
 async function auditLog(env, orgId, userId, action, resourceType, resourceId, details = {}, request = null) {
   try {
+    const id = generateId();
+    const ipAddress = request?.headers?.get('CF-Connecting-IP') || null;
+    const userAgent = request?.headers?.get('User-Agent') || null;
+    const detailsStr = JSON.stringify(details);
+    const timestamp = new Date().toISOString();
+
+    // Hash chaining: get the most recent log hash for this org (TAC-002 / NIST AU-9)
+    let prevHash = null;
+    try {
+      const lastLog = await env.DB.prepare(
+        'SELECT integrity_hash FROM audit_logs WHERE org_id = ? ORDER BY created_at DESC LIMIT 1'
+      ).bind(orgId).first();
+      prevHash = lastLog?.integrity_hash || null;
+    } catch { /* integrity_hash column may not exist yet — graceful degradation */ }
+
+    // Compute integrity hash: SHA-256(prev_hash + id + action + resource + timestamp + details)
+    let integrityHash = null;
+    try {
+      const hashInput = `${prevHash || 'GENESIS'}|${id}|${orgId}|${userId}|${action}|${resourceType}|${resourceId}|${timestamp}|${detailsStr}`;
+      const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(hashInput));
+      integrityHash = Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+    } catch { /* hash computation is best-effort */ }
+
     await env.DB.prepare(
-      'INSERT INTO audit_logs (id, org_id, user_id, action, resource_type, resource_id, details, ip_address, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).bind(
-      generateId(),
-      orgId,
-      userId,
-      action,
-      resourceType,
-      resourceId,
-      JSON.stringify(details),
-      request?.headers?.get('CF-Connecting-IP') || null,
-      request?.headers?.get('User-Agent') || null
-    ).run();
+      'INSERT INTO audit_logs (id, org_id, user_id, action, resource_type, resource_id, details, ip_address, user_agent, created_at, integrity_hash, prev_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).bind(id, orgId, userId, action, resourceType, resourceId, detailsStr, ipAddress, userAgent, timestamp, integrityHash, prevHash).run();
   } catch (e) {
-    console.error('Audit log error:', e);
+    // Fallback: if new columns don't exist yet, use legacy insert
+    try {
+      await env.DB.prepare(
+        'INSERT INTO audit_logs (id, org_id, user_id, action, resource_type, resource_id, details, ip_address, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      ).bind(generateId(), orgId, userId, action, resourceType, resourceId, JSON.stringify(details), request?.headers?.get('CF-Connecting-IP') || null, request?.headers?.get('User-Agent') || null).run();
+    } catch (e2) {
+      console.error('Audit log error:', e2);
+    }
   }
 }
 
@@ -1052,6 +1179,14 @@ async function handleRegister(request, env) {
   });
   if (valErrors) return validationErrorResponse(valErrors);
 
+  // Password complexity validation (TAC-003 / NIST IA-5)
+  const policyErrors = validatePasswordPolicy(password);
+  if (policyErrors) return jsonResponse({ error: 'Password does not meet complexity requirements', details: policyErrors }, 400);
+
+  // Breached password check (NIST SP 800-63B)
+  const isBreached = await checkBreachedPassword(password);
+  if (isBreached) return jsonResponse({ error: 'This password has been found in a data breach. Please choose a different password.' }, 400);
+
   const existing = await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email.toLowerCase()).first();
   if (existing) return jsonResponse({ error: 'Email already registered' }, 409);
 
@@ -1073,6 +1208,9 @@ async function handleRegister(request, env) {
   await env.DB.prepare(
     'INSERT INTO users (id, org_id, email, password_hash, salt, name, role) VALUES (?, ?, ?, ?, ?, ?, ?)'
   ).bind(userId, orgId, email.toLowerCase(), passwordHash, salt, name, 'owner').run();
+
+  // Record initial password in history
+  await recordPasswordHistory(env, userId, passwordHash, salt);
 
   const accessToken = await createJWT({ sub: userId, org: orgId, role: 'owner' }, requireJWTSecret(env), 60);
   const refreshToken = generateId() + generateId();
@@ -1195,17 +1333,31 @@ async function handleLogout(request, env, user) {
 async function handleChangePassword(request, env, user) {
   const { current_password, new_password } = await request.json();
   if (!current_password || !new_password) return jsonResponse({ error: 'Current password and new password are required' }, 400);
-  if (new_password.length < 12) return jsonResponse({ error: 'New password must be at least 12 characters' }, 400);
   if (current_password === new_password) return jsonResponse({ error: 'New password must be different from current password' }, 400);
+
+  // Password complexity validation (TAC-003 / NIST IA-5)
+  const policyErrors = validatePasswordPolicy(new_password);
+  if (policyErrors) return jsonResponse({ error: 'Password does not meet complexity requirements', details: policyErrors }, 400);
 
   const fullUser = await env.DB.prepare('SELECT password_hash, salt FROM users WHERE id = ?').bind(user.id).first();
   const currentHash = await hashPassword(current_password, fullUser.salt);
   if (currentHash !== fullUser.password_hash) return jsonResponse({ error: 'Current password is incorrect' }, 401);
 
+  // Check password history — prevent reuse of last 12 passwords (NIST IA-5(1)(e))
+  const wasUsed = await checkPasswordHistory(env, user.id, new_password, 12);
+  if (wasUsed) return jsonResponse({ error: 'This password was used recently. Choose a password you have not used in the last 12 changes.' }, 400);
+
+  // Breached password check (NIST SP 800-63B)
+  const isBreached = await checkBreachedPassword(new_password);
+  if (isBreached) return jsonResponse({ error: 'This password has been found in a data breach. Please choose a different password.' }, 400);
+
   const newSalt = generateSalt();
   const newHash = await hashPassword(new_password, newSalt);
   await env.DB.prepare('UPDATE users SET password_hash = ?, salt = ?, updated_at = datetime(\'now\') WHERE id = ?')
     .bind(newHash, newSalt, user.id).run();
+
+  // Record in password history
+  await recordPasswordHistory(env, user.id, newHash, newSalt);
 
   // Revoke all refresh tokens to force re-login on other devices
   await env.DB.prepare('UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?').bind(user.id).run();
@@ -1224,7 +1376,8 @@ async function handleMFASetup(request, env, user) {
 
   const { base32 } = generateMFASecret();
   const uri = buildTOTPUri(base32, user.email);
-  await env.DB.prepare('UPDATE users SET mfa_secret = ? WHERE id = ?').bind(base32, user.id).run();
+  const encryptedSecret = await encryptField(env, base32);
+  await env.DB.prepare('UPDATE users SET mfa_secret = ? WHERE id = ?').bind(encryptedSecret, user.id).run();
   return jsonResponse({ secret: base32, uri });
 }
 
@@ -1236,13 +1389,15 @@ async function handleMFAVerifySetup(request, env, user) {
   if (!fullUser.mfa_secret) return jsonResponse({ error: 'No MFA setup in progress' }, 400);
   if (fullUser.mfa_enabled) return jsonResponse({ error: '2FA is already enabled' }, 400);
 
-  const secretBytes = base32Decode(fullUser.mfa_secret);
+  const decryptedSecret = await decryptField(env, fullUser.mfa_secret);
+  const secretBytes = base32Decode(decryptedSecret);
   const valid = await verifyTOTP(secretBytes, code.replace(/\s/g, ''));
   if (!valid) return jsonResponse({ error: 'Invalid code. Check your authenticator app and try again.' }, 400);
 
   const backupCodes = generateBackupCodes(8);
+  const encryptedBackupCodes = await encryptField(env, JSON.stringify(backupCodes));
   await env.DB.prepare('UPDATE users SET mfa_enabled = 1, mfa_backup_codes = ? WHERE id = ?')
-    .bind(JSON.stringify(backupCodes), user.id).run();
+    .bind(encryptedBackupCodes, user.id).run();
   await auditLog(env, user.org_id, user.id, 'mfa_enabled', 'user', user.id, {});
   return jsonResponse({ backup_codes: backupCodes });
 }
@@ -1265,20 +1420,23 @@ async function handleMFAVerify(request, env) {
   const cleanCode = code.replace(/[\s-]/g, '');
   let valid = false;
 
-  // Try TOTP
-  const secretBytes = base32Decode(user.mfa_secret);
+  // Try TOTP — decrypt the secret first
+  const decryptedMfaSecret = await decryptField(env, user.mfa_secret);
+  const secretBytes = base32Decode(decryptedMfaSecret);
   valid = await verifyTOTP(secretBytes, cleanCode);
 
-  // Try backup codes if TOTP didn't match
+  // Try backup codes if TOTP didn't match — decrypt backup codes first
   if (!valid && user.mfa_backup_codes) {
-    const backupCodes = JSON.parse(user.mfa_backup_codes);
+    const decryptedBackupCodes = await decryptField(env, user.mfa_backup_codes);
+    const backupCodes = JSON.parse(decryptedBackupCodes);
     const normalizedInput = cleanCode.toUpperCase();
     const matchIndex = backupCodes.findIndex(bc => bc.replace(/-/g, '') === normalizedInput);
     if (matchIndex !== -1) {
       valid = true;
       backupCodes.splice(matchIndex, 1);
+      const encryptedUpdatedCodes = await encryptField(env, JSON.stringify(backupCodes));
       await env.DB.prepare('UPDATE users SET mfa_backup_codes = ? WHERE id = ?')
-        .bind(JSON.stringify(backupCodes), user.id).run();
+        .bind(encryptedUpdatedCodes, user.id).run();
     }
   }
 
@@ -1312,11 +1470,13 @@ async function handleMFADisable(request, env, user) {
   if (!fullUser.mfa_enabled) return jsonResponse({ error: '2FA is not enabled' }, 400);
 
   const cleanCode = code.replace(/[\s-]/g, '');
-  const secretBytes = base32Decode(fullUser.mfa_secret);
+  const decryptedSecret = await decryptField(env, fullUser.mfa_secret);
+  const secretBytes = base32Decode(decryptedSecret);
   let valid = await verifyTOTP(secretBytes, cleanCode);
 
   if (!valid && fullUser.mfa_backup_codes) {
-    const backupCodes = JSON.parse(fullUser.mfa_backup_codes);
+    const decryptedCodes = await decryptField(env, fullUser.mfa_backup_codes);
+    const backupCodes = JSON.parse(decryptedCodes);
     valid = backupCodes.some(bc => bc.replace(/-/g, '') === cleanCode.toUpperCase());
   }
   if (!valid) return jsonResponse({ error: 'Invalid code' }, 401);
@@ -1333,12 +1493,14 @@ async function handleMFARegenerateBackupCodes(request, env, user) {
   const fullUser = await env.DB.prepare('SELECT mfa_secret, mfa_enabled FROM users WHERE id = ?').bind(user.id).first();
   if (!fullUser.mfa_enabled) return jsonResponse({ error: '2FA is not enabled' }, 400);
 
-  const secretBytes = base32Decode(fullUser.mfa_secret);
+  const decryptedSecret = await decryptField(env, fullUser.mfa_secret);
+  const secretBytes = base32Decode(decryptedSecret);
   const valid = await verifyTOTP(secretBytes, code.replace(/\s/g, ''));
   if (!valid) return jsonResponse({ error: 'Invalid code' }, 401);
 
   const newCodes = generateBackupCodes(8);
-  await env.DB.prepare('UPDATE users SET mfa_backup_codes = ? WHERE id = ?').bind(JSON.stringify(newCodes), user.id).run();
+  const encryptedCodes = await encryptField(env, JSON.stringify(newCodes));
+  await env.DB.prepare('UPDATE users SET mfa_backup_codes = ? WHERE id = ?').bind(encryptedCodes, user.id).run();
   await auditLog(env, user.org_id, user.id, 'mfa_backup_regenerated', 'user', user.id, {});
   return jsonResponse({ backup_codes: newCodes });
 }
@@ -4091,7 +4253,7 @@ async function handleEmergencyAccess(request, env) {
 
   for (const admin of orgAdmins) {
     await env.DB.prepare(
-      "INSERT INTO notifications (id, org_id, recipient_id, type, title, message, priority) VALUES (?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO notifications (id, org_id, recipient_user_id, type, title, message, priority) VALUES (?, ?, ?, ?, ?, ?, ?)"
     ).bind(
       generateId(), org.id, admin.id, 'security',
       'EMERGENCY ACCESS ACTIVATED',
@@ -6188,6 +6350,195 @@ async function handleAlertSummary(env, url, org, user) {
   } catch (err) {
     console.error('[handleAlertSummary]', err.message);
     return jsonResponse({ error: 'Failed to load alert summary' }, 500);
+  }
+}
+
+// ============================================================================
+// SCHEDULED WORKER - SECURITY INCIDENT DETECTION (TAC-006 / NIST IR)
+// Detects anomalous patterns and creates security incidents automatically.
+// TAC 202 requires reporting to DIR within 48 hours.
+// ============================================================================
+
+async function handleSecurityIncidentDetection(env) {
+  try {
+    console.log('[CRON] Running security incident detection...');
+    const now = new Date();
+    const oneDayAgo = new Date(now - 24 * 60 * 60 * 1000).toISOString();
+    const oneHourAgo = new Date(now - 60 * 60 * 1000).toISOString();
+
+    const { results: orgs } = await env.DB.prepare('SELECT id, name FROM organizations').all();
+    let totalIncidents = 0;
+
+    for (const org of orgs) {
+      // Detection 1: Brute-force attacks — 10+ failed logins per user in 1 hour
+      const { results: bruteForce } = await env.DB.prepare(
+        `SELECT u.id, u.email, COUNT(*) as attempts FROM audit_logs a
+         JOIN users u ON a.user_id = u.id
+         WHERE a.org_id = ? AND a.action = 'login' AND a.details LIKE '%Invalid%'
+         AND a.created_at > ? GROUP BY u.id HAVING attempts >= 10`
+      ).bind(org.id, oneHourAgo).all();
+
+      for (const bf of bruteForce) {
+        const existing = await env.DB.prepare(
+          "SELECT id FROM security_incidents WHERE org_id = ? AND incident_type = 'brute_force' AND affected_user_id = ? AND status IN ('open', 'investigating') AND detected_at > ?"
+        ).bind(org.id, bf.id, oneDayAgo).first();
+        if (!existing) {
+          const incidentId = generateId();
+          const deadline = new Date(now.getTime() + 48 * 60 * 60 * 1000).toISOString();
+          await env.DB.prepare(
+            `INSERT INTO security_incidents (id, org_id, incident_type, severity, title, description, affected_user_id, dir_notification_deadline, details)
+             VALUES (?, ?, 'brute_force', 'high', ?, ?, ?, ?, ?)`
+          ).bind(incidentId, org.id, `Brute-force attack detected: ${bf.email}`,
+            `${bf.attempts} failed login attempts detected for ${bf.email} within the last hour.`,
+            bf.id, deadline, JSON.stringify({ attempts: bf.attempts, email: bf.email })).run();
+          await notifyOrgAdmins(env, org.id, 'security', 'SECURITY INCIDENT: Brute-Force Attack',
+            `${bf.attempts} failed login attempts detected for ${bf.email}. Review security incidents immediately.`, 'urgent');
+          totalIncidents++;
+        }
+      }
+
+      // Detection 2: Account lockout spike — 3+ accounts locked in 1 hour
+      const lockouts = await env.DB.prepare(
+        "SELECT COUNT(DISTINCT user_id) as cnt FROM audit_logs WHERE org_id = ? AND action = 'login' AND details LIKE '%locked%' AND created_at > ?"
+      ).bind(org.id, oneHourAgo).first();
+      if (lockouts && lockouts.cnt >= 3) {
+        const existing = await env.DB.prepare(
+          "SELECT id FROM security_incidents WHERE org_id = ? AND incident_type = 'mass_lockout' AND status IN ('open', 'investigating') AND detected_at > ?"
+        ).bind(org.id, oneDayAgo).first();
+        if (!existing) {
+          const incidentId = generateId();
+          const deadline = new Date(now.getTime() + 48 * 60 * 60 * 1000).toISOString();
+          await env.DB.prepare(
+            `INSERT INTO security_incidents (id, org_id, incident_type, severity, title, description, dir_notification_deadline, details)
+             VALUES (?, ?, 'mass_lockout', 'critical', ?, ?, ?, ?)`
+          ).bind(incidentId, org.id, `Mass account lockout: ${lockouts.cnt} accounts`,
+            `${lockouts.cnt} accounts were locked within the last hour, suggesting a coordinated attack.`,
+            deadline, JSON.stringify({ locked_accounts: lockouts.cnt })).run();
+          await notifyOrgAdmins(env, org.id, 'security', 'CRITICAL: Mass Account Lockout',
+            `${lockouts.cnt} accounts locked in the last hour. Possible coordinated attack. Review immediately.`, 'urgent');
+          totalIncidents++;
+        }
+      }
+
+      // Detection 3: Privilege escalation — role changes to admin/owner in last 24h
+      const { results: escalations } = await env.DB.prepare(
+        "SELECT * FROM audit_logs WHERE org_id = ? AND action = 'update' AND resource_type = 'user' AND details LIKE '%role%' AND details LIKE '%admin%' AND created_at > ?"
+      ).bind(org.id, oneDayAgo).all();
+      for (const esc of escalations) {
+        let details;
+        try { details = JSON.parse(esc.details); } catch { continue; }
+        if (details?.role?.to === 'admin' || details?.role?.to === 'owner') {
+          const existing = await env.DB.prepare(
+            "SELECT id FROM security_incidents WHERE org_id = ? AND incident_type = 'privilege_escalation' AND details LIKE ? AND detected_at > ?"
+          ).bind(org.id, `%${esc.resource_id}%`, oneDayAgo).first();
+          if (!existing) {
+            const incidentId = generateId();
+            await env.DB.prepare(
+              `INSERT INTO security_incidents (id, org_id, incident_type, severity, title, description, affected_user_id, details)
+               VALUES (?, ?, 'privilege_escalation', 'medium', ?, ?, ?, ?)`
+            ).bind(incidentId, org.id, `Privilege escalation: user promoted to ${details.role.to}`,
+              `User ${esc.resource_id} role changed from ${details.role.from || 'unknown'} to ${details.role.to} by user ${esc.user_id}.`,
+              esc.resource_id, JSON.stringify({ changed_by: esc.user_id, from: details.role.from, to: details.role.to })).run();
+            totalIncidents++;
+          }
+        }
+      }
+
+      // Detection 4: Emergency access usage in last 24h
+      const { results: emergencyUses } = await env.DB.prepare(
+        "SELECT * FROM audit_logs WHERE org_id = ? AND action = 'emergency_access_granted' AND created_at > ?"
+      ).bind(org.id, oneDayAgo).all();
+      for (const ea of emergencyUses) {
+        const existing = await env.DB.prepare(
+          "SELECT id FROM security_incidents WHERE org_id = ? AND incident_type = 'emergency_access' AND detected_at > ? AND details LIKE ?"
+        ).bind(org.id, oneDayAgo, `%${ea.id}%`).first();
+        if (!existing) {
+          const incidentId = generateId();
+          const deadline = new Date(now.getTime() + 48 * 60 * 60 * 1000).toISOString();
+          await env.DB.prepare(
+            `INSERT INTO security_incidents (id, org_id, incident_type, severity, title, description, affected_user_id, dir_notification_deadline, details)
+             VALUES (?, ?, 'emergency_access', 'high', ?, ?, ?, ?, ?)`
+          ).bind(incidentId, org.id, 'Emergency break-glass access used',
+            `Emergency access procedure was activated. Review audit logs for details.`,
+            ea.user_id, deadline, JSON.stringify({ audit_log_id: ea.id })).run();
+          totalIncidents++;
+        }
+      }
+    }
+
+    console.log(`[CRON] Security incident detection complete: ${totalIncidents} new incident(s)`);
+  } catch (e) {
+    console.error('[CRON] Security incident detection error:', e.message);
+  }
+}
+
+async function notifyOrgAdmins(env, orgId, type, title, message, priority = 'high') {
+  try {
+    const { results: admins } = await env.DB.prepare(
+      "SELECT id FROM users WHERE org_id = ? AND role IN ('admin', 'owner') AND status != 'deactivated'"
+    ).bind(orgId).all();
+    for (const admin of admins) {
+      await env.DB.prepare(
+        'INSERT INTO notifications (id, org_id, recipient_user_id, type, title, message, priority) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      ).bind(generateId(), orgId, admin.id, type, title, message, priority).run();
+    }
+  } catch (e) {
+    console.error('notifyOrgAdmins error:', e.message);
+  }
+}
+
+// ============================================================================
+// SCHEDULED WORKER - AUDIT LOG RETENTION (TAC-002 / NIST AU-11)
+// Enforces retention policy. Default: 6 years (HIPAA minimum).
+// Logs older than retention period are archived/purged.
+// ============================================================================
+
+async function handleAuditLogRetention(env) {
+  try {
+    console.log('[CRON] Running audit log retention check...');
+    // Default retention: 2190 days (6 years per HIPAA)
+    const retentionDays = 2190;
+    const cutoffDate = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+
+    // Count records beyond retention
+    const count = await env.DB.prepare(
+      'SELECT COUNT(*) as cnt FROM audit_logs WHERE created_at < ?'
+    ).bind(cutoffDate).first();
+
+    if (count && count.cnt > 0) {
+      // Archive to KV before deletion (if KV binding available)
+      try {
+        const archiveKey = `audit-archive-${new Date().toISOString().split('T')[0]}`;
+        const { results: oldLogs } = await env.DB.prepare(
+          'SELECT * FROM audit_logs WHERE created_at < ? LIMIT 10000'
+        ).bind(cutoffDate).all();
+        if (oldLogs.length > 0 && env.KV) {
+          await env.KV.put(archiveKey, JSON.stringify(oldLogs), { expirationTtl: 365 * 24 * 60 * 60 });
+          console.log(`[CRON] Archived ${oldLogs.length} audit logs to KV key: ${archiveKey}`);
+        }
+      } catch (e) {
+        console.error('[CRON] Audit archive error (non-fatal):', e.message);
+      }
+
+      // Purge expired logs
+      await env.DB.prepare('DELETE FROM audit_logs WHERE created_at < ?').bind(cutoffDate).run();
+      console.log(`[CRON] Purged ${count.cnt} audit log records older than ${retentionDays} days`);
+    } else {
+      console.log('[CRON] No audit logs beyond retention period');
+    }
+
+    // Also clean up expired refresh tokens
+    await env.DB.prepare("DELETE FROM refresh_tokens WHERE (revoked = 1 OR expires_at < datetime('now')) AND created_at < datetime('now', '-30 days')").run();
+
+    // Clean up resolved security incidents older than 1 year (keep for reporting)
+    const incidentCutoff = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString();
+    await env.DB.prepare(
+      "DELETE FROM security_incidents WHERE status = 'closed' AND resolved_at < ?"
+    ).bind(incidentCutoff).run();
+
+    console.log('[CRON] Audit log retention complete');
+  } catch (e) {
+    console.error('[CRON] Audit log retention error:', e.message);
   }
 }
 
