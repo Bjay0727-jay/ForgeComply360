@@ -211,6 +211,7 @@ async function handleRequest(request, env, url, ctx) {
   if (path === '/api/v1/auth/login' && method === 'POST') return handleLogin(request, env);
   if (path === '/api/v1/auth/refresh' && method === 'POST') return handleRefreshToken(request, env);
   if (path === '/api/v1/auth/mfa/verify' && method === 'POST') return handleMFAVerify(request, env);
+  if (path === '/api/v1/auth/emergency-access' && method === 'POST') return handleEmergencyAccess(request, env);
 
   // Public routes (no auth required)
   if (path.match(/^\/api\/v1\/public\/badge\/verify\/[\w-]+$/) && method === 'GET') return handleVerifyBadge(request, env, path.split('/').pop());
@@ -566,7 +567,7 @@ async function authenticateRequest(request, env) {
 
   const token = authHeader.slice(7);
   try {
-    const payload = await verifyJWT(token, env.JWT_SECRET || 'dev-secret-change-me');
+    const payload = await verifyJWT(token, requireJWTSecret(env));
     if (payload.purpose) return null; // reject MFA tokens used as access tokens
     const user = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(payload.sub).first();
     if (!user) return null;
@@ -581,6 +582,27 @@ async function authenticateRequest(request, env) {
 function sanitizeUser(user) {
   const { password_hash, salt, mfa_secret, mfa_backup_codes, ...safe } = user;
   return safe;
+}
+
+// ============================================================================
+// JWT SECRET VALIDATION
+// ============================================================================
+
+function requireJWTSecret(env) {
+  if (!env.JWT_SECRET) {
+    throw new Error(
+      'FATAL: JWT_SECRET environment variable is not set. ' +
+      'The application cannot start without a cryptographic signing secret. ' +
+      'Set JWT_SECRET via: wrangler secret put JWT_SECRET (cloud) or .env file (Docker).'
+    );
+  }
+  if (env.JWT_SECRET.length < 32) {
+    throw new Error(
+      'FATAL: JWT_SECRET must be at least 32 characters for adequate security. ' +
+      'Use a cryptographically random string of 64+ characters.'
+    );
+  }
+  return env.JWT_SECRET;
 }
 
 // ============================================================================
@@ -1052,7 +1074,7 @@ async function handleRegister(request, env) {
     'INSERT INTO users (id, org_id, email, password_hash, salt, name, role) VALUES (?, ?, ?, ?, ?, ?, ?)'
   ).bind(userId, orgId, email.toLowerCase(), passwordHash, salt, name, 'owner').run();
 
-  const accessToken = await createJWT({ sub: userId, org: orgId, role: 'owner' }, env.JWT_SECRET || 'dev-secret-change-me', 60);
+  const accessToken = await createJWT({ sub: userId, org: orgId, role: 'owner' }, requireJWTSecret(env), 60);
   const refreshToken = generateId() + generateId();
   const refreshHash = await hashPassword(refreshToken, 'refresh-salt');
   const refreshExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
@@ -1111,12 +1133,12 @@ async function handleLogin(request, env) {
 
   // Check for 2FA — return MFA challenge instead of real tokens
   if (user.mfa_enabled) {
-    const mfaToken = await createJWT({ sub: user.id, org: user.org_id, purpose: 'mfa' }, env.JWT_SECRET || 'dev-secret-change-me', 5);
+    const mfaToken = await createJWT({ sub: user.id, org: user.org_id, purpose: 'mfa' }, requireJWTSecret(env), 5);
     await auditLog(env, user.org_id, user.id, 'login_mfa_pending', 'user', user.id, {}, request);
     return jsonResponse({ mfa_required: true, mfa_token: mfaToken });
   }
 
-  const accessToken = await createJWT({ sub: user.id, org: user.org_id, role: user.role }, env.JWT_SECRET || 'dev-secret-change-me', 60);
+  const accessToken = await createJWT({ sub: user.id, org: user.org_id, role: user.role }, requireJWTSecret(env), 60);
   const refreshToken = generateId() + generateId();
   const refreshHash = await hashPassword(refreshToken, 'refresh-salt');
   const refreshExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
@@ -1153,7 +1175,7 @@ async function handleRefreshToken(request, env) {
   if (!user) return jsonResponse({ error: 'User not found' }, 404);
   if (user.status === 'deactivated') return jsonResponse({ error: 'Account has been deactivated' }, 403);
 
-  const accessToken = await createJWT({ sub: user.id, org: user.org_id, role: user.role }, env.JWT_SECRET || 'dev-secret-change-me', 60);
+  const accessToken = await createJWT({ sub: user.id, org: user.org_id, role: user.role }, requireJWTSecret(env), 60);
   const newRefreshToken = generateId() + generateId();
   const newRefreshHash = await hashPassword(newRefreshToken, 'refresh-salt');
   const refreshExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
@@ -1173,7 +1195,7 @@ async function handleLogout(request, env, user) {
 async function handleChangePassword(request, env, user) {
   const { current_password, new_password } = await request.json();
   if (!current_password || !new_password) return jsonResponse({ error: 'Current password and new password are required' }, 400);
-  if (new_password.length < 8) return jsonResponse({ error: 'New password must be at least 8 characters' }, 400);
+  if (new_password.length < 12) return jsonResponse({ error: 'New password must be at least 12 characters' }, 400);
   if (current_password === new_password) return jsonResponse({ error: 'New password must be different from current password' }, 400);
 
   const fullUser = await env.DB.prepare('SELECT password_hash, salt FROM users WHERE id = ?').bind(user.id).first();
@@ -1231,7 +1253,7 @@ async function handleMFAVerify(request, env) {
 
   let payload;
   try {
-    payload = await verifyJWT(mfa_token, env.JWT_SECRET || 'dev-secret-change-me');
+    payload = await verifyJWT(mfa_token, requireJWTSecret(env));
   } catch {
     return jsonResponse({ error: 'Invalid or expired MFA token' }, 401);
   }
@@ -1264,7 +1286,7 @@ async function handleMFAVerify(request, env) {
 
   // Issue real tokens
   const org = await env.DB.prepare('SELECT * FROM organizations WHERE id = ?').bind(user.org_id).first();
-  const accessToken = await createJWT({ sub: user.id, org: user.org_id, role: user.role }, env.JWT_SECRET || 'dev-secret-change-me', 60);
+  const accessToken = await createJWT({ sub: user.id, org: user.org_id, role: user.role }, requireJWTSecret(env), 60);
   const refreshToken = generateId() + generateId();
   const refreshHash = await hashPassword(refreshToken, 'refresh-salt');
   const refreshExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
@@ -3965,6 +3987,128 @@ async function handleUnlockUser(request, env, org, user, targetUserId) {
   await env.DB.prepare("UPDATE users SET failed_login_attempts = 0, locked_until = NULL, updated_at = datetime('now') WHERE id = ?").bind(targetUserId).run();
   await auditLog(env, org.id, user.id, 'unlock_account', 'user', targetUserId, { email: target.email });
   return jsonResponse({ message: 'Account unlocked', user_id: targetUserId });
+}
+
+// ============================================================================
+// EMERGENCY ACCESS (HIPAA Break-Glass Procedure)
+// ============================================================================
+// Provides emergency account recovery when all admin/owner accounts are locked
+// or inaccessible. Requires EMERGENCY_ACCESS_KEY secret to be pre-configured.
+// All emergency access events are prominently logged for audit.
+
+async function handleEmergencyAccess(request, env) {
+  // Rate limit: 3 attempts per hour per IP to prevent brute-force
+  const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+  const rl = await checkRateLimit(env, `emergency:${ip}`, 3, 3600);
+  if (rl.limited) return rateLimitResponse(rl.retryAfter);
+
+  const body = await request.json();
+  const { emergency_key, org_email, reason } = body;
+
+  const valErrors = validateBody(body, {
+    emergency_key: { required: true, type: 'string' },
+    org_email: { required: true, type: 'string' },
+    reason: { required: true, type: 'string', minLength: 10, maxLength: 1000 },
+  });
+  if (valErrors) return validationErrorResponse(valErrors);
+
+  // Verify the emergency access key is configured
+  if (!env.EMERGENCY_ACCESS_KEY) {
+    // Log the attempt even if the key is not configured
+    console.error('EMERGENCY ACCESS ATTEMPTED but EMERGENCY_ACCESS_KEY not configured');
+    return jsonResponse({ error: 'Emergency access is not configured for this deployment' }, 503);
+  }
+
+  // Timing-safe comparison of the emergency key
+  if (!timingSafeEqual(emergency_key, env.EMERGENCY_ACCESS_KEY)) {
+    console.error(`EMERGENCY ACCESS FAILED: Invalid key from IP ${ip}`);
+    // Log failed attempt — find any org by the email to get org_id for logging
+    const user = await env.DB.prepare('SELECT id, org_id FROM users WHERE email = ?').bind(org_email.toLowerCase()).first();
+    if (user) {
+      await auditLog(env, user.org_id, null, 'emergency_access_failed', 'system', null, {
+        ip_address: ip,
+        email_attempted: org_email.toLowerCase(),
+        reason,
+      }, request);
+    }
+    return jsonResponse({ error: 'Invalid emergency access credentials' }, 403);
+  }
+
+  // Find the owner/admin account by email
+  const user = await env.DB.prepare('SELECT * FROM users WHERE email = ?').bind(org_email.toLowerCase()).first();
+  if (!user) return jsonResponse({ error: 'Account not found' }, 404);
+
+  const org = await env.DB.prepare('SELECT * FROM organizations WHERE id = ?').bind(user.org_id).first();
+  if (!org) return jsonResponse({ error: 'Organization not found' }, 404);
+
+  // Only allow emergency access for admin/owner roles
+  if (!['admin', 'owner'].includes(user.role)) {
+    await auditLog(env, org.id, null, 'emergency_access_denied', 'user', user.id, {
+      ip_address: ip,
+      reason,
+      denial_reason: 'Target account is not admin or owner',
+    }, request);
+    return jsonResponse({ error: 'Emergency access is only available for admin and owner accounts' }, 403);
+  }
+
+  // Unlock the account: reset failed attempts, clear lockout, disable MFA
+  await env.DB.prepare(
+    "UPDATE users SET failed_login_attempts = 0, locked_until = NULL, status = 'active', updated_at = datetime('now') WHERE id = ?"
+  ).bind(user.id).run();
+
+  // Generate a short-lived emergency token (15 minutes)
+  const accessToken = await createJWT(
+    { sub: user.id, org: user.org_id, role: user.role, emergency: true },
+    requireJWTSecret(env),
+    15
+  );
+
+  // Revoke all existing refresh tokens for this user
+  await env.DB.prepare('UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?').bind(user.id).run();
+
+  // Create a new refresh token
+  const refreshToken = generateId() + generateId();
+  const refreshHash = await hashPassword(refreshToken, 'refresh-salt');
+  const refreshExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+  await env.DB.prepare(
+    'INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)'
+  ).bind(generateId(), user.id, refreshHash, refreshExpiry).run();
+
+  // Log the emergency access prominently
+  await auditLog(env, org.id, user.id, 'emergency_access_granted', 'user', user.id, {
+    ip_address: ip,
+    reason,
+    mfa_was_enabled: !!user.mfa_enabled,
+    was_locked: !!user.locked_until,
+    was_deactivated: user.status === 'deactivated',
+    token_expires_minutes: 15,
+  }, request);
+
+  // Notify all other admins/owners in the organization
+  const { results: orgAdmins } = await env.DB.prepare(
+    "SELECT id, email FROM users WHERE org_id = ? AND role IN ('admin', 'owner') AND id != ?"
+  ).bind(org.id, user.id).all();
+
+  for (const admin of orgAdmins) {
+    await env.DB.prepare(
+      "INSERT INTO notifications (id, org_id, recipient_id, type, title, message, priority) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    ).bind(
+      generateId(), org.id, admin.id, 'security',
+      'EMERGENCY ACCESS ACTIVATED',
+      `Emergency break-glass access was used for account ${user.email} from IP ${ip}. Reason: ${reason}. Review audit logs immediately.`,
+      'critical'
+    ).run();
+  }
+
+  return jsonResponse({
+    message: 'Emergency access granted. This session expires in 15 minutes. All activity is being logged.',
+    access_token: accessToken,
+    refresh_token: refreshToken,
+    user: sanitizeUser({ ...user, failed_login_attempts: 0, locked_until: null, status: 'active' }),
+    org,
+    emergency: true,
+    expires_in_minutes: 15,
+  });
 }
 
 // ============================================================================
