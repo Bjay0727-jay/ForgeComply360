@@ -1,8 +1,28 @@
 -- ============================================================================
--- FORGECOMPLY 360 - D1 DATABASE SCHEMA v5.0
+-- FORGECOMPLY 360 - D1 DATABASE SCHEMA v5.1
 -- Forge Cyber Defense - SDVOSB
 -- Single Engine, Multiple Experiences Architecture
 -- ============================================================================
+
+-- ============================================================================
+-- SCHEMA MIGRATIONS TRACKING
+-- Must be first table - tracks which migrations have been applied
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  version TEXT NOT NULL UNIQUE,           -- e.g., '001', '012', 'v1.0.0'
+  name TEXT NOT NULL,                       -- Human-readable migration name
+  description TEXT,                         -- Brief description of changes
+  applied_at TEXT DEFAULT (datetime('now')),
+  applied_by TEXT,                          -- User/system that applied migration
+  checksum TEXT,                            -- Optional SHA256 of migration file
+  execution_time_ms INTEGER,                -- How long the migration took
+  success INTEGER DEFAULT 1                 -- 0 = failed/rolled back
+);
+
+CREATE INDEX IF NOT EXISTS idx_schema_migrations_version ON schema_migrations(version);
+CREATE INDEX IF NOT EXISTS idx_schema_migrations_applied ON schema_migrations(applied_at);
 
 -- ============================================================================
 -- ORGANIZATIONS & TENANCY

@@ -18,7 +18,10 @@ interface Asset {
   discovery_source: string;
   scan_credentialed: number;
   open_ports: string | null;
+  first_seen_at: string | null;
   last_seen_at: string | null;
+  risk_score: number;
+  risk_score_updated_at: string | null;
   created_at: string;
   updated_at: string;
   system_id: string | null;
@@ -32,6 +35,21 @@ interface Asset {
   low_count: number;
   total_findings: number;
   recent_findings?: { id: string; title: string; severity: string; status: string }[];
+}
+
+interface ScanHistory {
+  id: string;
+  scan_import_id: string;
+  file_name: string;
+  scan_name: string;
+  scanner_type: string;
+  findings_count: number;
+  critical_count: number;
+  high_count: number;
+  medium_count: number;
+  low_count: number;
+  credentialed: number;
+  seen_at: string;
 }
 
 const ENVIRONMENT_LABELS: Record<string, string> = {
@@ -105,6 +123,18 @@ export function AssetsPage() {
   // Delete state
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
+  // Bulk mode state
+  const [bulkMode, setBulkMode] = useState(false);
+  const [selectedAssets, setSelectedAssets] = useState<Set<string>>(new Set());
+  const [bulkSystemId, setBulkSystemId] = useState('');
+  const [bulkEnvironment, setBulkEnvironment] = useState('');
+  const [bulkDataZone, setBulkDataZone] = useState('');
+  const [bulkProcessing, setBulkProcessing] = useState(false);
+
+  // Scan history state
+  const [scanHistory, setScanHistory] = useState<ScanHistory[]>([]);
+  const [loadingScanHistory, setLoadingScanHistory] = useState(false);
+
   const canManage = user?.role && ['manager', 'admin', 'owner'].includes(user.role);
 
   const loadAssets = useCallback(async () => {
@@ -146,15 +176,101 @@ export function AssetsPage() {
     if (expandedId === asset.id) {
       setExpandedId(null);
       setExpandedAsset(null);
+      setScanHistory([]);
       return;
     }
     setExpandedId(asset.id);
+    setScanHistory([]);
     try {
-      const details = await api(`/api/v1/assets/${asset.id}`);
+      const [details, historyRes] = await Promise.all([
+        api(`/api/v1/assets/${asset.id}`),
+        api(`/api/v1/assets/${asset.id}/scan-history`).catch(() => ({ scan_history: [] }))
+      ]);
       setExpandedAsset(details);
+      setScanHistory(historyRes.scan_history || []);
     } catch {
       setExpandedAsset(asset);
     }
+  };
+
+  // Bulk mode functions
+  const toggleSelectAsset = (assetId: string) => {
+    setSelectedAssets(prev => {
+      const next = new Set(prev);
+      if (next.has(assetId)) next.delete(assetId);
+      else next.add(assetId);
+      return next;
+    });
+  };
+
+  const selectAllOnPage = () => {
+    if (selectedAssets.size === assets.length) {
+      setSelectedAssets(new Set());
+    } else {
+      setSelectedAssets(new Set(assets.map(a => a.id)));
+    }
+  };
+
+  const handleBulkUpdate = async () => {
+    if (selectedAssets.size === 0) return;
+    setBulkProcessing(true);
+    try {
+      const body: Record<string, unknown> = { asset_ids: [...selectedAssets] };
+      if (bulkSystemId) body.system_id = bulkSystemId === '__unassign__' ? null : bulkSystemId;
+      if (bulkEnvironment) body.environment = bulkEnvironment;
+      if (bulkDataZone) body.data_zone = bulkDataZone === '__clear__' ? null : bulkDataZone;
+
+      await api('/api/v1/assets/bulk-update', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+
+      addToast({ type: 'success', title: `Updated ${selectedAssets.size} assets` });
+      setSelectedAssets(new Set());
+      setBulkSystemId('');
+      setBulkEnvironment('');
+      setBulkDataZone('');
+      loadAssets();
+    } catch (err: unknown) {
+      addToast({ type: 'error', title: (err as Error)?.message || 'Bulk update failed' });
+    } finally {
+      setBulkProcessing(false);
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedAssets.size === 0) return;
+
+    if (!confirm(`Are you sure you want to delete ${selectedAssets.size} assets?\n\nThis will also delete all associated vulnerability findings and scan history.`)) {
+      return;
+    }
+
+    setBulkProcessing(true);
+    try {
+      await api('/api/v1/assets/bulk-delete', {
+        method: 'POST',
+        body: JSON.stringify({
+          asset_ids: [...selectedAssets],
+          confirm_delete_findings: true
+        }),
+      });
+
+      addToast({ type: 'success', title: `Deleted ${selectedAssets.size} assets` });
+      setSelectedAssets(new Set());
+      loadAssets();
+    } catch (err: unknown) {
+      addToast({ type: 'error', title: (err as Error)?.message || 'Bulk delete failed' });
+    } finally {
+      setBulkProcessing(false);
+    }
+  };
+
+  const getRiskScoreColor = (score: number): string => {
+    if (score >= 80) return 'text-red-600 bg-red-100';
+    if (score >= 60) return 'text-orange-600 bg-orange-100';
+    if (score >= 40) return 'text-yellow-600 bg-yellow-100';
+    if (score >= 20) return 'text-blue-600 bg-blue-100';
+    return 'text-green-600 bg-green-100';
   };
 
   const openCreateModal = () => {
@@ -342,14 +458,106 @@ export function AssetsPage() {
           </>
         )}
         {canManage && (
-          <button onClick={() => setShowImportModal(true)} className={BUTTONS.secondary}>
-            <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-            </svg>
-            Import CSV
-          </button>
+          <>
+            <button onClick={() => setShowImportModal(true)} className={BUTTONS.secondary}>
+              <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+              </svg>
+              Import CSV
+            </button>
+            <button
+              onClick={() => { setBulkMode(!bulkMode); setSelectedAssets(new Set()); }}
+              className={`px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 ${
+                bulkMode
+                  ? 'bg-forge-navy-900 text-white'
+                  : 'border border-gray-300 text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700'
+              }`}
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+              </svg>
+              {bulkMode ? 'Exit Bulk Mode' : 'Bulk Edit'}
+            </button>
+          </>
         )}
       </div>
+
+      {/* Bulk Actions Toolbar */}
+      {bulkMode && selectedAssets.size > 0 && (
+        <div className="bg-forge-navy-50 dark:bg-gray-800 rounded-xl border border-forge-navy-200 dark:border-gray-700 p-4">
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="text-sm font-semibold text-forge-navy-800 dark:text-white">
+              {selectedAssets.size} selected
+            </span>
+            <div className="h-5 border-l border-gray-300 dark:border-gray-600" />
+
+            {/* Assign to System */}
+            <select
+              value={bulkSystemId}
+              onChange={(e) => setBulkSystemId(e.target.value)}
+              className="px-2 py-1.5 border border-gray-300 dark:border-gray-600 rounded-lg text-xs bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+            >
+              <option value="">Assign to System...</option>
+              <option value="__unassign__">Unassign from System</option>
+              {systems.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+
+            {/* Environment */}
+            <select
+              value={bulkEnvironment}
+              onChange={(e) => setBulkEnvironment(e.target.value)}
+              className="px-2 py-1.5 border border-gray-300 dark:border-gray-600 rounded-lg text-xs bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+            >
+              <option value="">Set Environment...</option>
+              {Object.entries(ENVIRONMENT_LABELS).map(([k, v]) => (
+                <option key={k} value={k}>{v}</option>
+              ))}
+            </select>
+
+            {/* Data Zone */}
+            <select
+              value={bulkDataZone}
+              onChange={(e) => setBulkDataZone(e.target.value)}
+              className="px-2 py-1.5 border border-gray-300 dark:border-gray-600 rounded-lg text-xs bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+            >
+              <option value="">Set Data Zone...</option>
+              <option value="__clear__">Clear Data Zone</option>
+              {Object.entries(DATA_ZONE_LABELS).map(([k, v]) => (
+                <option key={k} value={k}>{v}</option>
+              ))}
+            </select>
+
+            <button
+              onClick={handleBulkUpdate}
+              disabled={bulkProcessing || (!bulkSystemId && !bulkEnvironment && !bulkDataZone)}
+              className="px-3 py-1.5 bg-forge-navy-900 text-white rounded-lg text-xs font-medium hover:bg-forge-navy-800 disabled:opacity-50"
+            >
+              Apply
+            </button>
+
+            <div className="h-5 border-l border-gray-300 dark:border-gray-600" />
+
+            <button
+              onClick={handleBulkDelete}
+              disabled={bulkProcessing}
+              className="px-3 py-1.5 bg-red-600 text-white rounded-lg text-xs font-medium hover:bg-red-700 disabled:opacity-50"
+            >
+              Delete Selected
+            </button>
+
+            <button
+              onClick={() => { setSelectedAssets(new Set()); setBulkMode(false); }}
+              className="px-3 py-1.5 text-gray-600 dark:text-gray-400 text-xs font-medium hover:text-gray-900 dark:hover:text-white"
+            >
+              Cancel
+            </button>
+          </div>
+
+          {bulkProcessing && (
+            <div className="mt-3 text-xs text-gray-500 dark:text-gray-400">Processing...</div>
+          )}
+        </div>
+      )}
 
       {/* Filters */}
       <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-4">
@@ -417,9 +625,20 @@ export function AssetsPage() {
               <table className="w-full">
                 <thead>
                   <tr>
+                    {bulkMode && (
+                      <th className="px-4 py-3 w-10">
+                        <input
+                          type="checkbox"
+                          checked={selectedAssets.size === assets.length && assets.length > 0}
+                          onChange={selectAllOnPage}
+                          className="rounded border-gray-300 dark:border-gray-600"
+                        />
+                      </th>
+                    )}
                     <th className={`px-6 py-3 text-left ${TYPOGRAPHY.tableHeader}`}>Hostname / IP</th>
                     <th className={`px-6 py-3 text-left ${TYPOGRAPHY.tableHeader}`}>System</th>
                     <th className={`px-6 py-3 text-left ${TYPOGRAPHY.tableHeader}`}>OS Type</th>
+                    <th className={`px-6 py-3 text-left ${TYPOGRAPHY.tableHeader}`}>Risk</th>
                     <th className={`px-6 py-3 text-left ${TYPOGRAPHY.tableHeader}`}>Environment</th>
                     <th className={`px-6 py-3 text-left ${TYPOGRAPHY.tableHeader}`}>Source</th>
                     <th className={`px-6 py-3 text-left ${TYPOGRAPHY.tableHeader}`}>Last Seen</th>
@@ -432,8 +651,19 @@ export function AssetsPage() {
                     <Fragment key={asset.id}>
                       <tr
                         className="hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer"
-                        onClick={() => handleExpandRow(asset)}
+                        onClick={() => !bulkMode && handleExpandRow(asset)}
                       >
+                        {bulkMode && (
+                          <td className="px-4 py-4">
+                            <input
+                              type="checkbox"
+                              checked={selectedAssets.has(asset.id)}
+                              onChange={(e) => { e.stopPropagation(); toggleSelectAsset(asset.id); }}
+                              onClick={(e) => e.stopPropagation()}
+                              className="rounded border-gray-300 dark:border-gray-600"
+                            />
+                          </td>
+                        )}
                         <td className="px-6 py-4">
                           <div className="text-sm font-medium text-gray-900 dark:text-white">
                             {asset.hostname || asset.ip_address || '-'}
@@ -447,6 +677,11 @@ export function AssetsPage() {
                         </td>
                         <td className="px-6 py-4 text-sm text-gray-700 dark:text-gray-300">
                           {asset.os_type || '-'}
+                        </td>
+                        <td className="px-6 py-4">
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${getRiskScoreColor(asset.risk_score || 0)}`}>
+                            {asset.risk_score || 0}
+                          </span>
                         </td>
                         <td className="px-6 py-4">
                           <div className="flex flex-wrap gap-1">
@@ -485,7 +720,8 @@ export function AssetsPage() {
                       </tr>
                       {expandedId === asset.id && (
                         <tr>
-                          <td colSpan={8} className="px-6 py-4 bg-gray-50 dark:bg-gray-700/30">
+                          <td colSpan={bulkMode ? 10 : 9} className="px-6 py-4 bg-gray-50 dark:bg-gray-700/30">
+                            {/* Asset Details Grid */}
                             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm mb-4">
                               <div>
                                 <span className="text-gray-500 dark:text-gray-400">FQDN:</span>
@@ -503,6 +739,72 @@ export function AssetsPage() {
                                 <span className="text-gray-500 dark:text-gray-400">Credentialed:</span>
                                 <span className="ml-2 text-gray-900 dark:text-white">{expandedAsset?.scan_credentialed ? 'Yes' : 'No'}</span>
                               </div>
+                            </div>
+
+                            {/* Asset History Section */}
+                            <div className="mb-4 p-3 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-600">
+                              <h4 className="text-sm font-medium text-gray-900 dark:text-white mb-2 flex items-center gap-2">
+                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                                Asset History
+                              </h4>
+                              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                                <div>
+                                  <span className="text-gray-500 dark:text-gray-400">First Seen:</span>
+                                  <span className="ml-2 text-gray-900 dark:text-white">
+                                    {expandedAsset?.first_seen_at ? new Date(expandedAsset.first_seen_at).toLocaleDateString() : 'Unknown'}
+                                  </span>
+                                </div>
+                                <div>
+                                  <span className="text-gray-500 dark:text-gray-400">Risk Score:</span>
+                                  <span className={`ml-2 px-2 py-0.5 rounded text-xs font-medium ${getRiskScoreColor(expandedAsset?.risk_score || 0)}`}>
+                                    {expandedAsset?.risk_score || 0}/100
+                                  </span>
+                                </div>
+                                <div>
+                                  <span className="text-gray-500 dark:text-gray-400">Scan Count:</span>
+                                  <span className="ml-2 text-gray-900 dark:text-white">{scanHistory.length}</span>
+                                </div>
+                                <div>
+                                  <span className="text-gray-500 dark:text-gray-400">Data Zone:</span>
+                                  <span className="ml-2 text-gray-900 dark:text-white">
+                                    {expandedAsset?.data_zone ? DATA_ZONE_LABELS[expandedAsset.data_zone] || expandedAsset.data_zone : '-'}
+                                  </span>
+                                </div>
+                              </div>
+
+                              {/* Scan History Timeline */}
+                              {scanHistory.length > 0 && (
+                                <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-600">
+                                  <h5 className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2">Scan History</h5>
+                                  <div className="space-y-2">
+                                    {scanHistory.slice(0, 5).map((scan) => (
+                                      <div key={scan.id} className="flex items-center gap-3 text-xs">
+                                        <span className="text-gray-400 dark:text-gray-500 w-20">
+                                          {new Date(scan.seen_at).toLocaleDateString()}
+                                        </span>
+                                        <span className="font-medium text-gray-700 dark:text-gray-300 flex-1 truncate">
+                                          {scan.scan_name || scan.file_name}
+                                        </span>
+                                        <span className="text-gray-500 dark:text-gray-400">
+                                          {scan.findings_count} findings
+                                        </span>
+                                        {scan.critical_count > 0 && (
+                                          <span className="px-1.5 py-0.5 bg-red-100 text-red-700 rounded text-[10px]">
+                                            {scan.critical_count} critical
+                                          </span>
+                                        )}
+                                        {scan.credentialed ? (
+                                          <span className="text-green-600 dark:text-green-400" title="Credentialed scan">✓</span>
+                                        ) : (
+                                          <span className="text-gray-400" title="Uncredentialed scan">○</span>
+                                        )}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
                             </div>
 
                             {expandedAsset?.recent_findings && expandedAsset.recent_findings.length > 0 && (

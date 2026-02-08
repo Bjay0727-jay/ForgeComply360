@@ -6,6 +6,26 @@ vi.stubGlobal('fetch', mockFetch);
 
 import { api, setTokens, clearTokens, getAccessToken } from './api';
 
+// Helper to create a mock JWT that expires far in the future (no proactive refresh triggered)
+function createMockJWT(payload: Record<string, any> = {}): string {
+  const header = { alg: 'HS256', typ: 'JWT' };
+  const now = Math.floor(Date.now() / 1000);
+  const claims = { ...payload, iat: now, exp: now + 3600 }; // expires in 1 hour
+  const encodedHeader = btoa(JSON.stringify(header)).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+  const encodedPayload = btoa(JSON.stringify(claims)).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+  return `${encodedHeader}.${encodedPayload}.mock-signature`;
+}
+
+// Helper to create a mock JWT that is expiring soon (triggers proactive refresh)
+function createExpiringJWT(payload: Record<string, any> = {}): string {
+  const header = { alg: 'HS256', typ: 'JWT' };
+  const now = Math.floor(Date.now() / 1000);
+  const claims = { ...payload, iat: now, exp: now + 60 }; // expires in 1 minute (within 5-min threshold)
+  const encodedHeader = btoa(JSON.stringify(header)).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+  const encodedPayload = btoa(JSON.stringify(claims)).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+  return `${encodedHeader}.${encodedPayload}.mock-signature`;
+}
+
 describe('Token Management', () => {
   beforeEach(() => {
     clearTokens();
@@ -53,7 +73,8 @@ describe('api()', () => {
   });
 
   it('includes Authorization header when token exists', async () => {
-    setTokens('bearer-token', 'refresh-token');
+    const validToken = createMockJWT({ sub: 'user-123' });
+    setTokens(validToken, 'refresh-token');
     mockFetch.mockResolvedValueOnce({
       ok: true,
       status: 200,
@@ -62,7 +83,7 @@ describe('api()', () => {
 
     await api('/api/v1/auth/me');
     expect(mockFetch).toHaveBeenCalledWith('/api/v1/auth/me', expect.objectContaining({
-      headers: expect.objectContaining({ Authorization: 'Bearer bearer-token' }),
+      headers: expect.objectContaining({ Authorization: `Bearer ${validToken}` }),
     }));
   });
 
@@ -77,9 +98,12 @@ describe('api()', () => {
   });
 
   it('retries on 401 with token refresh', async () => {
-    setTokens('expired-token', 'valid-refresh');
+    // Use a valid JWT that's not expiring (so proactive refresh doesn't trigger)
+    const expiredToken = createMockJWT({ sub: 'user-123' });
+    const newToken = createMockJWT({ sub: 'user-123' });
+    setTokens(expiredToken, 'valid-refresh');
 
-    // First call returns 401
+    // First call returns 401 (simulates server rejecting token)
     mockFetch.mockResolvedValueOnce({
       ok: false,
       status: 401,
@@ -90,7 +114,7 @@ describe('api()', () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
       status: 200,
-      json: () => Promise.resolve({ access_token: 'new-access', refresh_token: 'new-refresh' }),
+      json: () => Promise.resolve({ access_token: newToken, refresh_token: 'new-refresh' }),
     });
 
     // Retry with new token succeeds

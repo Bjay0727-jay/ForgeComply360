@@ -442,6 +442,7 @@ async function handleRequest(request, env, url, ctx) {
   // Notifications
   if (path === '/api/v1/notifications' && method === 'GET') return handleGetNotifications(env, url, user);
   if (path === '/api/v1/notifications/unread-count' && method === 'GET') return handleUnreadCount(env, user);
+  if (path === '/api/v1/notifications/poll' && method === 'GET') return handleNotificationPoll(env, url, user);
   if (path === '/api/v1/notifications/mark-read' && method === 'POST') return handleMarkRead(request, env, user);
   if (path === '/api/v1/notifications/mark-all-read' && method === 'POST') return handleMarkAllRead(env, user);
   if (path === '/api/v1/notification-preferences' && method === 'GET') return handleGetNotificationPrefs(env, user);
@@ -488,9 +489,13 @@ async function handleRequest(request, env, url, ctx) {
   if (path === '/api/v1/assets' && method === 'POST') return handleCreateAsset(request, env, org, user);
   if (path === '/api/v1/assets/export-csv' && method === 'GET') return handleExportAssetsCSV(env, org, user);
   if (path === '/api/v1/assets/import-csv' && method === 'POST') return handleImportAssetsCSV(request, env, org, user);
+  if (path === '/api/v1/assets/bulk-update' && method === 'POST') return handleBulkUpdateAssets(request, env, org, user);
+  if (path === '/api/v1/assets/bulk-delete' && method === 'POST') return handleBulkDeleteAssets(request, env, org, user);
+  if (path === '/api/v1/assets/recalculate-risk-scores' && method === 'POST') return handleRecalculateRiskScores(request, env, org, user);
   if (path.match(/^\/api\/v1\/assets\/[\w-]+$/) && method === 'GET') return handleGetAsset(env, org, path.split('/').pop());
   if (path.match(/^\/api\/v1\/assets\/[\w-]+$/) && method === 'PUT') return handleUpdateAsset(request, env, org, user, path.split('/').pop());
   if (path.match(/^\/api\/v1\/assets\/[\w-]+$/) && method === 'DELETE') return handleDeleteAsset(env, org, user, path.split('/').pop());
+  if (path.match(/^\/api\/v1\/assets\/[\w-]+\/scan-history$/) && method === 'GET') return handleGetAssetScanHistory(env, org, path.split('/')[4]);
 
   // Webhooks (Integration Framework)
   if (path === '/api/v1/webhooks' && method === 'GET') return handleListWebhooks(env, org, user);
@@ -576,7 +581,7 @@ function sanitizeUser(user) {
 // JWT HELPERS
 // ============================================================================
 
-async function createJWT(payload, secret, expiresInMinutes = 15) {
+async function createJWT(payload, secret, expiresInMinutes = 60) {
   const header = { alg: 'HS256', typ: 'JWT' };
   const now = Math.floor(Date.now() / 1000);
   const claims = { ...payload, iat: now, exp: now + expiresInMinutes * 60 };
@@ -948,15 +953,23 @@ ${sectionsHtml}
 </td></tr></table></td></tr></table></body></html>`;
 }
 
-async function createNotification(env, orgId, recipientUserId, type, title, message, resourceType, resourceId, details = {}) {
+async function createNotification(env, orgId, recipientUserId, type, title, message, resourceType, resourceId, details = {}, priority = 'normal') {
   try {
     const pref = await env.DB.prepare('SELECT * FROM notification_preferences WHERE user_id = ?').bind(recipientUserId).first();
     if (pref && pref[type] === 0) return;
 
     const isInstantType = INSTANT_EMAIL_TYPES.includes(type);
+    // Determine priority: urgent for critical findings, high for instant email types
+    const finalPriority = priority || (isInstantType ? 'high' : 'normal');
+
     await env.DB.prepare(
-      'INSERT INTO notifications (id, org_id, recipient_user_id, type, title, message, resource_type, resource_id, details, email_sent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).bind(generateId(), orgId, recipientUserId, type, title, message, resourceType || null, resourceId || null, JSON.stringify(details), isInstantType ? 1 : 0).run();
+      'INSERT INTO notifications (id, org_id, recipient_user_id, type, title, message, resource_type, resource_id, details, priority, email_sent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).bind(generateId(), orgId, recipientUserId, type, title, message, resourceType || null, resourceId || null, JSON.stringify(details), finalPriority, isInstantType ? 1 : 0).run();
+
+    // Increment notification version for efficient polling
+    await env.DB.prepare(
+      'UPDATE users SET notification_version = COALESCE(notification_version, 0) + 1 WHERE id = ?'
+    ).bind(recipientUserId).run();
 
     // Send instant email for critical notification types
     if (isInstantType) {
@@ -1033,7 +1046,7 @@ async function handleRegister(request, env) {
     'INSERT INTO users (id, org_id, email, password_hash, salt, name, role) VALUES (?, ?, ?, ?, ?, ?, ?)'
   ).bind(userId, orgId, email.toLowerCase(), passwordHash, salt, name, 'owner').run();
 
-  const accessToken = await createJWT({ sub: userId, org: orgId, role: 'owner' }, env.JWT_SECRET || 'dev-secret-change-me', 15);
+  const accessToken = await createJWT({ sub: userId, org: orgId, role: 'owner' }, env.JWT_SECRET || 'dev-secret-change-me', 60);
   const refreshToken = generateId() + generateId();
   const refreshHash = await hashPassword(refreshToken, 'refresh-salt');
   const refreshExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
@@ -1097,7 +1110,7 @@ async function handleLogin(request, env) {
     return jsonResponse({ mfa_required: true, mfa_token: mfaToken });
   }
 
-  const accessToken = await createJWT({ sub: user.id, org: user.org_id, role: user.role }, env.JWT_SECRET || 'dev-secret-change-me', 15);
+  const accessToken = await createJWT({ sub: user.id, org: user.org_id, role: user.role }, env.JWT_SECRET || 'dev-secret-change-me', 60);
   const refreshToken = generateId() + generateId();
   const refreshHash = await hashPassword(refreshToken, 'refresh-salt');
   const refreshExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
@@ -1134,7 +1147,7 @@ async function handleRefreshToken(request, env) {
   if (!user) return jsonResponse({ error: 'User not found' }, 404);
   if (user.status === 'deactivated') return jsonResponse({ error: 'Account has been deactivated' }, 403);
 
-  const accessToken = await createJWT({ sub: user.id, org: user.org_id, role: user.role }, env.JWT_SECRET || 'dev-secret-change-me', 15);
+  const accessToken = await createJWT({ sub: user.id, org: user.org_id, role: user.role }, env.JWT_SECRET || 'dev-secret-change-me', 60);
   const newRefreshToken = generateId() + generateId();
   const newRefreshHash = await hashPassword(newRefreshToken, 'refresh-salt');
   const refreshExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
@@ -1245,7 +1258,7 @@ async function handleMFAVerify(request, env) {
 
   // Issue real tokens
   const org = await env.DB.prepare('SELECT * FROM organizations WHERE id = ?').bind(user.org_id).first();
-  const accessToken = await createJWT({ sub: user.id, org: user.org_id, role: user.role }, env.JWT_SECRET || 'dev-secret-change-me', 15);
+  const accessToken = await createJWT({ sub: user.id, org: user.org_id, role: user.role }, env.JWT_SECRET || 'dev-secret-change-me', 60);
   const refreshToken = generateId() + generateId();
   const refreshHash = await hashPassword(refreshToken, 'refresh-salt');
   const refreshExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
@@ -3348,6 +3361,70 @@ async function handleUnreadCount(env, user) {
     'SELECT COUNT(*) as count FROM notifications WHERE recipient_user_id = ? AND is_read = 0'
   ).bind(user.id).first();
   return jsonResponse({ count: row?.count || 0 });
+}
+
+async function handleNotificationPoll(env, url, user) {
+  const sinceVersion = parseInt(url.searchParams.get('since_version') || '0');
+  const ifNoneMatch = url.searchParams.get('etag') || '';
+
+  // Get current notification version for this user
+  const userState = await env.DB.prepare(
+    'SELECT notification_version FROM users WHERE id = ?'
+  ).bind(user.id).first();
+
+  const currentVersion = userState?.notification_version || 0;
+  const etag = `"${user.id}-${currentVersion}"`;
+
+  // Return 304 if no changes (ETag matches)
+  if (ifNoneMatch === etag) {
+    return new Response(null, {
+      status: 304,
+      headers: {
+        'ETag': etag,
+        'Cache-Control': 'no-cache',
+        'Access-Control-Allow-Origin': '*'
+      }
+    });
+  }
+
+  // Update last check timestamp
+  await env.DB.prepare(
+    "UPDATE users SET notification_last_check = datetime('now') WHERE id = ?"
+  ).bind(user.id).run();
+
+  // Get unread count and recent notifications
+  const [countResult, recentResult] = await Promise.all([
+    env.DB.prepare(
+      'SELECT COUNT(*) as count FROM notifications WHERE recipient_user_id = ? AND is_read = 0'
+    ).bind(user.id).first(),
+    env.DB.prepare(`
+      SELECT id, type, title, message, priority, created_at
+      FROM notifications
+      WHERE recipient_user_id = ? AND is_read = 0
+      ORDER BY
+        CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 ELSE 2 END,
+        created_at DESC
+      LIMIT 5
+    `).bind(user.id).all()
+  ]);
+
+  const recent = recentResult?.results || [];
+  const hasUrgent = recent.some(n => n.priority === 'urgent');
+
+  return new Response(JSON.stringify({
+    count: countResult?.count || 0,
+    version: currentVersion,
+    recent,
+    has_urgent: hasUrgent
+  }), {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/json',
+      'ETag': etag,
+      'Cache-Control': 'no-cache',
+      'Access-Control-Allow-Origin': '*'
+    }
+  });
 }
 
 async function handleMarkRead(request, env, user) {
@@ -7232,6 +7309,176 @@ async function handleDeleteAsset(env, org, user, assetId) {
   return jsonResponse({ message: 'Asset deleted' });
 }
 
+// ============================================================================
+// ASSET BULK OPERATIONS & ENHANCEMENTS
+// ============================================================================
+
+async function handleGetAssetScanHistory(env, org, assetId) {
+  const asset = await env.DB.prepare(
+    'SELECT id FROM assets WHERE id = ? AND org_id = ?'
+  ).bind(assetId, org.id).first();
+  if (!asset) return jsonResponse({ error: 'Asset not found' }, 404);
+
+  const { results } = await env.DB.prepare(`
+    SELECT ash.*, si.file_name, si.scan_name, si.scanner_type, si.scan_completed_at
+    FROM asset_scan_history ash
+    JOIN scan_imports si ON si.id = ash.scan_import_id
+    WHERE ash.asset_id = ?
+    ORDER BY ash.seen_at DESC
+    LIMIT 50
+  `).bind(assetId).all();
+
+  return jsonResponse({ scan_history: results });
+}
+
+function calculateAssetRiskScore(asset) {
+  // Base weights per severity (CVSS-aligned)
+  const weights = { critical: 40, high: 25, medium: 10, low: 3 };
+
+  // Calculate raw score
+  let rawScore =
+    (asset.critical_count || 0) * weights.critical +
+    (asset.high_count || 0) * weights.high +
+    (asset.medium_count || 0) * weights.medium +
+    (asset.low_count || 0) * weights.low;
+
+  // Apply environment multiplier
+  const envMultiplier = {
+    production: 1.5, govcloud: 1.5, enclave: 1.5,
+    staging: 1.0, shared: 1.0, commercial: 1.0,
+    development: 0.7
+  };
+  rawScore *= envMultiplier[asset.environment] || 1.0;
+
+  // Apply data zone multiplier
+  const dataMultiplier = {
+    cui: 2.0, classified: 2.0,
+    pii: 1.5, phi: 1.5, pci: 1.5,
+    internal: 1.0, public: 0.8
+  };
+  rawScore *= dataMultiplier[asset.data_zone] || 1.0;
+
+  // Credentialed scan bonus (reduce score by 10%)
+  if (asset.scan_credentialed) {
+    rawScore *= 0.9;
+  }
+
+  // Cap at 100 and round
+  return Math.min(100, Math.round(rawScore));
+}
+
+async function handleRecalculateRiskScores(request, env, org, user) {
+  if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Permission denied. Manager role required.' }, 403);
+
+  const { results: assets } = await env.DB.prepare(`
+    SELECT a.id, a.environment, a.data_zone, a.scan_credentialed,
+      (SELECT COUNT(*) FROM vulnerability_findings vf WHERE vf.asset_id = a.id AND vf.status = 'open' AND vf.severity = 'critical') as critical_count,
+      (SELECT COUNT(*) FROM vulnerability_findings vf WHERE vf.asset_id = a.id AND vf.status = 'open' AND vf.severity = 'high') as high_count,
+      (SELECT COUNT(*) FROM vulnerability_findings vf WHERE vf.asset_id = a.id AND vf.status = 'open' AND vf.severity = 'medium') as medium_count,
+      (SELECT COUNT(*) FROM vulnerability_findings vf WHERE vf.asset_id = a.id AND vf.status = 'open' AND vf.severity = 'low') as low_count
+    FROM assets a WHERE a.org_id = ?
+  `).bind(org.id).all();
+
+  let updated = 0;
+  for (const asset of assets) {
+    const score = calculateAssetRiskScore(asset);
+    await env.DB.prepare(
+      `UPDATE assets SET risk_score = ?, risk_score_updated_at = datetime('now') WHERE id = ?`
+    ).bind(score, asset.id).run();
+    updated++;
+  }
+
+  await auditLog(env, org.id, user.id, 'recalculate_risk_scores', 'asset', null, { count: updated });
+
+  return jsonResponse({ message: `Updated ${updated} asset risk scores`, updated });
+}
+
+async function handleBulkUpdateAssets(request, env, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Permission denied. Analyst role required.' }, 403);
+
+  const { asset_ids, system_id, environment, data_zone, boundary_id } = await request.json();
+
+  if (!asset_ids?.length) return jsonResponse({ error: 'asset_ids required' }, 400);
+  if (asset_ids.length > 200) return jsonResponse({ error: 'Maximum 200 assets per batch' }, 400);
+
+  // Build update fields
+  const updates = [];
+  const values = [];
+  if (system_id !== undefined) { updates.push('system_id = ?'); values.push(system_id || null); }
+  if (environment) { updates.push('environment = ?'); values.push(environment); }
+  if (data_zone !== undefined) { updates.push('data_zone = ?'); values.push(data_zone || null); }
+  if (boundary_id !== undefined) { updates.push('boundary_id = ?'); values.push(boundary_id || null); }
+
+  if (updates.length === 0) return jsonResponse({ error: 'No fields to update' }, 400);
+  updates.push("updated_at = datetime('now')");
+
+  let updated = 0;
+  for (const assetId of asset_ids) {
+    const asset = await env.DB.prepare(
+      'SELECT id FROM assets WHERE id = ? AND org_id = ?'
+    ).bind(assetId, org.id).first();
+
+    if (asset) {
+      await env.DB.prepare(
+        `UPDATE assets SET ${updates.join(', ')} WHERE id = ?`
+      ).bind(...values, assetId).run();
+      updated++;
+    }
+  }
+
+  await auditLog(env, org.id, user.id, 'bulk_update', 'asset', null, {
+    count: updated, system_id, environment, data_zone
+  });
+
+  return jsonResponse({ message: `Updated ${updated} assets`, updated });
+}
+
+async function handleBulkDeleteAssets(request, env, org, user) {
+  if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Permission denied. Manager role required.' }, 403);
+
+  const { asset_ids, confirm_delete_findings } = await request.json();
+
+  if (!asset_ids?.length) return jsonResponse({ error: 'asset_ids required' }, 400);
+  if (asset_ids.length > 100) return jsonResponse({ error: 'Maximum 100 assets per batch' }, 400);
+
+  // Count associated findings
+  const placeholders = asset_ids.map(() => '?').join(',');
+  const findingsCount = await env.DB.prepare(
+    `SELECT COUNT(*) as count FROM vulnerability_findings
+     WHERE asset_id IN (${placeholders}) AND org_id = ?`
+  ).bind(...asset_ids, org.id).first();
+
+  if (findingsCount?.count > 0 && !confirm_delete_findings) {
+    return jsonResponse({
+      error: 'Assets have associated findings',
+      findings_count: findingsCount.count,
+      message: 'Set confirm_delete_findings=true to delete assets and their findings'
+    }, 400);
+  }
+
+  let deleted = 0;
+  for (const assetId of asset_ids) {
+    const asset = await env.DB.prepare(
+      'SELECT id, hostname, ip_address FROM assets WHERE id = ? AND org_id = ?'
+    ).bind(assetId, org.id).first();
+
+    if (asset) {
+      // Delete findings first (cascade)
+      await env.DB.prepare('DELETE FROM vulnerability_findings WHERE asset_id = ?').bind(assetId).run();
+      await env.DB.prepare('DELETE FROM asset_scan_history WHERE asset_id = ?').bind(assetId).run();
+      await env.DB.prepare('DELETE FROM assets WHERE id = ?').bind(assetId).run();
+      deleted++;
+    }
+  }
+
+  await auditLog(env, org.id, user.id, 'bulk_delete', 'asset', null, {
+    count: deleted,
+    findings_deleted: findingsCount?.count || 0
+  });
+
+  return jsonResponse({ message: `Deleted ${deleted} assets`, deleted });
+}
+
 async function handleExportAssetsCSV(env, org, user) {
   if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Permission denied' }, 403);
 
@@ -7514,6 +7761,93 @@ async function processNessusScan(env, options) {
         findings_high = ?, findings_medium = ?, findings_low = ?
       WHERE id = ?
     `).bind(counts.total, counts.critical, counts.high, counts.medium, counts.low, scanImportId).run();
+
+    // ============================================================================
+    // RECORD SCAN HISTORY AND UPDATE RISK SCORES
+    // ============================================================================
+
+    // Build per-asset finding counts
+    const assetFindingCounts = new Map();
+    for (const finding of scanData.findings) {
+      const assetId = assetMap.get(finding.hostIp);
+      if (!assetId) continue;
+
+      if (!assetFindingCounts.has(assetId)) {
+        assetFindingCounts.set(assetId, { total: 0, critical: 0, high: 0, medium: 0, low: 0, credentialed: 0 });
+      }
+      const c = assetFindingCounts.get(assetId);
+      c.total++;
+      if (finding.severity === 'critical') c.critical++;
+      else if (finding.severity === 'high') c.high++;
+      else if (finding.severity === 'medium') c.medium++;
+      else if (finding.severity === 'low') c.low++;
+    }
+
+    // Record scan history and update risk scores for each asset
+    for (const [ip, assetId] of assetMap.entries()) {
+      const host = scanData.hosts.find(h => h.ipAddress === ip);
+      const counts = assetFindingCounts.get(assetId) || { total: 0, critical: 0, high: 0, medium: 0, low: 0 };
+
+      // Insert/update scan history
+      await env.DB.prepare(`
+        INSERT INTO asset_scan_history (id, asset_id, scan_import_id, findings_count, critical_count, high_count, medium_count, low_count, credentialed, seen_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        ON CONFLICT(asset_id, scan_import_id) DO UPDATE SET
+          findings_count = excluded.findings_count, critical_count = excluded.critical_count,
+          high_count = excluded.high_count, medium_count = excluded.medium_count,
+          low_count = excluded.low_count, credentialed = excluded.credentialed, seen_at = excluded.seen_at
+      `).bind(generateId(), assetId, scanImportId, counts.total, counts.critical, counts.high, counts.medium, counts.low, host?.credentialed ? 1 : 0).run();
+
+      // Set first_seen_at if not already set
+      await env.DB.prepare(`
+        UPDATE assets SET first_seen_at = COALESCE(first_seen_at, datetime('now')) WHERE id = ?
+      `).bind(assetId).run();
+
+      // Calculate and update risk score
+      const assetData = await env.DB.prepare(`
+        SELECT a.environment, a.data_zone, a.scan_credentialed,
+          (SELECT COUNT(*) FROM vulnerability_findings vf WHERE vf.asset_id = a.id AND vf.status = 'open' AND vf.severity = 'critical') as critical_count,
+          (SELECT COUNT(*) FROM vulnerability_findings vf WHERE vf.asset_id = a.id AND vf.status = 'open' AND vf.severity = 'high') as high_count,
+          (SELECT COUNT(*) FROM vulnerability_findings vf WHERE vf.asset_id = a.id AND vf.status = 'open' AND vf.severity = 'medium') as medium_count,
+          (SELECT COUNT(*) FROM vulnerability_findings vf WHERE vf.asset_id = a.id AND vf.status = 'open' AND vf.severity = 'low') as low_count
+        FROM assets a WHERE a.id = ?
+      `).bind(assetId).first();
+
+      if (assetData) {
+        const riskScore = calculateAssetRiskScore(assetData);
+        await env.DB.prepare(`
+          UPDATE assets SET risk_score = ?, risk_score_updated_at = datetime('now') WHERE id = ?
+        `).bind(riskScore, assetId).run();
+      }
+    }
+
+    // Send scan completion notification
+    if (options.importedBy) {
+      const scanImport = await env.DB.prepare('SELECT file_name, scan_name FROM scan_imports WHERE id = ?').bind(scanImportId).first();
+      const scanName = scanImport?.scan_name || scanImport?.file_name || 'Nessus scan';
+      const priority = counts.critical > 0 ? 'urgent' : (counts.high > 0 ? 'high' : 'normal');
+
+      await createNotification(
+        env, orgId, options.importedBy, 'scan_complete',
+        'Scan Processing Complete',
+        `${scanName} completed: ${counts.total} findings (${counts.critical} critical, ${counts.high} high, ${counts.medium} medium, ${counts.low} low).`,
+        'scan_import', scanImportId,
+        { findings_total: counts.total, findings_critical: counts.critical, findings_high: counts.high },
+        priority
+      );
+
+      // Notify managers if critical vulnerabilities found
+      if (counts.critical > 0) {
+        await notifyOrgRole(
+          env, orgId, options.importedBy, 'manager',
+          'scan_complete',
+          'Critical Vulnerabilities Detected',
+          `Scan "${scanName}" found ${counts.critical} critical vulnerabilities requiring immediate attention.`,
+          'scan_import', scanImportId,
+          { findings_critical: counts.critical }
+        );
+      }
+    }
 
   } catch (error) {
     console.error('Scan processing error:', error);
