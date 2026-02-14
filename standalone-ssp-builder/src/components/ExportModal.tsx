@@ -27,6 +27,7 @@ interface ExportModalProps {
   isOpen: boolean;
   onClose: () => void;
   onExport: (format: string) => Promise<ValidatedOscalExportResult | void>;
+  onPreview?: () => void;
   validation: ValidationResult;
 }
 
@@ -34,6 +35,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   isOpen,
   onClose,
   onExport,
+  onPreview,
   validation,
 }) => {
   const [exporting, setExporting] = useState<string | null>(null);
@@ -418,26 +420,59 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           </button>
         ))}
 
-        {/* Only show export formats if not showing OSCAL validation errors */}
+        {/* Preview and Cancel buttons */}
         {(!oscalValidation || oscalValidation.success) && (
-          <button
-            onClick={handleClose}
-            disabled={exporting !== null}
-            style={{
-              width: '100%',
-              padding: 8,
-              marginTop: 6,
-              background: 'none',
-              border: `1px solid ${C.border}`,
-              borderRadius: 7,
-              color: C.textSecondary,
-              cursor: exporting ? 'not-allowed' : 'pointer',
-              fontSize: 11.5,
-              opacity: exporting ? 0.6 : 1,
-            }}
-          >
-            Cancel
-          </button>
+          <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+            {onPreview && (
+              <button
+                onClick={() => {
+                  handleClose();
+                  onPreview();
+                }}
+                disabled={exporting !== null}
+                style={{
+                  flex: 1,
+                  padding: 8,
+                  background: `${C.primary}10`,
+                  border: `1px solid ${C.primary}30`,
+                  borderRadius: 7,
+                  color: C.primary,
+                  cursor: exporting ? 'not-allowed' : 'pointer',
+                  fontSize: 11.5,
+                  fontWeight: 600,
+                  opacity: exporting ? 0.6 : 1,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 6,
+                }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
+                Preview SSP
+              </button>
+            )}
+            <button
+              onClick={handleClose}
+              disabled={exporting !== null}
+              style={{
+                flex: onPreview ? 1 : undefined,
+                width: onPreview ? undefined : '100%',
+                padding: 8,
+                background: 'none',
+                border: `1px solid ${C.border}`,
+                borderRadius: 7,
+                color: C.textSecondary,
+                cursor: exporting ? 'not-allowed' : 'pointer',
+                fontSize: 11.5,
+                opacity: exporting ? 0.6 : 1,
+              }}
+            >
+              Cancel
+            </button>
+          </div>
         )}
       </div>
     </div>

@@ -6,7 +6,7 @@ import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { C } from './config/colors';
 import { SECTIONS } from './config/sections';
 import type { SSPData } from './types';
-import { Sidebar, Header, Footer, ExportModal, ImportModal } from './components';
+import { Sidebar, Header, Footer, ExportModal, ImportModal, OscalViewer } from './components';
 import { SECTION_RENDERERS } from './sections';
 import { validateSSP, type ValidationResult } from './utils/validation';
 import { generatePDF, downloadPDF } from './utils/pdfExport';
@@ -46,6 +46,7 @@ function App() {
   // UI state
   const [showExport, setShowExport] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [showPreview, setShowPreview] = useState(false);
   const [saving, setSaving] = useState(false);
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const [collapsed, setCollapsed] = useState(false);
@@ -395,6 +396,7 @@ function App() {
           isOpen={showExport}
           onClose={() => setShowExport(false)}
           onExport={handleExport}
+          onPreview={() => setShowPreview(true)}
           validation={validation}
         />
 
@@ -403,6 +405,15 @@ function App() {
           isOpen={showImport}
           onClose={() => setShowImport(false)}
           onImport={handleImport}
+        />
+
+        {/* OSCAL Viewer / Preview */}
+        <OscalViewer
+          isOpen={showPreview}
+          onClose={() => setShowPreview(false)}
+          data={data}
+          documentTitle={data.sysName ? `${data.sysName} System Security Plan` : undefined}
+          orgName={data.owningAgency}
         />
 
         {/* Loading indicator when fetching from server */}
