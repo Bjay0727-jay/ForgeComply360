@@ -52,6 +52,20 @@ interface ScanHistory {
   seen_at: string;
 }
 
+interface RiskTrendPoint {
+  date: string;
+  score: number;
+  findings: number;
+  critical: number;
+  high: number;
+}
+
+interface RiskTrend {
+  trend: RiskTrendPoint[];
+  delta: number;
+  scan_count: number;
+}
+
 const ENVIRONMENT_LABELS: Record<string, string> = {
   production: 'Production', staging: 'Staging', development: 'Development',
   govcloud: 'GovCloud', commercial: 'Commercial', shared: 'Shared', enclave: 'Enclave'
@@ -135,6 +149,9 @@ export function AssetsPage() {
   const [scanHistory, setScanHistory] = useState<ScanHistory[]>([]);
   const [loadingScanHistory, setLoadingScanHistory] = useState(false);
 
+  // Risk trend state
+  const [riskTrend, setRiskTrend] = useState<RiskTrend | null>(null);
+
   const canManage = user?.role && ['manager', 'admin', 'owner'].includes(user.role);
 
   const loadAssets = useCallback(async () => {
@@ -177,17 +194,21 @@ export function AssetsPage() {
       setExpandedId(null);
       setExpandedAsset(null);
       setScanHistory([]);
+      setRiskTrend(null);
       return;
     }
     setExpandedId(asset.id);
     setScanHistory([]);
+    setRiskTrend(null);
     try {
-      const [details, historyRes] = await Promise.all([
+      const [details, historyRes, trendRes] = await Promise.all([
         api(`/api/v1/assets/${asset.id}`),
-        api(`/api/v1/assets/${asset.id}/scan-history`).catch(() => ({ scan_history: [] }))
+        api(`/api/v1/assets/${asset.id}/scan-history`).catch(() => ({ scan_history: [] })),
+        api(`/api/v1/assets/${asset.id}/risk-trend`).catch(() => ({ trend: [], delta: 0, scan_count: 0 }))
       ]);
       setExpandedAsset(details);
       setScanHistory(historyRes.scan_history || []);
+      setRiskTrend(trendRes);
     } catch {
       setExpandedAsset(asset);
     }
@@ -415,10 +436,17 @@ export function AssetsPage() {
       nessus_scan: 'bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300',
       manual: 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300',
       csv_import: 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300',
+      servicenow_cmdb: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300',
+    };
+    const labels: Record<string, string> = {
+      nessus_scan: 'Nessus',
+      manual: 'Manual',
+      csv_import: 'CSV Import',
+      servicenow_cmdb: 'ServiceNow CMDB',
     };
     return (
       <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${styles[source] || styles.manual}`}>
-        {source?.replace('_', ' ') || 'manual'}
+        {labels[source] || source?.replace('_', ' ') || 'manual'}
       </span>
     );
   };
@@ -596,6 +624,7 @@ export function AssetsPage() {
               <option value="nessus_scan">Nessus Scan</option>
               <option value="manual">Manual</option>
               <option value="csv_import">CSV Import</option>
+              <option value="servicenow_cmdb">ServiceNow CMDB</option>
             </select>
           </div>
         </div>
@@ -773,6 +802,116 @@ export function AssetsPage() {
                                   </span>
                                 </div>
                               </div>
+
+                              {/* Risk Trend Sparkline */}
+                              {riskTrend && riskTrend.trend.length >= 2 && (
+                                <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-600">
+                                  <div className="flex items-center justify-between mb-2">
+                                    <h5 className="text-xs font-medium text-gray-500 dark:text-gray-400">Risk Score Trend</h5>
+                                    <div className="flex items-center gap-2">
+                                      {riskTrend.delta !== 0 && (
+                                        <span className={`flex items-center gap-1 text-xs font-medium ${
+                                          riskTrend.delta < 0 ? 'text-green-600' : 'text-red-600'
+                                        }`}>
+                                          {riskTrend.delta < 0 ? (
+                                            <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                                              <path fillRule="evenodd" d="M5.293 9.707a1 1 0 010-1.414l4-4a1 1 0 011.414 0l4 4a1 1 0 01-1.414 1.414L10 6.414V17a1 1 0 11-2 0V6.414L5.707 9.707a1 1 0 01-1.414 0z" clipRule="evenodd" transform="rotate(180 10 10)" />
+                                            </svg>
+                                          ) : (
+                                            <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                                              <path fillRule="evenodd" d="M5.293 9.707a1 1 0 010-1.414l4-4a1 1 0 011.414 0l4 4a1 1 0 01-1.414 1.414L10 6.414V17a1 1 0 11-2 0V6.414L5.707 9.707a1 1 0 01-1.414 0z" clipRule="evenodd" />
+                                            </svg>
+                                          )}
+                                          {Math.abs(riskTrend.delta)} pts
+                                        </span>
+                                      )}
+                                      <span className="text-xs text-gray-400">
+                                        {riskTrend.scan_count} scans
+                                      </span>
+                                    </div>
+                                  </div>
+                                  <div className="h-12 bg-gray-50 dark:bg-gray-900 rounded-lg p-2">
+                                    <svg viewBox="0 0 200 40" className="w-full h-full" preserveAspectRatio="none">
+                                      {/* Background grid lines */}
+                                      <line x1="0" y1="10" x2="200" y2="10" stroke="currentColor" strokeOpacity="0.1" strokeDasharray="2,2" />
+                                      <line x1="0" y1="20" x2="200" y2="20" stroke="currentColor" strokeOpacity="0.1" strokeDasharray="2,2" />
+                                      <line x1="0" y1="30" x2="200" y2="30" stroke="currentColor" strokeOpacity="0.1" strokeDasharray="2,2" />
+
+                                      {/* Area fill */}
+                                      <path
+                                        d={(() => {
+                                          const points = riskTrend.trend;
+                                          const maxScore = Math.max(...points.map(p => p.score), 100);
+                                          const minScore = Math.min(...points.map(p => p.score), 0);
+                                          const range = maxScore - minScore || 1;
+                                          const xStep = 200 / (points.length - 1);
+
+                                          let path = `M0,${40 - ((points[0].score - minScore) / range) * 36}`;
+                                          points.forEach((p, i) => {
+                                            const x = i * xStep;
+                                            const y = 40 - ((p.score - minScore) / range) * 36;
+                                            path += ` L${x},${y}`;
+                                          });
+                                          path += ` L200,40 L0,40 Z`;
+                                          return path;
+                                        })()}
+                                        fill={riskTrend.delta <= 0 ? 'rgba(34, 197, 94, 0.2)' : 'rgba(239, 68, 68, 0.2)'}
+                                      />
+
+                                      {/* Trend line */}
+                                      <path
+                                        d={(() => {
+                                          const points = riskTrend.trend;
+                                          const maxScore = Math.max(...points.map(p => p.score), 100);
+                                          const minScore = Math.min(...points.map(p => p.score), 0);
+                                          const range = maxScore - minScore || 1;
+                                          const xStep = 200 / (points.length - 1);
+
+                                          let path = `M0,${40 - ((points[0].score - minScore) / range) * 36}`;
+                                          points.forEach((p, i) => {
+                                            const x = i * xStep;
+                                            const y = 40 - ((p.score - minScore) / range) * 36;
+                                            path += ` L${x},${y}`;
+                                          });
+                                          return path;
+                                        })()}
+                                        fill="none"
+                                        stroke={riskTrend.delta <= 0 ? '#22c55e' : '#ef4444'}
+                                        strokeWidth="2"
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                      />
+
+                                      {/* Data points */}
+                                      {riskTrend.trend.map((p, i) => {
+                                        const points = riskTrend.trend;
+                                        const maxScore = Math.max(...points.map(pt => pt.score), 100);
+                                        const minScore = Math.min(...points.map(pt => pt.score), 0);
+                                        const range = maxScore - minScore || 1;
+                                        const xStep = 200 / (points.length - 1);
+                                        const x = i * xStep;
+                                        const y = 40 - ((p.score - minScore) / range) * 36;
+                                        return (
+                                          <circle
+                                            key={i}
+                                            cx={x}
+                                            cy={y}
+                                            r="3"
+                                            fill={riskTrend.delta <= 0 ? '#22c55e' : '#ef4444'}
+                                            className="cursor-pointer"
+                                          >
+                                            <title>{new Date(p.date).toLocaleDateString()}: Score {p.score}, {p.findings} findings</title>
+                                          </circle>
+                                        );
+                                      })}
+                                    </svg>
+                                  </div>
+                                  <div className="flex justify-between text-[10px] text-gray-400 mt-1 px-1">
+                                    <span>{new Date(riskTrend.trend[0]?.date).toLocaleDateString()}</span>
+                                    <span>{new Date(riskTrend.trend[riskTrend.trend.length - 1]?.date).toLocaleDateString()}</span>
+                                  </div>
+                                </div>
+                              )}
 
                               {/* Scan History Timeline */}
                               {scanHistory.length > 0 && (

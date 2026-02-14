@@ -1,0 +1,986 @@
+openapi: 3.1.0
+info:
+  title: ForgeComply 360 API
+  description: |
+    Enterprise GRC Platform API for compliance management, control implementation,
+    evidence tracking, and SSP generation.
+
+    ## Authentication
+    The API uses JWT Bearer token authentication. Obtain tokens via `/auth/login`.
+
+    ## Rate Limits
+    - Auth endpoints: 10 requests/minute per IP
+    - API endpoints: 120 requests/minute per user
+    - Organization limit: 600 requests/minute across all users
+
+    ## NIST/FISMA Compliance
+    This API supports FedRAMP, FISMA, and NIST 800-53 Rev5 compliance workflows.
+  version: 1.0.0
+  contact:
+    name: Forge Cyber Defense
+    url: https://forgecomply360.pages.dev
+  license:
+    name: Proprietary
+    url: https://forgecomply360.pages.dev/terms
+
+servers:
+  - url: https://forge-comply360-api.stanley-riley.workers.dev/api/v1
+    description: Production API
+  - url: https://forge-comply360-api-demo.stanley-riley.workers.dev/api/v1
+    description: Demo API
+
+tags:
+  - name: Authentication
+    description: User authentication, MFA, and session management
+  - name: Frameworks
+    description: Compliance framework management
+  - name: Controls
+    description: Security control management
+  - name: Systems
+    description: Information system management
+  - name: Implementations
+    description: Control implementation tracking
+  - name: POAMs
+    description: Plan of Action and Milestones
+  - name: Evidence
+    description: Evidence and artifact management
+  - name: SSP
+    description: System Security Plan generation
+  - name: Users
+    description: User management
+  - name: Audit
+    description: Audit preparation and readiness
+
+paths:
+  /auth/register:
+    post:
+      tags: [Authentication]
+      summary: Register a new organization and user
+      operationId: register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, name, organizationName]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  minLength: 12
+                  description: Must meet NIST SP 800-63B complexity requirements
+                name:
+                  type: string
+                organizationName:
+                  type: string
+                industry:
+                  type: string
+                size:
+                  type: string
+      responses:
+        '201':
+          description: Registration successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /auth/login:
+    post:
+      tags: [Authentication]
+      summary: Authenticate user
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/AuthResponse'
+                  - $ref: '#/components/schemas/MFARequired'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/refresh:
+    post:
+      tags: [Authentication]
+      summary: Refresh access token
+      operationId: refreshToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token:
+                  type: string
+      responses:
+        '200':
+          description: Token refreshed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+
+  /auth/forgot-password:
+    post:
+      tags: [Authentication]
+      summary: Request password reset email
+      operationId: forgotPassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  format: email
+      responses:
+        '200':
+          description: Reset email sent (if account exists)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+
+  /auth/reset-password:
+    post:
+      tags: [Authentication]
+      summary: Reset password with token
+      operationId: resetPassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password]
+              properties:
+                token:
+                  type: string
+                password:
+                  type: string
+                  minLength: 12
+      responses:
+        '200':
+          description: Password reset successful
+
+  /auth/mfa/setup:
+    post:
+      tags: [Authentication]
+      summary: Initialize MFA setup
+      operationId: mfaSetup
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: MFA setup data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  secret:
+                    type: string
+                  qr_code:
+                    type: string
+                  backup_codes:
+                    type: array
+                    items:
+                      type: string
+
+  /frameworks:
+    get:
+      tags: [Frameworks]
+      summary: List all compliance frameworks
+      operationId: listFrameworks
+      parameters:
+        - name: category
+          in: query
+          schema:
+            type: string
+            enum: [federal, healthcare, financial, privacy, industry]
+      responses:
+        '200':
+          description: List of frameworks
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  frameworks:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Framework'
+
+  /frameworks/enabled:
+    get:
+      tags: [Frameworks]
+      summary: List enabled frameworks for organization
+      operationId: listEnabledFrameworks
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Enabled frameworks
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  frameworks:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Framework'
+
+  /controls:
+    get:
+      tags: [Controls]
+      summary: List security controls
+      operationId: listControls
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: framework_id
+          in: query
+          schema:
+            type: string
+        - name: family
+          in: query
+          schema:
+            type: string
+        - name: search
+          in: query
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: List of controls
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  controls:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Control'
+                  total:
+                    type: integer
+                  page:
+                    type: integer
+
+  /systems:
+    get:
+      tags: [Systems]
+      summary: List information systems
+      operationId: listSystems
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: List of systems
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  systems:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/System'
+    post:
+      tags: [Systems]
+      summary: Create a new system
+      operationId: createSystem
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SystemInput'
+      responses:
+        '201':
+          description: System created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/System'
+
+  /systems/{systemId}:
+    get:
+      tags: [Systems]
+      summary: Get system details
+      operationId: getSystem
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/systemId'
+      responses:
+        '200':
+          description: System details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/System'
+    put:
+      tags: [Systems]
+      summary: Update system
+      operationId: updateSystem
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/systemId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SystemInput'
+      responses:
+        '200':
+          description: System updated
+    delete:
+      tags: [Systems]
+      summary: Delete system
+      operationId: deleteSystem
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/systemId'
+      responses:
+        '204':
+          description: System deleted
+
+  /implementations:
+    get:
+      tags: [Implementations]
+      summary: List control implementations
+      operationId: listImplementations
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: system_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: framework_id
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [implemented, partial, planned, not-applicable, alternative]
+      responses:
+        '200':
+          description: List of implementations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  implementations:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Implementation'
+    post:
+      tags: [Implementations]
+      summary: Create or update implementation
+      operationId: upsertImplementation
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImplementationInput'
+      responses:
+        '200':
+          description: Implementation saved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Implementation'
+
+  /implementations/stats:
+    get:
+      tags: [Implementations]
+      summary: Get implementation statistics
+      operationId: getImplementationStats
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: system_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: framework_id
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Implementation statistics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total:
+                    type: integer
+                  implemented:
+                    type: integer
+                  partial:
+                    type: integer
+                  planned:
+                    type: integer
+                  not_applicable:
+                    type: integer
+                  completion_percentage:
+                    type: number
+
+  /poams:
+    get:
+      tags: [POAMs]
+      summary: List POAMs
+      operationId: listPoams
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [open, in_progress, closed, delayed]
+        - name: system_id
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of POAMs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  poams:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/POAM'
+    post:
+      tags: [POAMs]
+      summary: Create POAM
+      operationId: createPoam
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/POAMInput'
+      responses:
+        '201':
+          description: POAM created
+
+  /evidence:
+    get:
+      tags: [Evidence]
+      summary: List evidence artifacts
+      operationId: listEvidence
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: type
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, archived, expired]
+      responses:
+        '200':
+          description: List of evidence
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  evidence:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Evidence'
+    post:
+      tags: [Evidence]
+      summary: Upload evidence
+      operationId: uploadEvidence
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                title:
+                  type: string
+                description:
+                  type: string
+                type:
+                  type: string
+      responses:
+        '201':
+          description: Evidence uploaded
+
+  /ssp:
+    get:
+      tags: [SSP]
+      summary: List System Security Plans
+      operationId: listSSPs
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: List of SSPs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ssps:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SSP'
+
+  /ssp/generate:
+    post:
+      tags: [SSP]
+      summary: Generate new SSP
+      operationId: generateSSP
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [system_id, template_id]
+              properties:
+                system_id:
+                  type: string
+                template_id:
+                  type: string
+                framework_id:
+                  type: string
+      responses:
+        '201':
+          description: SSP generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SSP'
+
+  /ssp/{sspId}:
+    get:
+      tags: [SSP]
+      summary: Get SSP details
+      operationId: getSSP
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: sspId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: SSP details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SSP'
+
+  /users:
+    get:
+      tags: [Users]
+      summary: List organization users
+      operationId: listUsers
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: List of users
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/User'
+
+  /audit-prep/readiness:
+    get:
+      tags: [Audit]
+      summary: Get audit readiness score
+      operationId: getAuditReadiness
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Audit readiness data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  readiness_score:
+                    type: number
+                  control_coverage:
+                    type: number
+                  evidence_coverage:
+                    type: number
+                  poam_status:
+                    type: object
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    systemId:
+      name: systemId
+      in: path
+      required: true
+      schema:
+        type: string
+
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Authentication required
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: Insufficient permissions
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+        details:
+          type: array
+          items:
+            type: string
+
+    AuthResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+        refresh_token:
+          type: string
+        user:
+          $ref: '#/components/schemas/User'
+
+    MFARequired:
+      type: object
+      properties:
+        mfa_required:
+          type: boolean
+        mfa_token:
+          type: string
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+        name:
+          type: string
+        role:
+          type: string
+          enum: [viewer, analyst, manager, admin, owner]
+        mfa_enabled:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+
+    Framework:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        version:
+          type: string
+        category:
+          type: string
+        description:
+          type: string
+        control_count:
+          type: integer
+
+    Control:
+      type: object
+      properties:
+        id:
+          type: string
+        framework_id:
+          type: string
+        control_id:
+          type: string
+        family:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        priority:
+          type: string
+        baseline_low:
+          type: boolean
+        baseline_moderate:
+          type: boolean
+        baseline_high:
+          type: boolean
+
+    System:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        acronym:
+          type: string
+        description:
+          type: string
+        fips_level:
+          type: string
+          enum: [low, moderate, high]
+        authorization_status:
+          type: string
+        ato_date:
+          type: string
+          format: date
+        ato_expiry:
+          type: string
+          format: date
+
+    SystemInput:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        acronym:
+          type: string
+        description:
+          type: string
+        fips_level:
+          type: string
+        authorization_status:
+          type: string
+
+    Implementation:
+      type: object
+      properties:
+        id:
+          type: string
+        system_id:
+          type: string
+        control_id:
+          type: string
+        status:
+          type: string
+          enum: [implemented, partial, planned, not-applicable, alternative]
+        implementation_description:
+          type: string
+        responsible_role:
+          type: string
+        inherited_from:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
+
+    ImplementationInput:
+      type: object
+      required: [system_id, control_id]
+      properties:
+        system_id:
+          type: string
+        control_id:
+          type: string
+        status:
+          type: string
+        implementation_description:
+          type: string
+        responsible_role:
+          type: string
+
+    POAM:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+        risk_level:
+          type: string
+        due_date:
+          type: string
+          format: date
+        assigned_to:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    POAMInput:
+      type: object
+      required: [title, risk_level]
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        risk_level:
+          type: string
+          enum: [very_low, low, moderate, high, very_high]
+        due_date:
+          type: string
+          format: date
+        assigned_to:
+          type: string
+
+    Evidence:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        type:
+          type: string
+        file_name:
+          type: string
+        file_size:
+          type: integer
+        status:
+          type: string
+        uploaded_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    SSP:
+      type: object
+      properties:
+        id:
+          type: string
+        system_id:
+          type: string
+        title:
+          type: string
+        version:
+          type: string
+        status:
+          type: string
+          enum: [draft, review, approved, published]
+        framework_id:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time

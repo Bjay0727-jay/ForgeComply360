@@ -214,39 +214,52 @@ export function parseUrlHash(): { token?: string; sspId?: string; apiUrl?: strin
  * Returns true if successfully connected
  */
 export function initFromUrlHash(): { connected: boolean; sspId?: string } {
+  console.log('[Reporter] Initializing from URL hash:', window.location.hash);
+
   const hashParams = parseUrlHash();
+  console.log('[Reporter] Parsed hash params:', hashParams);
+
   if (!hashParams) {
+    console.log('[Reporter] No hash params found');
     return { connected: false };
   }
 
   // Store API URL if provided
   if (hashParams.apiUrl) {
+    console.log('[Reporter] Setting API URL:', hashParams.apiUrl);
     setApiUrl(hashParams.apiUrl);
   }
 
   // Store and validate token
   if (hashParams.token) {
+    console.log('[Reporter] Token received:', hashParams.token.substring(0, 30) + '...');
     if (isTokenExpired(hashParams.token, 60)) {
-      console.warn('Token from URL is expired');
+      console.warn('[Reporter] Token from URL is expired');
       return { connected: false };
     }
     setToken(hashParams.token);
+    console.log('[Reporter] Token stored successfully');
   }
 
   // Extract SSP ID from token or URL
   let sspId = hashParams.sspId;
   if (!sspId && hashParams.token) {
     const payload = decodeToken(hashParams.token);
+    console.log('[Reporter] Decoded token payload:', payload);
     sspId = payload?.sspId;
   }
+  console.log('[Reporter] SSP ID:', sspId);
 
   // Clear URL hash for security
   if (window.history.replaceState) {
     window.history.replaceState(null, '', window.location.pathname + window.location.search);
   }
 
+  const connected = isOnlineMode();
+  console.log('[Reporter] Connection result:', { connected, sspId });
+
   return {
-    connected: isOnlineMode(),
+    connected,
     sspId,
   };
 }

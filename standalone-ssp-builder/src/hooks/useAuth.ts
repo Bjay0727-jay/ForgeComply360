@@ -91,13 +91,16 @@ export function useAuth(): [AuthState, AuthActions] {
 
   // Check URL hash for embedded token on mount
   useEffect(() => {
+    console.log('[Reporter] useAuth: Checking URL hash for token...');
     const result = initFromUrlHash();
+    console.log('[Reporter] useAuth: initFromUrlHash result:', result);
 
     if (result.connected) {
       const token = getToken();
       const payload = token ? decodeToken(token) : null;
+      console.log('[Reporter] useAuth: Connected! Token payload:', payload);
 
-      setState({
+      const newState = {
         isAuthenticated: true,
         isOnlineMode: true,
         isLoading: false,
@@ -107,8 +110,11 @@ export function useAuth(): [AuthState, AuthActions] {
         apiUrl: getApiUrl() || null,
         error: null,
         tokenExpiresAt: payload?.exp ? new Date(payload.exp * 1000) : null,
-      });
+      };
+      console.log('[Reporter] useAuth: Setting auth state:', newState);
+      setState(newState);
     } else {
+      console.log('[Reporter] useAuth: Not connected from URL hash');
       setState((prev) => ({
         ...prev,
         isLoading: false,

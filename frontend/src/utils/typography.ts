@@ -427,6 +427,70 @@ export const CARDS = {
 } as const;
 
 // =============================================================================
+// CARD ELEVATION SYSTEM V2 (Dashboard Improvements)
+// =============================================================================
+
+export const CARDS_V2 = {
+  // Primary cards - key data, require attention (highest elevation)
+  primary: 'bg-white dark:bg-gray-800 rounded-2xl shadow-lg shadow-gray-200/50 dark:shadow-gray-900/50 border-2 border-blue-200 dark:border-blue-700',
+
+  // Secondary cards - supporting information (medium elevation)
+  secondary: 'bg-white dark:bg-gray-800 rounded-xl border-2 border-blue-200 dark:border-blue-700 shadow-sm',
+
+  // Tertiary cards - background data, lists (lowest elevation)
+  tertiary: 'bg-gray-50 dark:bg-gray-800/50 rounded-lg border-2 border-blue-200 dark:border-blue-700',
+
+  // Interactive cards - clickable items with hover effects
+  interactive: 'bg-white dark:bg-gray-800 rounded-xl border-2 border-blue-200 dark:border-blue-700 shadow-sm hover:shadow-md hover:border-blue-300 dark:hover:border-blue-600 hover:-translate-y-0.5 transition-all duration-200 cursor-pointer',
+
+  // Hero card - main KPI/metric (gradient dark background)
+  hero: 'bg-gradient-to-br from-forge-navy-900 via-forge-navy-800 to-forge-navy-700 rounded-2xl p-6 shadow-xl ring-1 ring-forge-navy-500/40',
+
+  // Glass effect - frosted glass for supporting metrics
+  glass: 'backdrop-blur-sm bg-white/90 dark:bg-gray-800/90 rounded-xl border-2 border-blue-200 dark:border-blue-700 shadow-sm hover:shadow-md hover:border-blue-300 dark:hover:border-blue-600 transition-all duration-200',
+
+  // Status-aware cards (use with border-l-{color})
+  statusSuccess: 'bg-white dark:bg-gray-800 rounded-xl border-2 border-l-4 border-blue-200 dark:border-blue-700 border-l-green-500 p-5',
+  statusWarning: 'bg-white dark:bg-gray-800 rounded-xl border-2 border-l-4 border-blue-200 dark:border-blue-700 border-l-amber-500 p-5',
+  statusDanger: 'bg-white dark:bg-gray-800 rounded-xl border-2 border-l-4 border-blue-200 dark:border-blue-700 border-l-red-500 p-5',
+  statusInfo: 'bg-white dark:bg-gray-800 rounded-xl border-2 border-l-4 border-blue-200 dark:border-blue-700 border-l-blue-500 p-5',
+
+  // Alert banner - attention-grabbing
+  alertBanner: 'bg-gradient-to-r from-amber-50 to-orange-50 dark:from-amber-900/20 dark:to-orange-900/20 border-2 border-blue-200 dark:border-blue-700 rounded-2xl p-5 shadow-sm',
+} as const;
+
+// =============================================================================
+// DASHBOARD TYPOGRAPHY (Metrics & Stats focused)
+// =============================================================================
+
+export const TYPOGRAPHY_DASHBOARD = {
+  // Hero metric - large compliance score
+  heroValue: 'text-5xl sm:text-6xl font-bold tracking-tight',
+  heroLabel: 'text-sm font-semibold uppercase tracking-wide',
+  heroSubvalue: 'text-xl sm:text-2xl font-medium',
+
+  // Card metrics
+  cardValue: 'text-2xl sm:text-3xl font-bold',
+  cardLabel: 'text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400',
+
+  // Trend/delta indicators
+  trendUp: 'inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-green-500/20 text-green-600 dark:text-green-400 text-xs font-semibold',
+  trendDown: 'inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-red-500/20 text-red-600 dark:text-red-400 text-xs font-semibold',
+  trendNeutral: 'inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-gray-200/50 text-gray-600 dark:text-gray-400 text-xs font-semibold',
+
+  // Section headers with icon
+  sectionHeader: 'text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2',
+
+  // Data labels in widgets
+  dataLabel: 'text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide',
+  dataValue: 'text-sm font-semibold text-gray-900 dark:text-white',
+
+  // Alert titles
+  alertTitle: 'font-semibold text-amber-900 dark:text-amber-100',
+  alertSubtitle: 'text-sm text-amber-700 dark:text-amber-300',
+} as const;
+
+// =============================================================================
 // MODAL STYLES
 // =============================================================================
 

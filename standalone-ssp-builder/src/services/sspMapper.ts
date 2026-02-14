@@ -178,6 +178,8 @@ interface BackendPOAMSummary {
  * Load all SSP data from the backend and map to Reporter's SSPData format
  */
 export async function loadSSPFromBackend(sspId: string): Promise<SSPData> {
+  console.log('[Reporter] sspMapper: Loading SSP from backend, ID:', sspId);
+
   // Fetch all data in parallel
   const [
     docRes,
@@ -195,23 +197,24 @@ export async function loadSSPFromBackend(sspId: string): Promise<SSPData> {
     cmBaselinesRes,
     poamRes,
   ] = await Promise.all([
-    api<{ document: BackendSSPDocument }>(`/api/v1/ssp/${sspId}`),
-    api<{ info_types: BackendInfoType[] }>(`/api/v1/ssp/${sspId}/info-types`).catch(() => ({ info_types: [] })),
-    api<{ rmf_tracking: BackendRMFTracking | null }>(`/api/v1/ssp/${sspId}/rmf-tracking`).catch(() => ({ rmf_tracking: null })),
-    api<{ ports_protocols: BackendPortProtocol[] }>(`/api/v1/ssp/${sspId}/ports-protocols`).catch(() => ({ ports_protocols: [] })),
-    api<{ crypto_modules: BackendCryptoModule[] }>(`/api/v1/ssp/${sspId}/crypto-modules`).catch(() => ({ crypto_modules: [] })),
-    api<{ digital_identity: BackendDigitalIdentity | null }>(`/api/v1/ssp/${sspId}/digital-identity`).catch(() => ({ digital_identity: null })),
-    api<{ separation_duties: BackendSeparationDuty[] }>(`/api/v1/ssp/${sspId}/separation-duties`).catch(() => ({ separation_duties: [] })),
-    api<{ policy_mappings: BackendPolicyMapping[] }>(`/api/v1/ssp/${sspId}/policy-mappings`).catch(() => ({ policy_mappings: [] })),
-    api<{ scrm_entries: BackendSCRMEntry[] }>(`/api/v1/ssp/${sspId}/scrm`).catch(() => ({ scrm_entries: [] })),
-    api<{ scrm_plan: BackendSCRMPlan | null }>(`/api/v1/ssp/${sspId}/scrm-plan`).catch(() => ({ scrm_plan: null })),
-    api<{ privacy_analysis: BackendPrivacyAnalysis | null }>(`/api/v1/ssp/${sspId}/privacy-analysis`).catch(() => ({ privacy_analysis: null })),
-    api<{ config_management: BackendConfigManagement | null }>(`/api/v1/ssp/${sspId}/config-management`).catch(() => ({ config_management: null })),
-    api<{ cm_baselines: BackendCMBaseline[] }>(`/api/v1/ssp/${sspId}/cm-baselines`).catch(() => ({ cm_baselines: [] })),
-    api<{ poam_summary: BackendPOAMSummary | null }>(`/api/v1/ssp/${sspId}/poam-summary`).catch(() => ({ poam_summary: null })),
+    api<{ document: BackendSSPDocument }>(`/api/v1/ssp/${sspId}`).then(r => { console.log('[Reporter] Main document:', r); return r; }),
+    api<{ info_types: BackendInfoType[] }>(`/api/v1/ssp/${sspId}/info-types`).then(r => { console.log('[Reporter] Info types:', r); return r; }).catch(() => ({ info_types: [] })),
+    api<{ rmf_tracking: BackendRMFTracking | null }>(`/api/v1/ssp/${sspId}/rmf-tracking`).then(r => { console.log('[Reporter] RMF tracking:', r); return r; }).catch(() => ({ rmf_tracking: null })),
+    api<{ ports_protocols: BackendPortProtocol[] }>(`/api/v1/ssp/${sspId}/ports-protocols`).then(r => { console.log('[Reporter] Ports/protocols:', r); return r; }).catch(() => ({ ports_protocols: [] })),
+    api<{ crypto_modules: BackendCryptoModule[] }>(`/api/v1/ssp/${sspId}/crypto-modules`).then(r => { console.log('[Reporter] Crypto modules:', r); return r; }).catch(() => ({ crypto_modules: [] })),
+    api<{ digital_identity: BackendDigitalIdentity | null }>(`/api/v1/ssp/${sspId}/digital-identity`).then(r => { console.log('[Reporter] Digital identity:', r); return r; }).catch(() => ({ digital_identity: null })),
+    api<{ separation_duties: BackendSeparationDuty[] }>(`/api/v1/ssp/${sspId}/separation-duties`).then(r => { console.log('[Reporter] Separation duties:', r); return r; }).catch(() => ({ separation_duties: [] })),
+    api<{ policy_mappings: BackendPolicyMapping[] }>(`/api/v1/ssp/${sspId}/policy-mappings`).then(r => { console.log('[Reporter] Policy mappings:', r); return r; }).catch(() => ({ policy_mappings: [] })),
+    api<{ scrm_entries: BackendSCRMEntry[] }>(`/api/v1/ssp/${sspId}/scrm`).then(r => { console.log('[Reporter] SCRM entries:', r); return r; }).catch(() => ({ scrm_entries: [] })),
+    api<{ scrm_plan: BackendSCRMPlan | null }>(`/api/v1/ssp/${sspId}/scrm-plan`).then(r => { console.log('[Reporter] SCRM plan:', r); return r; }).catch(() => ({ scrm_plan: null })),
+    api<{ privacy_analysis: BackendPrivacyAnalysis | null }>(`/api/v1/ssp/${sspId}/privacy-analysis`).then(r => { console.log('[Reporter] Privacy analysis:', r); return r; }).catch(() => ({ privacy_analysis: null })),
+    api<{ config_management: BackendConfigManagement | null }>(`/api/v1/ssp/${sspId}/config-management`).then(r => { console.log('[Reporter] Config mgmt:', r); return r; }).catch(() => ({ config_management: null })),
+    api<{ cm_baselines: BackendCMBaseline[] }>(`/api/v1/ssp/${sspId}/cm-baselines`).then(r => { console.log('[Reporter] CM baselines:', r); return r; }).catch(() => ({ cm_baselines: [] })),
+    api<{ poam_summary: BackendPOAMSummary | null }>(`/api/v1/ssp/${sspId}/poam-summary`).then(r => { console.log('[Reporter] POAM summary:', r); return r; }).catch(() => ({ poam_summary: null })),
   ]);
 
   const doc = docRes.document;
+  console.log('[Reporter] sspMapper: Document loaded:', doc);
   const authoring = doc.oscal_json?._authoring;
   const fisma = authoring?.fisma || {};
   const sections = authoring?.sections || {};

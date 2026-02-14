@@ -206,7 +206,7 @@ export function EvidenceSchedulesPage() {
                     </td>
                     <td className="px-4 py-3 text-gray-600">{s.owner_name || 'Unknown'}</td>
                     <td className="px-4 py-3">
-                      <span className={due.color}>{new Date(s.next_due_date + 'T00:00:00').toLocaleDateString()}</span>
+                      <span className={due.color}>{new Date(s.next_due_date.replace(' ', 'T')).toLocaleDateString()}</span>
                       {due.label && <span className={`ml-1.5 text-xs px-1.5 py-0.5 rounded ${due.label === 'Overdue' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>{due.label}</span>}
                     </td>
                     <td className="px-4 py-3 text-gray-500">

@@ -257,7 +257,7 @@ export function AuditPrepPage() {
                       {task.assigned_to_name && <span className="text-xs text-gray-500">{task.assigned_to_name}</span>}
                       {task.due_date && (
                         <span className={`text-xs ${overdue ? 'text-red-600 font-medium' : 'text-gray-400'}`}>
-                          Due {new Date(task.due_date + 'T00:00:00').toLocaleDateString()}
+                          Due {new Date(task.due_date.replace(' ', 'T')).toLocaleDateString()}
                         </span>
                       )}
                       {task.completed && task.completed_at && (

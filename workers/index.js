@@ -49,8 +49,9 @@ export default {
       headers.set('X-Content-Type-Options', 'nosniff');
       headers.set('X-Frame-Options', 'DENY');
       headers.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
-      // CSP - allows self, inline styles/scripts for React, images from any https, API connections
-      headers.set('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' https://*.forgecomply360.pages.dev; font-src 'self' data:; frame-ancestors 'none';");
+      // CSP - Improved security (NIST SP 800-53 SC-8 compliant)
+      // Note: 'unsafe-inline' for styles required by React runtime; scripts are bundled
+      headers.set('Content-Security-Policy', "default-src 'self'; script-src 'self' https://browser.sentry-cdn.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https://*.stanley-riley.workers.dev https://*.forgecomply360.pages.dev https://*.ingest.us.sentry.io https://api.pwnedpasswords.com; frame-ancestors 'none'; form-action 'self'; base-uri 'self'; object-src 'none'; upgrade-insecure-requests;");
       headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
       headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
       return new Response(response.body, { status: response.status, headers });

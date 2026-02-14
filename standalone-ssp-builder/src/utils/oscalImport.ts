@@ -463,7 +463,13 @@ function parseOscalXml(xmlContent: string): Record<string, unknown> {
   }
 
   // Convert XML DOM to JSON-like object
-  return xmlToJson(doc.documentElement);
+  // Wrap the result in the root element's tag name to match JSON structure
+  const rootElement = doc.documentElement;
+  const rootTagName = rootElement.tagName;
+
+  return {
+    [rootTagName]: xmlToJson(rootElement),
+  };
 }
 
 /**

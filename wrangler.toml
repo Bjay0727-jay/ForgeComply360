@@ -75,8 +75,43 @@ CORS_ORIGIN = "https://forgecomply360.pages.dev"
 # 0 6 * * * = Daily at 6 AM UTC (evidence checks, compliance alerts)
 # 0 8 * * 1 = Weekly Monday 8 AM UTC (weekly digest)
 # 0 2 * * 2,5 = Tuesday & Friday at 2 AM UTC (automated backup)
+# 0 * * * * = Hourly (ServiceNow CMDB scheduled syncs)
 [triggers]
-crons = ["0 6 * * *", "0 8 * * 1", "0 2 * * 2,5"]
+crons = ["0 6 * * *", "0 8 * * 1", "0 2 * * 2,5", "0 * * * *"]
 
 [env.production.triggers]
-crons = ["0 6 * * *", "0 8 * * 1", "0 2 * * 2,5"]
+crons = ["0 6 * * *", "0 8 * * 1", "0 2 * * 2,5", "0 * * * *"]
+
+# ============================================================================
+# DEMO ENVIRONMENT
+# ============================================================================
+[env.demo]
+name = "forge-comply360-api-demo"
+
+[[env.demo.d1_databases]]
+binding = "DB"
+database_name = "forge-comply360-db-demo"
+database_id = "094aa4dd-5c79-456e-a2cb-d43f08f677e5"
+
+[[env.demo.kv_namespaces]]
+binding = "KV"
+id = "b114779cb4864349b611010bc7056cd7"
+
+[[env.demo.r2_buckets]]
+binding = "EVIDENCE_VAULT"
+bucket_name = "forge-evidence-demo"
+
+[[env.demo.r2_buckets]]
+binding = "BACKUP_BUCKET"
+bucket_name = "forge-comply360-backups-demo"
+
+[env.demo.ai]
+binding = "AI"
+
+[env.demo.vars]
+ENVIRONMENT = "demo"
+CORS_ORIGIN = "https://demo.forgecomply360.pages.dev"
+
+# Demo uses reduced cron schedule (daily only)
+[env.demo.triggers]
+crons = ["0 6 * * *"]

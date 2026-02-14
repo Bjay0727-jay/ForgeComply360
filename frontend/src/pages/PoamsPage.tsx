@@ -100,12 +100,19 @@ export function PoamsPage() {
   const [linkedAssets, setLinkedAssets] = useState<any[]>([]);
   const [linkedControls, setLinkedControls] = useState<any[]>([]);
   const [linkedEvidence, setLinkedEvidence] = useState<any[]>([]);
+  const [linkedFindings, setLinkedFindings] = useState<any[]>([]);
   const [availableAssets, setAvailableAssets] = useState<any[]>([]);
   const [availableEvidence, setAvailableEvidence] = useState<any[]>([]);
+  const [availableFindings, setAvailableFindings] = useState<any[]>([]);
   const [frameworks, setFrameworks] = useState<any[]>([]);
   const [deviationHistory, setDeviationHistory] = useState<any[]>([]);
   const [risks, setRisks] = useState<any[]>([]);
   const [vendors, setVendors] = useState<any[]>([]);
+
+  // Bulk selection state
+  const [selectedAssetIds, setSelectedAssetIds] = useState<string[]>([]);
+  const [selectedFindingIds, setSelectedFindingIds] = useState<string[]>([]);
+  const [bulkLinking, setBulkLinking] = useState(false);
 
   // Approval workflow
   const [showApprovalModal, setShowApprovalModal] = useState(false);
@@ -146,17 +153,22 @@ export function PoamsPage() {
     api(`/api/v1/poams/${poamId}/affected-assets`).then((d) => setLinkedAssets(d.assets || [])).catch(() => {});
     api(`/api/v1/poams/${poamId}/control-mappings`).then((d) => setLinkedControls(d.controls || [])).catch(() => {});
     api(`/api/v1/poams/${poamId}/evidence`).then((d) => setLinkedEvidence(d.evidence || [])).catch(() => {});
+    api(`/api/v1/poams/${poamId}/findings`).then((d) => setLinkedFindings(d.findings || [])).catch(() => {});
     // Deviation history (CMMC/FedRAMP AO)
     api(`/api/v1/poams/${poamId}/deviation-history`).then((d) => setDeviationHistory(d.history || [])).catch(() => {});
+    // Clear bulk selections when switching POA&Ms
+    setSelectedAssetIds([]);
+    setSelectedFindingIds([]);
   };
 
-  // Load available assets/evidence/frameworks/risks for linking
+  // Load available assets/evidence/frameworks/risks/findings for linking
   useEffect(() => {
     api('/api/v1/assets?limit=500').then((d) => setAvailableAssets(d.assets || [])).catch(() => {});
     api('/api/v1/evidence?limit=500').then((d) => setAvailableEvidence(d.evidence || [])).catch(() => {});
     api('/api/v1/frameworks').then((d) => setFrameworks(d.frameworks || [])).catch(() => {});
     api('/api/v1/risks?limit=500').then((d) => setRisks(d.risks || [])).catch(() => {});
     api('/api/v1/vendors?limit=500').then((d) => setVendors(d.vendors || [])).catch(() => {});
+    api('/api/v1/vulnerability-findings?limit=500').then((d) => setAvailableFindings(d.findings || [])).catch(() => {});
   }, []);
 
   const toggleExpand = (p: any) => {
@@ -226,8 +238,11 @@ export function PoamsPage() {
     try {
       const fields = editFields[id];
       await api(`/api/v1/poams/${id}`, { method: 'PUT', body: JSON.stringify(fields) });
+      addToast({ type: 'success', title: 'POA&M Saved', message: 'Changes saved successfully' });
       loadPoams();
-    } catch { } finally { setSavingEdit(''); }
+    } catch (e: any) {
+      addToast({ type: 'error', title: 'Save Failed', message: e.message || 'Could not save POA&M changes' });
+    } finally { setSavingEdit(''); }
   };
 
   const deletePoam = async (id: string) => {
@@ -319,6 +334,59 @@ export function PoamsPage() {
       loadDetail(poamId);
       loadPoams();
     } catch { }
+  };
+
+  // Bulk asset linking
+  const bulkLinkAssets = async (poamId: string) => {
+    if (selectedAssetIds.length === 0) return;
+    setBulkLinking(true);
+    try {
+      const result = await api(`/api/v1/poams/${poamId}/affected-assets/bulk`, {
+        method: 'POST',
+        body: JSON.stringify({ asset_ids: selectedAssetIds, link_reason: 'affected' })
+      });
+      setSelectedAssetIds([]);
+      loadDetail(poamId);
+      loadPoams();
+      if (result.linked > 0) {
+        addToast({ type: 'success', title: 'Assets Linked', message: `Successfully linked ${result.linked} asset(s)` });
+      } else if (result.skipped > 0) {
+        addToast({ type: 'info', title: 'Already Linked', message: `All ${result.skipped} selected asset(s) were already linked to this POA&M` });
+      }
+    } catch (e: any) { addToast({ type: 'error', title: 'Bulk Link Failed', message: e.message }); }
+    finally { setBulkLinking(false); }
+  };
+
+  // Finding linking
+  const linkFinding = async (poamId: string, findingId: string) => {
+    try {
+      await api(`/api/v1/poams/${poamId}/findings`, { method: 'POST', body: JSON.stringify({ finding_id: findingId, link_reason: 'related' }) });
+      loadDetail(poamId);
+      addToast({ type: 'success', title: 'Finding Linked' });
+    } catch (e: any) { addToast({ type: 'error', title: 'Link Failed', message: e.message }); }
+  };
+
+  const unlinkFinding = async (poamId: string, linkId: string) => {
+    try {
+      await api(`/api/v1/poams/${poamId}/findings/${linkId}`, { method: 'DELETE' });
+      loadDetail(poamId);
+    } catch { }
+  };
+
+  const bulkLinkFindings = async (poamId: string) => {
+    if (selectedFindingIds.length === 0) return;
+    setBulkLinking(true);
+    let linked = 0;
+    for (const findingId of selectedFindingIds) {
+      try {
+        await api(`/api/v1/poams/${poamId}/findings`, { method: 'POST', body: JSON.stringify({ finding_id: findingId, link_reason: 'related' }) });
+        linked++;
+      } catch { }
+    }
+    setSelectedFindingIds([]);
+    loadDetail(poamId);
+    addToast({ type: 'success', title: 'Findings Linked', message: `Linked ${linked} finding(s)` });
+    setBulkLinking(false);
   };
 
   const title = isFederal ? 'POA&M Tracker' : nav('poams');
@@ -772,7 +840,7 @@ export function PoamsPage() {
                         </div>
 
                         {/* FedRAMP Compliance Sections */}
-                        {/* Affected Assets */}
+                        {/* Affected Assets with Bulk Selection */}
                         <div className="border-t border-gray-100 pt-4">
                           <h4 className="text-xs font-semibold text-gray-700 mb-2 flex items-center gap-1">
                             <svg className="w-3.5 h-3.5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2" /></svg>
@@ -797,20 +865,106 @@ export function PoamsPage() {
                             ))}
                           </div>
                           {canEdit && (
-                            <div className="flex items-center gap-2 mt-2">
-                              <select value={linkingAsset.assetId} onChange={(e) => setLinkingAsset({ ...linkingAsset, poamId: p.id, assetId: e.target.value })} className="flex-1 px-2 py-1.5 border border-gray-300 rounded-lg text-xs">
-                                <option value="">Select asset...</option>
-                                {availableAssets.filter(a => !linkedAssets.find(la => la.asset_id === a.id)).map((a) => (
-                                  <option key={a.id} value={a.id}>{a.hostname || a.ip_address} {a.system_name ? `(${a.system_name})` : ''}</option>
-                                ))}
-                              </select>
-                              <select value={linkingAsset.reason} onChange={(e) => setLinkingAsset({ ...linkingAsset, reason: e.target.value })} className="px-2 py-1.5 border border-gray-300 rounded-lg text-xs">
-                                <option value="vulnerable">Vulnerable</option>
-                                <option value="impacted">Impacted</option>
-                                <option value="affected">Affected</option>
-                                <option value="at_risk">At Risk</option>
-                              </select>
-                              <button onClick={() => linkAsset(p.id)} disabled={!linkingAsset.assetId} className="px-2.5 py-1.5 bg-forge-navy-900 text-white rounded-lg text-xs font-medium hover:bg-forge-navy-800 disabled:opacity-50">Link</button>
+                            <div className="mt-2">
+                              <p className="text-[10px] text-gray-500 mb-1">Select multiple assets to link:</p>
+                              <div className="max-h-32 overflow-y-auto border border-gray-200 rounded-lg p-2 bg-gray-50 space-y-1">
+                                {availableAssets.filter(a => !linkedAssets.find(la => la.asset_id === a.id)).length === 0 ? (
+                                  <p className="text-xs text-gray-400 italic">All assets are already linked</p>
+                                ) : (
+                                  availableAssets.filter(a => !linkedAssets.find(la => la.asset_id === a.id)).slice(0, 50).map((a) => (
+                                    <label key={a.id} className="flex items-center gap-2 cursor-pointer hover:bg-white p-1 rounded text-xs">
+                                      <input
+                                        type="checkbox"
+                                        checked={selectedAssetIds.includes(a.id)}
+                                        onChange={(e) => {
+                                          if (e.target.checked) setSelectedAssetIds(prev => [...prev, a.id]);
+                                          else setSelectedAssetIds(prev => prev.filter(id => id !== a.id));
+                                        }}
+                                        className="rounded border-gray-300 text-forge-navy-600 focus:ring-forge-navy-500"
+                                      />
+                                      <span className="text-gray-700">{a.hostname || a.ip_address}</span>
+                                      {a.system_name && <span className="text-gray-400 text-[10px]">({a.system_name})</span>}
+                                    </label>
+                                  ))
+                                )}
+                              </div>
+                              <button
+                                onClick={() => bulkLinkAssets(p.id)}
+                                disabled={selectedAssetIds.length === 0 || bulkLinking}
+                                className="mt-2 px-3 py-1.5 bg-forge-navy-900 text-white rounded-lg text-xs font-medium hover:bg-forge-navy-800 disabled:opacity-50"
+                              >
+                                {bulkLinking ? 'Linking...' : `Link ${selectedAssetIds.length} Asset${selectedAssetIds.length !== 1 ? 's' : ''}`}
+                              </button>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Vulnerability Findings */}
+                        <div className="border-t border-gray-100 pt-4">
+                          <h4 className="text-xs font-semibold text-gray-700 mb-2 flex items-center gap-1">
+                            <svg className="w-3.5 h-3.5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                            Vulnerability Findings ({linkedFindings.length})
+                            {linkedFindings.length > 0 && <span className="ml-1 text-[10px] px-1.5 py-0.5 rounded bg-red-100 text-red-700">Scan Data</span>}
+                          </h4>
+                          <div className="space-y-1.5 max-h-32 overflow-y-auto">
+                            {linkedFindings.length === 0 && <p className="text-xs text-gray-400">No vulnerability findings linked. Link scan results to track remediation.</p>}
+                            {linkedFindings.map((f: any) => (
+                              <div key={f.id} className="flex items-center justify-between py-1.5 px-2 bg-white rounded border border-gray-100 text-xs">
+                                <div className="flex items-center gap-2 min-w-0 flex-1">
+                                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                                    f.severity === 'critical' ? 'bg-red-100 text-red-700' :
+                                    f.severity === 'high' ? 'bg-orange-100 text-orange-700' :
+                                    f.severity === 'medium' ? 'bg-yellow-100 text-yellow-700' :
+                                    'bg-gray-100 text-gray-600'
+                                  }`}>{f.severity}</span>
+                                  <span className="text-gray-700 truncate font-medium" title={f.title}>{f.title?.substring(0, 40)}{f.title?.length > 40 ? '...' : ''}</span>
+                                  {f.hostname && <span className="text-gray-400 text-[10px]">({f.hostname})</span>}
+                                </div>
+                                {canEdit && (
+                                  <button onClick={() => unlinkFinding(p.id, f.id)} className="text-red-500 hover:text-red-700 p-1 ml-1">
+                                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                                  </button>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                          {canEdit && availableFindings.length > 0 && (
+                            <div className="mt-2">
+                              <p className="text-[10px] text-gray-500 mb-1">Select vulnerability findings to link:</p>
+                              <div className="max-h-32 overflow-y-auto border border-gray-200 rounded-lg p-2 bg-gray-50 space-y-1">
+                                {availableFindings.filter(f => !linkedFindings.find(lf => lf.finding_id === f.id)).length === 0 ? (
+                                  <p className="text-xs text-gray-400 italic">All findings are already linked</p>
+                                ) : (
+                                  availableFindings.filter(f => !linkedFindings.find(lf => lf.finding_id === f.id)).slice(0, 50).map((f) => (
+                                    <label key={f.id} className="flex items-center gap-2 cursor-pointer hover:bg-white p-1 rounded text-xs">
+                                      <input
+                                        type="checkbox"
+                                        checked={selectedFindingIds.includes(f.id)}
+                                        onChange={(e) => {
+                                          if (e.target.checked) setSelectedFindingIds(prev => [...prev, f.id]);
+                                          else setSelectedFindingIds(prev => prev.filter(id => id !== f.id));
+                                        }}
+                                        className="rounded border-gray-300 text-forge-navy-600 focus:ring-forge-navy-500"
+                                      />
+                                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                                        f.severity === 'critical' ? 'bg-red-100 text-red-700' :
+                                        f.severity === 'high' ? 'bg-orange-100 text-orange-700' :
+                                        f.severity === 'medium' ? 'bg-yellow-100 text-yellow-700' :
+                                        'bg-gray-100 text-gray-600'
+                                      }`}>{f.severity}</span>
+                                      <span className="text-gray-700 truncate" title={f.title}>{f.title?.substring(0, 30)}{f.title?.length > 30 ? '...' : ''}</span>
+                                      {f.hostname && <span className="text-gray-400 text-[10px]">({f.hostname})</span>}
+                                    </label>
+                                  ))
+                                )}
+                              </div>
+                              <button
+                                onClick={() => bulkLinkFindings(p.id)}
+                                disabled={selectedFindingIds.length === 0 || bulkLinking}
+                                className="mt-2 px-3 py-1.5 bg-red-600 text-white rounded-lg text-xs font-medium hover:bg-red-700 disabled:opacity-50"
+                              >
+                                {bulkLinking ? 'Linking...' : `Link ${selectedFindingIds.length} Finding${selectedFindingIds.length !== 1 ? 's' : ''}`}
+                              </button>
                             </div>
                           )}
                         </div>
