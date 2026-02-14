@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
+import { api } from '../utils/api';
 
 export function LoginPage() {
   const { login, verifyMFA } = useAuth();
@@ -13,7 +14,13 @@ export function LoginPage() {
   const [mfaRequired, setMfaRequired] = useState(false);
   const [mfaToken, setMfaToken] = useState('');
   const [mfaCode, setMfaCode] = useState('');
-  const [showForgotMsg, setShowForgotMsg] = useState(false);
+
+  // Forgot password state
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
+  const [forgotEmail, setForgotEmail] = useState('');
+  const [forgotLoading, setForgotLoading] = useState(false);
+  const [forgotSuccess, setForgotSuccess] = useState(false);
+  const [forgotError, setForgotError] = useState('');
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -45,11 +52,36 @@ export function LoginPage() {
     }
   };
 
+  const handleForgotPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setForgotError('');
+    setForgotLoading(true);
+    try {
+      await api('/auth/forgot-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: forgotEmail }),
+      });
+      setForgotSuccess(true);
+    } catch (err: any) {
+      setForgotError(err.message || 'Failed to send reset email');
+    } finally {
+      setForgotLoading(false);
+    }
+  };
+
   const resetMfa = () => {
     setMfaRequired(false);
     setMfaToken('');
     setMfaCode('');
     setError('');
+  };
+
+  const resetForgotPassword = () => {
+    setShowForgotPassword(false);
+    setForgotEmail('');
+    setForgotSuccess(false);
+    setForgotError('');
   };
 
   return (
@@ -107,6 +139,79 @@ export function LoginPage() {
               Back to login
             </button>
           </form>
+        ) : showForgotPassword ? (
+          <div className="bg-white rounded-xl shadow-2xl p-8">
+            {forgotSuccess ? (
+              <div className="text-center">
+                <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <svg className="w-8 h-8 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                  </svg>
+                </div>
+                <h2 className="text-xl font-semibold text-gray-900 mb-2">Check Your Email</h2>
+                <p className="text-gray-600 mb-6">
+                  If an account exists with that email, you will receive a password reset link shortly.
+                </p>
+                <p className="text-sm text-gray-500 mb-6">
+                  The link will expire in 15 minutes. Check your spam folder if you don't see the email.
+                </p>
+                <button
+                  type="button"
+                  onClick={resetForgotPassword}
+                  className="w-full py-2.5 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-colors"
+                >
+                  Back to Login
+                </button>
+              </div>
+            ) : (
+              <form onSubmit={handleForgotPassword}>
+                <div className="text-center mb-6">
+                  <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-3">
+                    <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+                    </svg>
+                  </div>
+                  <h2 className="text-xl font-semibold text-gray-900">Reset Your Password</h2>
+                  <p className="text-sm text-gray-500 mt-1">Enter your email address and we'll send you a link to reset your password.</p>
+                </div>
+
+                {forgotError && (
+                  <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4 text-sm">
+                    {forgotError}
+                  </div>
+                )}
+
+                <div className="mb-4">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Email Address</label>
+                  <input
+                    type="email"
+                    value={forgotEmail}
+                    onChange={(e) => setForgotEmail(e.target.value)}
+                    required
+                    autoFocus
+                    className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    placeholder="you@company.com"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={forgotLoading || !forgotEmail}
+                  className="w-full py-2.5 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                >
+                  {forgotLoading ? 'Sending...' : 'Send Reset Link'}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={resetForgotPassword}
+                  className="w-full mt-2 py-2 text-sm text-gray-500 hover:text-gray-700 transition-colors"
+                >
+                  Back to login
+                </button>
+              </form>
+            )}
+          </div>
         ) : (
           <form onSubmit={handleSubmit} className="bg-white rounded-xl shadow-2xl p-8">
             <h2 className="text-xl font-semibold text-gray-900 mb-6">Sign in to your account</h2>
@@ -152,20 +257,12 @@ export function LoginPage() {
             <div className="flex justify-end mt-2">
               <button
                 type="button"
-                onClick={() => setShowForgotMsg(!showForgotMsg)}
+                onClick={() => setShowForgotPassword(true)}
                 className="text-sm text-blue-600 hover:text-blue-700 font-medium"
               >
                 Forgot password?
               </button>
             </div>
-
-            {showForgotMsg && (
-              <div className="mt-2 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                <p className="text-sm text-blue-800">
-                  Please contact your administrator to reset your password.
-                </p>
-              </div>
-            )}
 
             <button
               type="submit"
