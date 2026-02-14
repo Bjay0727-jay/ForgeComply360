@@ -624,6 +624,10 @@ async function handleRequest(request, env, url, ctx) {
   if (path.match(/^\/api\/v1\/connectors\/[\w-]+\/servicenow\/schedule$/) && method === 'PUT') return handleUpdateServiceNowSchedule(request, env, org, user, path.split('/')[4]);
   if (path.match(/^\/api\/v1\/connectors\/[\w-]+\/servicenow\/ci-classes$/) && method === 'GET') return handleServiceNowCIClasses(env, org, user, path.split('/')[4]);
 
+  // ServiceNow CMDB Direct Access (for ServiceNow management page)
+  if (path === '/api/v1/servicenow/cmdb/assets' && method === 'GET') return handleServiceNowCMDBAssets(env, org);
+  if (path === '/api/v1/servicenow/connectors' && method === 'GET') return handleServiceNowConnectors(env, org);
+
   // Evidence Automation
   if (path === '/api/v1/evidence/tests' && method === 'GET') return handleListEvidenceTests(env, org, user);
   if (path === '/api/v1/evidence/tests' && method === 'POST') return handleCreateEvidenceTest(request, env, org, user);
@@ -11420,19 +11424,45 @@ async function handleInheritanceMap(env, org, url) {
 
   // Get all systems
   const { results: systems } = await env.DB.prepare(
-    'SELECT id, name, system_type, authorization_status FROM systems WHERE org_id = ?'
+    `SELECT id, name FROM systems WHERE org_id = ?`
   ).bind(org.id).all();
 
-  // Get inherited implementations
-  let query = `SELECT ci.system_id, ci.control_id, ci.status, ci.inheritance_type, ci.inherited_from_system_id, c.family
-    FROM control_implementations ci
-    JOIN controls c ON ci.control_id = c.control_id
-    JOIN systems s ON ci.system_id = s.id
-    WHERE s.org_id = ? AND ci.inheritance_type IN ('inherited', 'hybrid')`;
-  const params = [org.id];
-  if (frameworkId) { query += ' AND c.framework_id = ?'; params.push(frameworkId); }
+  // Detect schema version by checking column names
+  const schemaInfo = await env.DB.prepare(`PRAGMA table_info(control_implementations)`).all();
+  const columns = (schemaInfo.results || []).map(c => c.name);
+  const hasInheritanceType = columns.includes('inheritance_type');
+  const hasInherited = columns.includes('inherited');
 
-  const { results: inherited } = await env.DB.prepare(query).bind(...params).all();
+  // Get inherited implementations based on schema version
+  let inherited = [];
+  if (hasInheritanceType) {
+    // Newer schema with inheritance_type column
+    let query = `SELECT ci.system_id, ci.control_id, ci.status, ci.inheritance_type, ci.inherited_from_system_id, c.family
+      FROM control_implementations ci
+      JOIN security_controls c ON ci.control_id = c.control_id
+      JOIN systems s ON ci.system_id = s.id
+      WHERE s.org_id = ? AND ci.inheritance_type IN ('inherited', 'hybrid')`;
+    const params = [org.id];
+    if (frameworkId) { query += ' AND c.framework_id = ?'; params.push(frameworkId); }
+    const result = await env.DB.prepare(query).bind(...params).all();
+    inherited = result.results || [];
+  } else if (hasInherited) {
+    // Older schema with inherited boolean column
+    let query = `SELECT ci.system_id, ci.control_id, ci.status, ci.inherited, ci.inherited_from, c.family
+      FROM control_implementations ci
+      JOIN security_controls c ON ci.control_id = c.control_id
+      JOIN systems s ON ci.system_id = s.id
+      WHERE s.org_id = ? AND ci.inherited = 1`;
+    const params = [org.id];
+    if (frameworkId) { query += ' AND c.framework_id = ?'; params.push(frameworkId); }
+    const result = await env.DB.prepare(query).bind(...params).all();
+    // Map old schema to new format
+    inherited = (result.results || []).map(r => ({
+      ...r,
+      inheritance_type: 'inherited',
+      inherited_from_system_id: r.inherited_from
+    }));
+  }
 
   // Build edges: source_system -> target_system
   const edgeMap = {};
@@ -11460,14 +11490,23 @@ async function handleInheritanceMap(env, org, url) {
   const providers = new Set(edges.map(e => e.source));
   const consumers = new Set(edges.map(e => e.target));
 
-  // Count native controls per system
+  // Count native controls per system - use schema-appropriate query
   const nativeCounts = {};
-  const { results: nativeData } = await env.DB.prepare(
-    `SELECT ci.system_id, COUNT(*) as cnt FROM control_implementations ci
+  let nativeQuery;
+  if (hasInheritanceType) {
+    nativeQuery = `SELECT ci.system_id, COUNT(*) as cnt FROM control_implementations ci
      JOIN systems s ON ci.system_id = s.id
-     WHERE s.org_id = ? AND (ci.inheritance_type IS NULL OR ci.inheritance_type = 'native' OR ci.inheritance_type = '')`
-  ).bind(org.id).all();
-  for (const r of nativeData) { nativeCounts[r.system_id] = r.cnt; }
+     WHERE s.org_id = ? AND (ci.inheritance_type IS NULL OR ci.inheritance_type = 'native' OR ci.inheritance_type = '')
+     GROUP BY ci.system_id`;
+  } else {
+    // For older schema, native controls are those where inherited = 0 or NULL
+    nativeQuery = `SELECT ci.system_id, COUNT(*) as cnt FROM control_implementations ci
+     JOIN systems s ON ci.system_id = s.id
+     WHERE s.org_id = ? AND (ci.inherited IS NULL OR ci.inherited = 0)
+     GROUP BY ci.system_id`;
+  }
+  const { results: nativeData } = await env.DB.prepare(nativeQuery).bind(org.id).all();
+  for (const r of nativeData || []) { nativeCounts[r.system_id] = r.cnt; }
 
   const nodes = systems.map(s => ({
     id: s.id,
@@ -11476,8 +11515,6 @@ async function handleInheritanceMap(env, org, url) {
     native_controls: nativeCounts[s.id] || 0,
     inherited_controls: inherited.filter(i => i.system_id === s.id).length,
     provided_controls: inherited.filter(i => i.inherited_from_system_id === s.id).length,
-    system_type: s.system_type,
-    authorization_status: s.authorization_status,
   }));
 
   const summary = {
@@ -13626,6 +13663,87 @@ async function handleServiceNowCIClasses(env, org, user, connectorId) {
   }));
 
   return jsonResponse({ ci_classes: ciClasses });
+}
+
+// ServiceNow CMDB Direct Access (for ServiceNow management page)
+async function handleServiceNowCMDBAssets(env, org) {
+  try {
+    // Get assets synced from ServiceNow CMDB
+    const { results: assets } = await env.DB.prepare(`
+      SELECT a.*
+      FROM assets a
+      WHERE a.org_id = ? AND a.servicenow_sys_id IS NOT NULL
+      ORDER BY a.updated_at DESC
+      LIMIT 500
+    `).bind(org.id).all();
+
+    // Get sync statistics
+    const syncedResult = await env.DB.prepare(
+      'SELECT COUNT(*) as count FROM assets WHERE org_id = ? AND servicenow_sys_id IS NOT NULL'
+    ).bind(org.id).first();
+    const totalSynced = syncedResult?.count || 0;
+
+    const totalResult = await env.DB.prepare(
+      'SELECT COUNT(*) as count FROM assets WHERE org_id = ?'
+    ).bind(org.id).first();
+    const totalAssets = totalResult?.count || 0;
+
+    // Get last sync info (use cmdb_sync_history table which exists in both DBs)
+    let lastSync = null;
+    try {
+      lastSync = await env.DB.prepare(`
+        SELECT * FROM cmdb_sync_history
+        WHERE connector_id IN (SELECT id FROM api_connectors WHERE org_id = ?)
+        ORDER BY completed_at DESC
+        LIMIT 1
+      `).bind(org.id).first();
+    } catch { /* table may not exist */ }
+
+    return jsonResponse({
+      assets: assets || [],
+      stats: {
+        total_synced: totalSynced,
+        total_assets: totalAssets,
+        sync_percentage: totalAssets > 0 ? Math.round((totalSynced / totalAssets) * 100) : 0,
+        last_sync: lastSync
+      }
+    });
+  } catch (e) {
+    return jsonResponse({ assets: [], stats: { total_synced: 0, total_assets: 0, sync_percentage: 0, last_sync: null }, error: e.message });
+  }
+}
+
+async function handleServiceNowConnectors(env, org) {
+  try {
+    // Get all ServiceNow connectors for this org
+    const { results: connectors } = await env.DB.prepare(`
+      SELECT ac.id, ac.name, ac.provider, ac.status, ac.last_sync_at, ac.created_at
+      FROM api_connectors ac
+      WHERE ac.org_id = ? AND ac.provider = 'servicenow'
+      ORDER BY ac.created_at DESC
+    `).bind(org.id).all();
+
+    // Try to get schedule info if table exists
+    const connectorsWithSchedule = [];
+    for (const c of (connectors || [])) {
+      let schedule = null;
+      try {
+        schedule = await env.DB.prepare(
+          'SELECT frequency, is_enabled, next_sync_at FROM cmdb_sync_schedules WHERE connector_id = ?'
+        ).bind(c.id).first();
+      } catch { /* table may not exist */ }
+      connectorsWithSchedule.push({
+        ...c,
+        frequency: schedule?.frequency || null,
+        schedule_enabled: schedule?.is_enabled || 0,
+        next_sync_at: schedule?.next_sync_at || null
+      });
+    }
+
+    return jsonResponse({ connectors: connectorsWithSchedule });
+  } catch (e) {
+    return jsonResponse({ connectors: [], error: e.message });
+  }
 }
 
 // Scheduled sync handler (called from CRON)
