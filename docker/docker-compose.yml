@@ -4,11 +4,9 @@
 #
 # Usage:
 #   cp .env.example .env  (edit with your settings)
-#   docker-compose up -d
-#   Open http://localhost:3000
+#   docker compose up -d
+#   Open https://localhost
 # ============================================================================
-
-version: '3.8'
 
 services:
   # ── API Server ──────────────────────────────────────────────────
@@ -33,6 +31,11 @@ services:
     depends_on:
       ollama:
         condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
     networks:
       - forge-network
 
@@ -50,6 +53,11 @@ services:
       - ${TLS_CERT_DIR:-./certs}:/etc/nginx/certs:ro
     depends_on:
       - api
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 256M
     networks:
       - forge-network
 
@@ -58,12 +66,19 @@ services:
     image: ollama/ollama:latest
     container_name: forgecomply-ollama
     restart: unless-stopped
-    ports:
-      - "${OLLAMA_PORT:-11434}:11434"
+    # No host port exposure — only accessible via internal Docker network
+    # at http://ollama:11434. Uncomment 'ports' below if you need direct access.
+    # ports:
+    #   - "${OLLAMA_PORT:-11434}:11434"
     volumes:
       - ollama-models:/root/.ollama
     environment:
       - OLLAMA_HOST=0.0.0.0
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 8G
     # Uncomment for GPU support:
     # deploy:
     #   resources:

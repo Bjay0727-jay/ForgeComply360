@@ -204,6 +204,22 @@ function validationErrorResponse(errors, corsOrigin = '*') {
 }
 
 // ============================================================================
+// TEXT SANITIZATION — strips HTML/script content from user-supplied strings
+// used in notification messages, preventing stored XSS if the frontend ever
+// renders notifications as HTML.
+// ============================================================================
+
+function sanitizeText(str, maxLength = 200) {
+  if (typeof str !== 'string') return '';
+  return str
+    .replace(/[<>]/g, '')       // Strip angle brackets (HTML tags)
+    .replace(/["'`]/g, '')      // Strip quotes that could break attribute contexts
+    .replace(/javascript:/gi, '') // Strip JS protocol handlers
+    .replace(/on\w+\s*=/gi, '')  // Strip event handler attributes
+    .slice(0, maxLength);        // Truncate to prevent log/DB bloat
+}
+
+// ============================================================================
 // ROUTER
 // ============================================================================
 
@@ -1410,7 +1426,13 @@ async function handleLogin(request, env) {
   if (valErrors) return validationErrorResponse(valErrors);
 
   const user = await env.DB.prepare('SELECT * FROM users WHERE email = ?').bind(email.toLowerCase()).first();
-  if (!user) return jsonResponse({ error: 'Invalid credentials' }, 401);
+  if (!user) {
+    // Timing-safe: perform a dummy PBKDF2 hash so the response time is
+    // indistinguishable from a valid-user-wrong-password attempt.
+    // Prevents account enumeration via timing side-channel.
+    await hashPassword(password, 'timing-safe-dummy-salt-000000000000');
+    return jsonResponse({ error: 'Invalid credentials' }, 401);
+  }
 
   // Deactivated account check
   if (user.status === 'deactivated') {
@@ -2204,7 +2226,7 @@ async function handleCreatePoam(request, env, org, user) {
     vendor_id || null, vendor_dependency_notes || null, oscalUuid, related_observations || '[]', related_risks || '[]').run();
 
   await auditLog(env, org.id, user.id, 'create', 'poam', id, { poam_id: poamId, weakness_name, data_classification, vendor_id });
-  await notifyOrgRole(env, org.id, user.id, 'manager', 'poam_update', 'New POA&M Created', 'POA&M "' + weakness_name + '" was created', 'poam', id, {});
+  await notifyOrgRole(env, org.id, user.id, 'manager', 'poam_update', 'New POA&M Created', 'POA&M "' + sanitizeText(weakness_name) + '" was created', 'poam', id, {});
   if (assigned_to && assigned_to !== user.id) {
     await createNotification(env, org.id, assigned_to, 'poam_update', 'POA&M Assigned to You', 'You were assigned to POA&M "' + weakness_name + '"', 'poam', id, {});
   }
@@ -2269,7 +2291,7 @@ async function handleUpdatePoam(request, env, org, user, poamId) {
     const changes = computeDiff(poam, body, ['weakness_name', 'weakness_description', 'risk_level', 'status', 'scheduled_completion', 'actual_completion', 'responsible_party', 'resources_required', 'cost_estimate', 'assigned_to', 'vendor_dependency', 'data_classification', 'deviation_type']);
     await auditLog(env, org.id, user.id, 'update', 'poam', poamId, { ...body, _changes: changes });
     if (body.status) {
-      await notifyOrgRole(env, org.id, user.id, 'manager', 'poam_update', 'POA&M Status Changed', 'POA&M "' + poam.weakness_name + '" status changed to ' + body.status, 'poam', poamId, { status: body.status });
+      await notifyOrgRole(env, org.id, user.id, 'manager', 'poam_update', 'POA&M Status Changed', 'POA&M "' + sanitizeText(poam.weakness_name) + '" status changed to ' + sanitizeText(body.status, 50), 'poam', poamId, { status: body.status });
       if (poam.assigned_to && poam.assigned_to !== user.id) {
         await createNotification(env, org.id, poam.assigned_to, 'poam_update', 'POA&M Status Changed', 'POA&M "' + poam.weakness_name + '" status changed to ' + body.status, 'poam', poamId, {});
       }
@@ -2361,7 +2383,7 @@ async function handleCreateComment(request, env, org, user, poamId) {
   if (poam.assigned_to && poam.assigned_to !== user.id) {
     await createNotification(env, org.id, poam.assigned_to, 'poam_update', 'New Comment on POA&M', user.name + ' commented on POA&M "' + poam.weakness_name + '"', 'poam', poamId, {});
   }
-  await notifyOrgRole(env, org.id, user.id, 'manager', 'poam_update', 'New Comment on POA&M', user.name + ' commented on POA&M "' + poam.weakness_name + '"', 'poam', poamId, {});
+  await notifyOrgRole(env, org.id, user.id, 'manager', 'poam_update', 'New Comment on POA&M', sanitizeText(user.name) + ' commented on POA&M "' + sanitizeText(poam.weakness_name) + '"', 'poam', poamId, {});
   const comment = await env.DB.prepare('SELECT c.*, u.name as author_name FROM poam_comments c LEFT JOIN users u ON u.id = c.user_id WHERE c.id = ?').bind(id).first();
   return jsonResponse({ comment }, 201);
 }
@@ -2768,7 +2790,7 @@ async function handleUploadEvidence(request, env, org, user) {
   ).bind(id, org.id, title, description, file.name, arrayBuffer.byteLength, file.type, r2Key, sha256, user.id, collectionDate, expiryDate).run();
 
   await auditLog(env, org.id, user.id, 'upload', 'evidence', id, { file_name: file.name, size: arrayBuffer.byteLength });
-  await notifyOrgRole(env, org.id, user.id, 'manager', 'evidence_upload', 'New Evidence Uploaded', 'Evidence file "' + file.name + '" was uploaded', 'evidence', id, {});
+  await notifyOrgRole(env, org.id, user.id, 'manager', 'evidence_upload', 'New Evidence Uploaded', 'Evidence file "' + sanitizeText(file.name) + '" was uploaded', 'evidence', id, {});
 
   const evidence = await env.DB.prepare('SELECT * FROM evidence WHERE id = ?').bind(id).first();
   return jsonResponse({ evidence }, 201);
@@ -4027,7 +4049,7 @@ async function handleCreateRisk(request, env, org, user) {
   ).bind(id, org.id, system_id || null, riskId, title, description || null, category || 'technical', l, i, riskLevel, treatment || 'mitigate', treatment_plan || null, treatment_due_date || null, owner || null, related_controls ? JSON.stringify(related_controls) : '[]').run();
 
   await auditLog(env, org.id, user.id, 'create', 'risk', id, { title, risk_level: riskLevel });
-  if (['high', 'critical'].includes(riskLevel)) await notifyOrgRole(env, org.id, user.id, 'manager', 'risk_alert', 'High Risk Created', 'Risk "' + title + '" rated ' + riskLevel, 'risk', id, { risk_level: riskLevel });
+  if (['high', 'critical'].includes(riskLevel)) await notifyOrgRole(env, org.id, user.id, 'manager', 'risk_alert', 'High Risk Created', 'Risk "' + sanitizeText(title) + '" rated ' + riskLevel, 'risk', id, { risk_level: riskLevel });
   const risk = await env.DB.prepare('SELECT r.*, s.name as system_name FROM risks r LEFT JOIN systems s ON s.id = r.system_id WHERE r.id = ?').bind(id).first();
   return jsonResponse({ risk }, 201);
 }
@@ -5490,7 +5512,7 @@ async function handleRunMonitoringCheck(request, env, org, user, checkId) {
     "UPDATE monitoring_checks SET last_result = ?, last_result_details = ?, last_run_at = datetime('now'), updated_at = datetime('now') WHERE id = ?"
   ).bind(result, notes || '', checkId).run();
   await auditLog(env, org.id, user.id, 'run', 'monitoring_check', checkId, { result, notes });
-  if (['fail', 'error'].includes(result)) await notifyOrgRole(env, org.id, user.id, 'analyst', 'monitoring_fail', 'Monitoring Check Failed', 'Check "' + check.check_name + '" result: ' + result, 'monitoring_check', checkId, { result });
+  if (['fail', 'error'].includes(result)) await notifyOrgRole(env, org.id, user.id, 'analyst', 'monitoring_fail', 'Monitoring Check Failed', 'Check "' + sanitizeText(check.check_name) + '" result: ' + result, 'monitoring_check', checkId, { result });
   return jsonResponse({ message: 'Check result recorded', result_id: resultId, result }, 201);
 }
 
