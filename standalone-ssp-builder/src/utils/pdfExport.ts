@@ -7,9 +7,9 @@ import jsPDF from 'jspdf';
 import type { SSPData } from '../types';
 import { SECTIONS } from '../config/sections';
 
-// PDF Configuration
-const PAGE_WIDTH = 210; // A4 width in mm
-const PAGE_HEIGHT = 297; // A4 height in mm
+// PDF Configuration - US Letter (8.5" × 11") for federal documents
+const PAGE_WIDTH = 215.9; // Letter width in mm (8.5")
+const PAGE_HEIGHT = 279.4; // Letter height in mm (11")
 const MARGIN = 20;
 const CONTENT_WIDTH = PAGE_WIDTH - (MARGIN * 2);
 
@@ -40,7 +40,7 @@ interface PDFOptions {
  */
 export async function generatePDF(options: PDFOptions): Promise<Blob> {
   const { data, progress } = options;
-  const doc = new jsPDF('p', 'mm', 'a4');
+  const doc = new jsPDF('p', 'mm', 'letter');
 
   let currentY = MARGIN;
 

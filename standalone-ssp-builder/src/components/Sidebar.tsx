@@ -1,7 +1,8 @@
 /**
  * ForgeComply 360 Reporter - Sidebar Component (Light Theme)
+ * Updated with Section 508 accessibility support
  */
-import { Fragment } from 'react';
+import { Fragment, useId } from 'react';
 import { C, TAG_COLORS, TAG_LABELS } from '../config/colors';
 import { SECTIONS } from '../config/sections';
 import type { Section, SectionGroup } from '../config/sections';
@@ -26,18 +27,25 @@ export const Sidebar: React.FC<SidebarProps> = ({
   validationErrors: _validationErrors = {},
 }) => {
   let lastGrp: SectionGroup | '' = '';
+  const navId = useId();
+  const progressId = useId();
 
   return (
-    <div style={{
-      width: collapsed ? 64 : 300,
-      flexShrink: 0,
-      background: C.bg,
-      borderRight: `1px solid ${C.border}`,
-      display: 'flex',
-      flexDirection: 'column',
-      transition: 'width 0.3s',
-      overflow: 'hidden',
-    }}>
+    <nav
+      id={navId}
+      className="sidebar-desktop"
+      aria-label="SSP sections"
+      style={{
+        width: collapsed ? 64 : 300,
+        flexShrink: 0,
+        background: C.bg,
+        borderRight: `1px solid ${C.border}`,
+        display: 'flex',
+        flexDirection: 'column',
+        transition: 'width 0.3s',
+        overflow: 'hidden',
+      }}
+    >
       {/* Header */}
       <div style={{
         padding: collapsed ? '14px 6px' : '16px 16px 12px',
@@ -47,19 +55,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
         gap: 9,
         justifyContent: collapsed ? 'center' : 'flex-start',
       }}>
-        <div style={{
-          width: 30,
-          height: 30,
-          borderRadius: 7,
-          flexShrink: 0,
-          background: `linear-gradient(135deg, ${C.primary}, ${C.primaryDark})`,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          fontSize: 15,
-          fontWeight: 800,
-          color: '#fff',
-        }}>
+        <div
+          aria-hidden="true"
+          style={{
+            width: 30,
+            height: 30,
+            borderRadius: 7,
+            flexShrink: 0,
+            background: `linear-gradient(135deg, ${C.primary}, ${C.primaryDark})`,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: 15,
+            fontWeight: 800,
+            color: '#fff',
+          }}
+        >
           F
         </div>
         {!collapsed && (
@@ -95,13 +106,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
             justifyContent: 'space-between',
             marginBottom: 6,
           }}>
-            <span style={{
-              fontSize: 10,
-              fontWeight: 600,
-              color: C.textSecondary,
-              textTransform: 'uppercase',
-              letterSpacing: '.05em',
-            }}>
+            <span
+              id={`${progressId}-label`}
+              style={{
+                fontSize: 10,
+                fontWeight: 600,
+                color: C.textSecondary,
+                textTransform: 'uppercase',
+                letterSpacing: '.05em',
+              }}
+            >
               SSP Completion
             </span>
             <span style={{
@@ -112,13 +126,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
               {overall}%
             </span>
           </div>
-          <div style={{
-            width: '100%',
-            height: 5,
-            background: C.surfaceAlt,
-            borderRadius: 3,
-            overflow: 'hidden',
-          }}>
+          <div
+            role="progressbar"
+            aria-valuenow={overall}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-labelledby={`${progressId}-label`}
+            style={{
+              width: '100%',
+              height: 5,
+              background: C.surfaceAlt,
+              borderRadius: 3,
+              overflow: 'hidden',
+            }}
+          >
             <div style={{
               width: `${overall}%`,
               height: '100%',
@@ -141,11 +162,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
       )}
 
       {/* Section List */}
-      <div style={{
-        flex: 1,
-        overflowY: 'auto',
-        padding: '4px 0',
-      }}>
+      <div
+        role="list"
+        aria-label="Navigation sections"
+        style={{
+          flex: 1,
+          overflowY: 'auto',
+          padding: '4px 0',
+        }}
+      >
         {SECTIONS.map((s: Section) => {
           const isActive = currentSection === s.id;
           const pct = progress[s.id] || 0;
@@ -156,14 +181,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
           if (!collapsed && s.grp !== lastGrp) {
             lastGrp = s.grp;
             groupHeader = (
-              <div style={{
-                fontSize: 9,
-                fontWeight: 700,
-                color: C.textMuted,
-                textTransform: 'uppercase',
-                letterSpacing: '.08em',
-                padding: '10px 16px 2px',
-              }}>
+              <div
+                role="presentation"
+                style={{
+                  fontSize: 9,
+                  fontWeight: 700,
+                  color: C.textMuted,
+                  textTransform: 'uppercase',
+                  letterSpacing: '.08em',
+                  padding: '10px 16px 2px',
+                }}
+              >
                 {s.grp}
               </div>
             );
@@ -172,12 +200,24 @@ export const Sidebar: React.FC<SidebarProps> = ({
           return (
             <Fragment key={s.id}>
               {groupHeader}
-              <div
+              <button
+                role="listitem"
                 onClick={() => onSectionChange(s.id)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    onSectionChange(s.id);
+                  }
+                }}
+                aria-current={isActive ? 'page' : undefined}
+                aria-label={collapsed ? `${s.label} - ${pct}% complete` : undefined}
                 style={{
+                  all: 'unset',
+                  boxSizing: 'border-box',
                   display: 'flex',
                   alignItems: 'center',
                   gap: 7,
+                  width: '100%',
                   padding: collapsed ? '7px 0' : '7px 16px',
                   justifyContent: collapsed ? 'center' : 'flex-start',
                   cursor: 'pointer',
@@ -186,11 +226,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   transition: 'all 0.15s',
                 }}
               >
-                <span style={{
-                  fontSize: collapsed ? 16 : 14,
-                  flexShrink: 0,
-                  opacity: pct === 100 ? 1 : 0.75,
-                }}>
+                <span
+                  aria-hidden="true"
+                  style={{
+                    fontSize: collapsed ? 16 : 14,
+                    flexShrink: 0,
+                    opacity: pct === 100 ? 1 : 0.75,
+                  }}
+                >
                   {s.icon}
                 </span>
                 {!collapsed && (
@@ -209,16 +252,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       }}>
                         {s.label}
                         {s.tag !== 'original' && (
-                          <span style={{
-                            fontSize: 7.5,
-                            background: `${tc}25`,
-                            color: tc,
-                            padding: '1px 4px',
-                            borderRadius: 3,
-                            fontWeight: 700,
-                            letterSpacing: '.03em',
-                            flexShrink: 0,
-                          }}>
+                          <span
+                            aria-label={TAG_LABELS[s.tag]}
+                            style={{
+                              fontSize: 7.5,
+                              background: `${tc}25`,
+                              color: tc,
+                              padding: '1px 4px',
+                              borderRadius: 3,
+                              fontWeight: 700,
+                              letterSpacing: '.03em',
+                              flexShrink: 0,
+                            }}
+                          >
                             {TAG_LABELS[s.tag]}
                           </span>
                         )}
@@ -231,17 +277,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         {s.rmf}
                       </div>
                     </div>
-                    <div style={{
-                      fontSize: 9.5,
-                      fontWeight: 600,
-                      fontFamily: "'Fira Code', monospace",
-                      color: pct === 100 ? C.success : pct > 0 ? C.primary : C.textMuted,
-                    }}>
+                    <div
+                      aria-label={`${pct}% complete`}
+                      style={{
+                        fontSize: 9.5,
+                        fontWeight: 600,
+                        fontFamily: "'Fira Code', monospace",
+                        color: pct === 100 ? C.success : pct > 0 ? C.primary : C.textMuted,
+                      }}
+                    >
                       {pct > 0 ? `${pct}%` : '—'}
                     </div>
                   </>
                 )}
-              </div>
+              </button>
             </Fragment>
           );
         })}
@@ -255,6 +304,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
       }}>
         <button
           onClick={onToggleCollapse}
+          aria-expanded={!collapsed}
+          aria-controls={navId}
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           style={{
             background: 'none',
             border: 'none',
@@ -264,9 +316,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
             padding: 4,
           }}
         >
-          {collapsed ? '▶' : '◀'}
+          <span aria-hidden="true">{collapsed ? '▶' : '◀'}</span>
         </button>
       </div>
-    </div>
+    </nav>
   );
 };

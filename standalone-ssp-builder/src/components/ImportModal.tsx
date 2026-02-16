@@ -1,14 +1,16 @@
 /**
  * ForgeComply 360 Reporter - Import Modal Component
  * Supports drag & drop import of OSCAL SSP files (JSON/XML)
+ * Section 508 / WCAG 2.1 AA compliant with focus trap
  */
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect, useId } from 'react';
 import { C } from '../config/colors';
 import {
   importOscalSSP,
   isValidOscalFile,
   type OscalImportResult,
 } from '../utils/oscalImport';
+import { useFocusTrap } from '../utils/useFocusTrap';
 
 interface ImportModalProps {
   isOpen: boolean;
@@ -26,6 +28,37 @@ export const ImportModal: React.FC<ImportModalProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<OscalImportResult | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const modalRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  const descriptionId = useId();
+
+  // Focus trap for accessibility
+  useFocusTrap(modalRef, isOpen);
+
+  // Handle Escape key
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !importing) {
+        handleClose();
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, importing]);
+
+  // Prevent body scroll when modal is open
+  useEffect(() => {
+    if (isOpen) {
+      const originalOverflow = document.body.style.overflow;
+      document.body.style.overflow = 'hidden';
+      return () => {
+        document.body.style.overflow = originalOverflow;
+      };
+    }
+  }, [isOpen]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -119,8 +152,14 @@ export const ImportModal: React.FC<ImportModalProps> = ({
         justifyContent: 'center',
       }}
       onClick={handleClose}
+      aria-hidden="true"
     >
       <div
+        ref={modalRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={descriptionId}
         onClick={(e) => e.stopPropagation()}
         style={{
           background: C.bg,
@@ -133,7 +172,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
           boxShadow: '0 24px 64px rgba(0, 0, 0, 0.15)',
         }}
       >
-        <h3 style={{
+        <h3 id={titleId} style={{
           margin: '0 0 8px',
           fontSize: 17,
           fontWeight: 700,
@@ -142,7 +181,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
           {result ? 'Import Preview' : 'Import OSCAL SSP'}
         </h3>
 
-        <p style={{
+        <p id={descriptionId} style={{
           margin: '0 0 20px',
           fontSize: 12,
           color: C.textMuted,
@@ -309,10 +348,19 @@ export const ImportModal: React.FC<ImportModalProps> = ({
         {/* Drop Zone (only show when no result) */}
         {!result && (
           <div
+            role="button"
+            tabIndex={0}
+            aria-label="Drop OSCAL SSP file here or click to browse"
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
             onClick={() => fileInputRef.current?.click()}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                fileInputRef.current?.click();
+              }
+            }}
             style={{
               border: `2px dashed ${isDragging ? C.primary : C.border}`,
               borderRadius: 12,
@@ -329,7 +377,18 @@ export const ImportModal: React.FC<ImportModalProps> = ({
               type="file"
               accept=".json,.xml,.oscal,application/json,application/xml"
               onChange={handleFileSelect}
-              style={{ display: 'none' }}
+              aria-label="Select OSCAL SSP file to import"
+              style={{
+                position: 'absolute',
+                width: 1,
+                height: 1,
+                padding: 0,
+                margin: -1,
+                overflow: 'hidden',
+                clip: 'rect(0, 0, 0, 0)',
+                whiteSpace: 'nowrap',
+                border: 0,
+              }}
             />
 
             {importing ? (

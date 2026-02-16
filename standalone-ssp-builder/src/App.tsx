@@ -7,6 +7,8 @@ import { C } from './config/colors';
 import { SECTIONS } from './config/sections';
 import type { SSPData } from './types';
 import { Sidebar, Header, Footer, ExportModal, ImportModal, OscalViewer } from './components';
+import { ToastProvider, useToast } from './components/Toast';
+import { ConfirmProvider, useConfirm } from './components/ConfirmModal';
 import { SECTION_RENDERERS } from './sections';
 import { validateSSP, type ValidationResult } from './utils/validation';
 import { generatePDF, downloadPDF } from './utils/pdfExport';
@@ -24,7 +26,23 @@ import './index.css';
 // Local storage key for auto-save
 const STORAGE_KEY = 'forgecomply360-ssp-data';
 
+// Main App wrapper with providers
 function App() {
+  return (
+    <ToastProvider>
+      <ConfirmProvider>
+        <AppContent />
+      </ConfirmProvider>
+    </ToastProvider>
+  );
+}
+
+// App content with access to Toast and Confirm hooks
+function AppContent() {
+  // Toast and Confirm hooks
+  const toast = useToast();
+  const { confirm } = useConfirm();
+
   // Auth and Sync hooks
   const [authState, authActions] = useAuth();
   const [syncState, syncActions] = useSync(authState.isOnlineMode);
@@ -50,6 +68,7 @@ function App() {
   const [saving, setSaving] = useState(false);
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const [collapsed, setCollapsed] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [initialLoadDone, setInitialLoadDone] = useState(false);
 
   // Validation state
@@ -266,7 +285,7 @@ function App() {
       downloadPDF(blob, filename);
     } else {
       // Other formats coming soon
-      alert(`Export to ${format} coming soon!`);
+      toast.info('Coming Soon', `Export to ${format} is coming soon!`);
     }
   };
 
@@ -276,7 +295,7 @@ function App() {
     setValidation(result);
 
     if (result.isValid) {
-      alert('All required fields are complete! Your SSP is ready for export.');
+      toast.success('Validation Complete', 'All required fields are complete! Your SSP is ready for export.');
     } else {
       // Navigate to first section with errors
       const firstErrorSection = result.errors[0]?.section;
@@ -299,17 +318,26 @@ function App() {
         const sectionId = sectionMapping[firstErrorSection] || firstErrorSection;
         setCurrentSection(sectionId);
       }
-      alert(`${result.errorCount} required field(s) are missing. Please review the highlighted sections.`);
+      toast.warning('Validation Issues', `${result.errorCount} required field(s) are missing. Please review the highlighted sections.`);
     }
   };
 
   // Clear data handler
-  const handleClearData = () => {
-    if (confirm('Are you sure you want to clear all SSP data? This cannot be undone.')) {
+  const handleClearData = async () => {
+    const confirmed = await confirm({
+      title: 'Clear All Data?',
+      message: 'Are you sure you want to clear all SSP data? This action cannot be undone.',
+      confirmText: 'Clear Data',
+      cancelText: 'Cancel',
+      variant: 'danger',
+    });
+
+    if (confirmed) {
       localStorage.removeItem(STORAGE_KEY);
       setData({});
       setValidation(validateSSP({}));
       setLastSaved(null);
+      toast.success('Data Cleared', 'All SSP data has been cleared.');
     }
   };
 
@@ -340,12 +368,12 @@ function App() {
 
       // Show success message
       const controlCount = result.data.ctrlData ? Object.keys(result.data.ctrlData).length : 0;
-      alert(
-        `Successfully imported "${result.documentInfo.title}"\n\n` +
-        `• Format: OSCAL ${result.documentInfo.oscalVersion} (${result.sourceFormat.toUpperCase()})\n` +
-        `• System: ${result.data.sysName || 'Unnamed'}\n` +
-        `• Controls: ${controlCount}\n\n` +
-        `${result.warnings.length} import note(s)`
+      toast.success(
+        'Import Successful',
+        `"${result.documentInfo.title}"\n` +
+        `Format: OSCAL ${result.documentInfo.oscalVersion} (${result.sourceFormat.toUpperCase()})\n` +
+        `System: ${result.data.sysName || 'Unnamed'}\n` +
+        `Controls: ${controlCount}${result.warnings.length > 0 ? `\n${result.warnings.length} note(s)` : ''}`
       );
     }
   };
@@ -358,7 +386,38 @@ function App() {
       fontFamily: "'DM Sans', -apple-system, sans-serif",
       display: 'flex',
     }}>
-      {/* Sidebar */}
+      {/* Mobile Menu Overlay */}
+      {mobileMenuOpen && (
+        <div
+          className="sidebar-mobile-overlay"
+          style={{ display: 'block' }}
+          onClick={() => setMobileMenuOpen(false)}
+        />
+      )}
+
+      {/* Mobile Sidebar */}
+      <div
+        className={`sidebar-mobile ${mobileMenuOpen ? 'open' : ''}`}
+        style={{
+          background: C.bg,
+          borderRight: `1px solid ${C.border}`,
+        }}
+      >
+        <Sidebar
+          currentSection={currentSection}
+          onSectionChange={(id) => {
+            setCurrentSection(id);
+            setMobileMenuOpen(false);
+          }}
+          progress={progress}
+          overall={overall}
+          collapsed={false}
+          onToggleCollapse={() => setMobileMenuOpen(false)}
+          validationErrors={validation.sectionErrors}
+        />
+      </div>
+
+      {/* Desktop Sidebar */}
       <Sidebar
         currentSection={currentSection}
         onSectionChange={setCurrentSection}
@@ -389,6 +448,7 @@ function App() {
           sspTitle={syncState.sspTitle}
           onSync={handleSync}
           onDisconnect={handleDisconnect}
+          onMobileMenuToggle={() => setMobileMenuOpen(!mobileMenuOpen)}
         />
 
         {/* Export Modal */}
@@ -446,17 +506,20 @@ function App() {
         )}
 
         {/* Section Content */}
-        <div style={{
-          flex: 1,
-          overflowY: 'auto',
-          padding: '26px 34px 80px',
-        }}>
+        <div
+          className="content-padding"
+          style={{
+            flex: 1,
+            overflowY: 'auto',
+            padding: '26px 34px 80px',
+          }}
+        >
           <div
+            className="content-max-width animate-slideIn"
             style={{
               maxWidth: 940,
               margin: '0 auto',
             }}
-            className="animate-slideIn"
             key={currentSection}
           >
             {Renderer && <Renderer d={data} sf={setField} />}

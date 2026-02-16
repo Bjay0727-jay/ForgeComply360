@@ -19,6 +19,8 @@ interface HeaderProps {
   sspTitle?: string | null;
   onSync?: () => void;
   onDisconnect?: () => void;
+  // Mobile menu
+  onMobileMenuToggle?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -33,6 +35,7 @@ export const Header: React.FC<HeaderProps> = ({
   sspTitle,
   onSync,
   onDisconnect,
+  onMobileMenuToggle,
 }) => {
   const syncDisplay = syncStatus ? getSyncStatusDisplay(syncStatus) : null;
 
@@ -45,7 +48,34 @@ export const Header: React.FC<HeaderProps> = ({
       borderBottom: `1px solid ${C.border}`,
       background: C.bg,
       flexShrink: 0,
+      gap: 12,
     }}>
+      {/* Mobile Menu Button */}
+      {onMobileMenuToggle && (
+        <button
+          onClick={onMobileMenuToggle}
+          className="mobile-menu-button"
+          style={{
+            display: 'none', // Hidden by default, shown via CSS on mobile
+            alignItems: 'center',
+            justifyContent: 'center',
+            width: 40,
+            height: 40,
+            border: 'none',
+            background: 'transparent',
+            cursor: 'pointer',
+            padding: 8,
+            borderRadius: 8,
+            flexShrink: 0,
+          }}
+          aria-label="Toggle menu"
+        >
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke={C.text} strokeWidth="2">
+            <path d="M3 12h18M3 6h18M3 18h18" />
+          </svg>
+        </button>
+      )}
+
       {/* Breadcrumb */}
       <div style={{
         display: 'flex',
@@ -214,7 +244,7 @@ export const Header: React.FC<HeaderProps> = ({
           }}
           title="Import OSCAL SSP"
         >
-          📤 Import
+          📥 Import
         </button>
 
         {/* Export Button */}
@@ -234,7 +264,7 @@ export const Header: React.FC<HeaderProps> = ({
             gap: 4,
           }}
         >
-          📥 Export
+          📤 Export
         </button>
 
         {/* Validate Button */}

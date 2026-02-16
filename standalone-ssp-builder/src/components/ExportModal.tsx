@@ -1,11 +1,13 @@
 /**
  * ForgeComply 360 Reporter - Export Modal Component (Light Theme)
  * Updated with OSCAL schema validation, loading states, and actual export handling
+ * Section 508 / WCAG 2.1 AA compliant with focus trap
  */
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect, useId } from 'react';
 import { C } from '../config/colors';
 import type { ValidationResult } from '../utils/validation';
 import type { ValidatedOscalExportResult } from '../utils/oscalExport';
+import { useFocusTrap } from '../utils/useFocusTrap';
 
 interface ExportFormat {
   format: string;
@@ -42,6 +44,38 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [oscalValidation, setOscalValidation] = useState<ValidatedOscalExportResult | null>(null);
   const [lastExportFormat, setLastExportFormat] = useState<string | null>(null);
+
+  const modalRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  const descriptionId = useId();
+
+  // Focus trap for accessibility
+  useFocusTrap(modalRef, isOpen);
+
+  // Handle Escape key
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !exporting) {
+        handleClose();
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, exporting]);
+
+  // Prevent body scroll when modal is open
+  useEffect(() => {
+    if (isOpen) {
+      const originalOverflow = document.body.style.overflow;
+      document.body.style.overflow = 'hidden';
+      return () => {
+        document.body.style.overflow = originalOverflow;
+      };
+    }
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -112,8 +146,14 @@ export const ExportModal: React.FC<ExportModalProps> = ({
         justifyContent: 'center',
       }}
       onClick={handleClose}
+      aria-hidden="true"
     >
       <div
+        ref={modalRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={descriptionId}
         onClick={(e) => e.stopPropagation()}
         style={{
           background: C.bg,
@@ -126,7 +166,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           boxShadow: '0 24px 64px rgba(0, 0, 0, 0.15)',
         }}
       >
-        <h3 style={{
+        <h3 id={titleId} style={{
           margin: '0 0 8px',
           fontSize: 17,
           fontWeight: 700,
@@ -134,6 +174,13 @@ export const ExportModal: React.FC<ExportModalProps> = ({
         }}>
           {oscalValidation && !oscalValidation.success ? 'OSCAL Validation Failed' : 'Export SSP Package'}
         </h3>
+
+        {/* Screen reader description */}
+        <span id={descriptionId} className="sr-only">
+          {oscalValidation && !oscalValidation.success
+            ? 'OSCAL schema validation failed. Review errors or export anyway.'
+            : 'Choose an export format for your System Security Plan. Available formats include OSCAL JSON, OSCAL XML, and PDF Report.'}
+        </span>
 
         {/* OSCAL Schema Validation Results */}
         {oscalValidation && !oscalValidation.success && (

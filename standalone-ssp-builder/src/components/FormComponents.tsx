@@ -1,8 +1,8 @@
 /**
  * ForgeComply 360 Reporter - Form Components (Light Theme)
- * Updated with validation error display support and AI assistance
+ * Updated with validation error display support, AI assistance, and Section 508 accessibility
  */
-import React, { useState } from 'react';
+import React, { useState, useId } from 'react';
 import { C } from '../config/colors';
 import { generateSectionContent, type SystemContext } from '../services/ai';
 
@@ -35,28 +35,33 @@ const errorMessageStyle: React.CSSProperties = {
   gap: 4,
 };
 
-// Label component
+// Label component with htmlFor support
 interface LblProps {
   children: React.ReactNode;
   req?: boolean;
+  htmlFor?: string;
 }
 
-export const Lbl: React.FC<LblProps> = ({ children, req }) => (
-  <label style={{
-    display: 'block',
-    fontSize: 11.5,
-    fontWeight: 600,
-    color: C.textSecondary,
-    marginBottom: 5,
-    letterSpacing: '.04em',
-    textTransform: 'uppercase',
-  }}>
+export const Lbl: React.FC<LblProps> = ({ children, req, htmlFor }) => (
+  <label
+    htmlFor={htmlFor}
+    style={{
+      display: 'block',
+      fontSize: 11.5,
+      fontWeight: 600,
+      color: C.textSecondary,
+      marginBottom: 5,
+      letterSpacing: '.04em',
+      textTransform: 'uppercase',
+    }}
+  >
     {children}
-    {req && <span style={{ color: C.error, marginLeft: 3 }}>*</span>}
+    {req && <span style={{ color: C.error, marginLeft: 3 }} aria-hidden="true">*</span>}
+    {req && <span className="sr-only">(required)</span>}
   </label>
 );
 
-// Form Field wrapper with error support
+// Form Field wrapper with error support and accessibility
 interface FFProps {
   label: string;
   req?: boolean;
@@ -64,53 +69,99 @@ interface FFProps {
   span?: number;
   error?: string;
   children: React.ReactNode;
+  id?: string;
 }
 
-export const FF: React.FC<FFProps> = ({ label, req, hint, span, error, children }) => (
-  <div style={{
-    gridColumn: span === 2 ? '1/-1' : undefined,
-    marginBottom: 4,
-  }}>
-    <Lbl req={req}>{label}</Lbl>
-    {children}
-    {error && (
-      <div style={errorMessageStyle}>
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={C.error} strokeWidth="2">
-          <circle cx="12" cy="12" r="10" />
-          <line x1="12" y1="8" x2="12" y2="12" />
-          <line x1="12" y1="16" x2="12.01" y2="16" />
-        </svg>
-        {error}
-      </div>
-    )}
-    {hint && !error && (
-      <div style={{
-        fontSize: 11,
-        color: C.textMuted,
-        marginTop: 4,
-        lineHeight: 1.4,
-      }}>
-        {hint}
-      </div>
-    )}
-  </div>
-);
+export const FF: React.FC<FFProps> = ({ label, req, hint, span, error, children, id }) => {
+  const generatedId = useId();
+  const fieldId = id || generatedId;
+  const errorId = `${fieldId}-error`;
+  const hintId = `${fieldId}-hint`;
 
-// Text Input with error support
+  return (
+    <div
+      style={{
+        gridColumn: span === 2 ? '1/-1' : undefined,
+        marginBottom: 4,
+      }}
+    >
+      <Lbl req={req} htmlFor={fieldId}>{label}</Lbl>
+      {React.isValidElement(children)
+        ? React.cloneElement(children as React.ReactElement<{
+            id?: string;
+            'aria-describedby'?: string;
+            'aria-invalid'?: boolean;
+            'aria-required'?: boolean;
+          }>, {
+            id: fieldId,
+            'aria-describedby': error ? errorId : hint ? hintId : undefined,
+            'aria-invalid': !!error,
+            'aria-required': req,
+          })
+        : children}
+      {error && (
+        <div id={errorId} role="alert" style={errorMessageStyle}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={C.error} strokeWidth="2" aria-hidden="true">
+            <circle cx="12" cy="12" r="10" />
+            <line x1="12" y1="8" x2="12" y2="12" />
+            <line x1="12" y1="16" x2="12.01" y2="16" />
+          </svg>
+          {error}
+        </div>
+      )}
+      {hint && !error && (
+        <div
+          id={hintId}
+          style={{
+            fontSize: 11,
+            color: C.textMuted,
+            marginTop: 4,
+            lineHeight: 1.4,
+          }}
+        >
+          {hint}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Text Input with accessibility support
 interface TIProps {
   value?: string;
   onChange: (value: string) => void;
   placeholder?: string;
   mono?: boolean;
   error?: boolean;
+  id?: string;
+  'aria-describedby'?: string;
+  'aria-invalid'?: boolean;
+  'aria-required'?: boolean;
+  'aria-label'?: string;
 }
 
-export const TI: React.FC<TIProps> = ({ value, onChange, placeholder, mono, error }) => (
+export const TI: React.FC<TIProps> = ({
+  value,
+  onChange,
+  placeholder,
+  mono,
+  error,
+  id,
+  'aria-describedby': ariaDescribedby,
+  'aria-invalid': ariaInvalid,
+  'aria-required': ariaRequired,
+  'aria-label': ariaLabel,
+}) => (
   <input
     type="text"
+    id={id}
     value={value || ''}
     onChange={(e) => onChange(e.target.value)}
     placeholder={placeholder}
+    aria-describedby={ariaDescribedby}
+    aria-invalid={ariaInvalid || !!error}
+    aria-required={ariaRequired}
+    aria-label={ariaLabel}
     style={{
       ...inputStyle,
       fontFamily: mono ? "'Fira Code', monospace" : inputStyle.fontFamily,
@@ -129,21 +180,42 @@ export const TI: React.FC<TIProps> = ({ value, onChange, placeholder, mono, erro
   />
 );
 
-// Text Area with error support
+// Text Area with accessibility support
 interface TAProps {
   value?: string;
   onChange: (value: string) => void;
   placeholder?: string;
   rows?: number;
   error?: boolean;
+  id?: string;
+  'aria-describedby'?: string;
+  'aria-invalid'?: boolean;
+  'aria-required'?: boolean;
+  'aria-label'?: string;
 }
 
-export const TA: React.FC<TAProps> = ({ value, onChange, placeholder, rows = 4, error }) => (
+export const TA: React.FC<TAProps> = ({
+  value,
+  onChange,
+  placeholder,
+  rows = 4,
+  error,
+  id,
+  'aria-describedby': ariaDescribedby,
+  'aria-invalid': ariaInvalid,
+  'aria-required': ariaRequired,
+  'aria-label': ariaLabel,
+}) => (
   <textarea
+    id={id}
     value={value || ''}
     onChange={(e) => onChange(e.target.value)}
     placeholder={placeholder}
     rows={rows}
+    aria-describedby={ariaDescribedby}
+    aria-invalid={ariaInvalid || !!error}
+    aria-required={ariaRequired}
+    aria-label={ariaLabel}
     style={{
       ...inputStyle,
       resize: 'vertical',
@@ -163,7 +235,7 @@ export const TA: React.FC<TAProps> = ({ value, onChange, placeholder, rows = 4, 
   />
 );
 
-// Text Area with AI Assistance
+// Text Area with AI Assistance and accessibility
 interface TAAIProps {
   value?: string;
   onChange: (value: string) => void;
@@ -173,6 +245,10 @@ interface TAAIProps {
   sectionKey: string;
   sectionLabel: string;
   systemContext: SystemContext;
+  id?: string;
+  'aria-describedby'?: string;
+  'aria-invalid'?: boolean;
+  'aria-required'?: boolean;
 }
 
 export const TAAI: React.FC<TAAIProps> = ({
@@ -184,12 +260,17 @@ export const TAAI: React.FC<TAAIProps> = ({
   sectionKey,
   sectionLabel,
   systemContext,
+  id,
+  'aria-describedby': ariaDescribedby,
+  'aria-invalid': ariaInvalid,
+  'aria-required': ariaRequired,
 }) => {
   const [status, setStatus] = useState<'idle' | 'generating'>('idle');
   const [showPreview, setShowPreview] = useState(false);
   const [previewContent, setPreviewContent] = useState('');
   const [showMenu, setShowMenu] = useState(false);
   const hasContent = !!value && value.trim().length > 0;
+  const menuId = useId();
 
   const handleGenerate = async (mode: 'generate' | 'refine' | 'expand') => {
     setShowMenu(false);
@@ -217,8 +298,14 @@ export const TAAI: React.FC<TAAIProps> = ({
     setPreviewContent('');
   };
 
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Escape' && showMenu) {
+      setShowMenu(false);
+    }
+  };
+
   return (
-    <div style={{ position: 'relative' }}>
+    <div style={{ position: 'relative' }} onKeyDown={handleKeyDown}>
       {/* AI Button */}
       <div style={{
         position: 'absolute',
@@ -229,6 +316,10 @@ export const TAAI: React.FC<TAAIProps> = ({
         <button
           onClick={() => setShowMenu(!showMenu)}
           disabled={status === 'generating'}
+          aria-expanded={showMenu}
+          aria-haspopup="menu"
+          aria-controls={showMenu ? menuId : undefined}
+          aria-label={status === 'generating' ? 'AI generating content' : 'AI Writing Assistant'}
           style={{
             display: 'flex',
             alignItems: 'center',
@@ -242,12 +333,11 @@ export const TAAI: React.FC<TAAIProps> = ({
             fontWeight: 600,
             cursor: status === 'generating' ? 'wait' : 'pointer',
           }}
-          title="AI Writing Assistant"
         >
           {status === 'generating' ? (
-            <><span style={{ animation: 'spin 1s linear infinite' }}>⟳</span> Generating...</>
+            <><span style={{ animation: 'spin 1s linear infinite' }} aria-hidden="true">⟳</span> Generating...</>
           ) : (
-            <><span>✨</span> ForgeML</>
+            <><span aria-hidden="true">✨</span> ForgeML</>
           )}
         </button>
 
@@ -264,8 +354,12 @@ export const TAAI: React.FC<TAAIProps> = ({
                 zIndex: 99,
               }}
               onClick={() => setShowMenu(false)}
+              aria-hidden="true"
             />
             <div
+              id={menuId}
+              role="menu"
+              aria-label="AI writing options"
               style={{
                 position: 'absolute',
                 top: '100%',
@@ -281,7 +375,9 @@ export const TAAI: React.FC<TAAIProps> = ({
               }}
             >
               <button
+                role="menuitem"
                 onClick={() => handleGenerate('generate')}
+                aria-label={hasContent ? 'Regenerate content with AI' : 'Generate content with AI'}
                 style={{
                   width: '100%',
                   padding: '8px 12px',
@@ -295,7 +391,7 @@ export const TAAI: React.FC<TAAIProps> = ({
                   gap: 8,
                 }}
               >
-                <span style={{ fontSize: 14 }}>✨</span>
+                <span style={{ fontSize: 14 }} aria-hidden="true">✨</span>
                 <div>
                   <div style={{ fontSize: 11, fontWeight: 600, color: C.text }}>
                     {hasContent ? 'Regenerate' : 'Generate'}
@@ -307,7 +403,9 @@ export const TAAI: React.FC<TAAIProps> = ({
               {hasContent && (
                 <>
                   <button
+                    role="menuitem"
                     onClick={() => handleGenerate('refine')}
+                    aria-label="Refine content for clarity"
                     style={{
                       width: '100%',
                       padding: '8px 12px',
@@ -321,7 +419,7 @@ export const TAAI: React.FC<TAAIProps> = ({
                       gap: 8,
                     }}
                   >
-                    <span style={{ fontSize: 14 }}>🔄</span>
+                    <span style={{ fontSize: 14 }} aria-hidden="true">🔄</span>
                     <div>
                       <div style={{ fontSize: 11, fontWeight: 600, color: C.text }}>Refine</div>
                       <div style={{ fontSize: 9, color: C.textMuted }}>Improve clarity</div>
@@ -329,7 +427,9 @@ export const TAAI: React.FC<TAAIProps> = ({
                   </button>
 
                   <button
+                    role="menuitem"
                     onClick={() => handleGenerate('expand')}
+                    aria-label="Expand content with more detail"
                     style={{
                       width: '100%',
                       padding: '8px 12px',
@@ -342,7 +442,7 @@ export const TAAI: React.FC<TAAIProps> = ({
                       gap: 8,
                     }}
                   >
-                    <span style={{ fontSize: 14 }}>📝</span>
+                    <span style={{ fontSize: 14 }} aria-hidden="true">📝</span>
                     <div>
                       <div style={{ fontSize: 11, fontWeight: 600, color: C.text }}>Expand</div>
                       <div style={{ fontSize: 9, color: C.textMuted }}>Add more detail</div>
@@ -357,10 +457,14 @@ export const TAAI: React.FC<TAAIProps> = ({
 
       {/* Textarea */}
       <textarea
+        id={id}
         value={value || ''}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         rows={rows}
+        aria-describedby={ariaDescribedby}
+        aria-invalid={ariaInvalid || !!error}
+        aria-required={ariaRequired}
         style={{
           ...inputStyle,
           resize: 'vertical',
@@ -382,6 +486,10 @@ export const TAAI: React.FC<TAAIProps> = ({
       {/* AI Preview Modal */}
       {showPreview && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="ai-preview-title"
+          aria-describedby="ai-preview-desc"
           style={{
             position: 'fixed',
             top: 0,
@@ -395,6 +503,9 @@ export const TAAI: React.FC<TAAIProps> = ({
             justifyContent: 'center',
           }}
           onClick={() => setShowPreview(false)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') setShowPreview(false);
+          }}
         >
           <div
             onClick={(e) => e.stopPropagation()}
@@ -419,12 +530,12 @@ export const TAAI: React.FC<TAAIProps> = ({
                 gap: 10,
               }}
             >
-              <span style={{ fontSize: 20 }}>✨</span>
+              <span style={{ fontSize: 20 }} aria-hidden="true">✨</span>
               <div>
-                <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>
+                <div id="ai-preview-title" style={{ fontSize: 15, fontWeight: 700, color: C.text }}>
                   AI-Generated Content
                 </div>
-                <div style={{ fontSize: 11, color: C.textMuted }}>
+                <div id="ai-preview-desc" style={{ fontSize: 11, color: C.textMuted }}>
                   Review and accept or dismiss
                 </div>
               </div>
@@ -489,7 +600,7 @@ export const TAAI: React.FC<TAAIProps> = ({
                   gap: 6,
                 }}
               >
-                <span>✓</span>
+                <span aria-hidden="true">✓</span>
                 Accept & Use
               </button>
             </div>
@@ -500,7 +611,7 @@ export const TAAI: React.FC<TAAIProps> = ({
   );
 };
 
-// Select with error support
+// Select with accessibility support
 interface SelectOption {
   v: string;
   l: string;
@@ -512,12 +623,33 @@ interface SelProps {
   options: SelectOption[];
   ph?: string;
   error?: boolean;
+  id?: string;
+  'aria-describedby'?: string;
+  'aria-invalid'?: boolean;
+  'aria-required'?: boolean;
+  'aria-label'?: string;
 }
 
-export const Sel: React.FC<SelProps> = ({ value, onChange, options, ph, error }) => (
+export const Sel: React.FC<SelProps> = ({
+  value,
+  onChange,
+  options,
+  ph,
+  error,
+  id,
+  'aria-describedby': ariaDescribedby,
+  'aria-invalid': ariaInvalid,
+  'aria-required': ariaRequired,
+  'aria-label': ariaLabel,
+}) => (
   <select
+    id={id}
     value={value || ''}
     onChange={(e) => onChange(e.target.value)}
+    aria-describedby={ariaDescribedby}
+    aria-invalid={ariaInvalid || !!error}
+    aria-required={ariaRequired}
+    aria-label={ariaLabel}
     style={{
       ...inputStyle,
       color: value ? C.text : C.textMuted,
@@ -537,42 +669,38 @@ export const Sel: React.FC<SelProps> = ({ value, onChange, options, ph, error })
   </select>
 );
 
-// Checkbox
+// Checkbox using native input for accessibility
 interface ChkProps {
   checked: boolean;
   onChange: (checked: boolean) => void;
   label: string;
+  id?: string;
 }
 
-export const Chk: React.FC<ChkProps> = ({ checked, onChange, label }) => (
-  <label style={{
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-    cursor: 'pointer',
-    fontSize: 13,
-    color: C.text,
-  }}>
-    <div
-      onClick={() => onChange(!checked)}
+export const Chk: React.FC<ChkProps> = ({ checked, onChange, label, id }) => (
+  <label
+    style={{
+      display: 'flex',
+      alignItems: 'center',
+      gap: 8,
+      cursor: 'pointer',
+      fontSize: 13,
+      color: C.text,
+    }}
+  >
+    <input
+      type="checkbox"
+      id={id}
+      checked={checked}
+      onChange={(e) => onChange(e.target.checked)}
       style={{
         width: 18,
         height: 18,
-        borderRadius: 4,
-        flexShrink: 0,
         cursor: 'pointer',
-        border: `2px solid ${checked ? C.primary : C.borderDark}`,
-        background: checked ? C.primary : 'transparent',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        transition: 'all 0.15s',
+        accentColor: C.primary,
+        margin: 0,
       }}
-    >
-      {checked && (
-        <span style={{ color: '#fff', fontSize: 11, fontWeight: 700 }}>✓</span>
-      )}
-    </div>
+    />
     {label}
   </label>
 );
@@ -590,7 +718,7 @@ export const G3: React.CSSProperties = {
   gap: 16,
 };
 
-// Section Header
+// Section Header with proper heading semantics
 interface SHProps {
   title: string;
   sub?: string;
@@ -620,15 +748,21 @@ export const SH: React.FC<SHProps> = ({ title, sub }) => (
   </div>
 );
 
-// Divider
+// Divider with accessibility
 export const Div: React.FC = () => (
-  <div style={{
-    borderTop: `1px solid ${C.border}`,
-    margin: '22px 0',
-  }} />
+  <hr
+    style={{
+      borderTop: `1px solid ${C.border}`,
+      borderBottom: 'none',
+      borderLeft: 'none',
+      borderRight: 'none',
+      margin: '22px 0',
+    }}
+    aria-hidden="true"
+  />
 );
 
-// Sub Header
+// Sub Header with proper heading semantics
 interface SubHProps {
   children: React.ReactNode;
 }
@@ -644,7 +778,7 @@ export const SubH: React.FC<SubHProps> = ({ children }) => (
   </h4>
 );
 
-// Upload Zone with file handling
+// Upload Zone with accessibility
 interface UploadZoneProps {
   icon: string;
   title: string;
@@ -655,6 +789,8 @@ interface UploadZoneProps {
 
 export const UploadZone: React.FC<UploadZoneProps> = ({ icon, title, sub, onUpload, previewUrl }) => {
   const inputRef = React.useRef<HTMLInputElement>(null);
+  const inputId = useId();
+  const descId = useId();
 
   const handleClick = () => {
     inputRef.current?.click();
@@ -664,6 +800,13 @@ export const UploadZone: React.FC<UploadZoneProps> = ({ icon, title, sub, onUplo
     const file = e.target.files?.[0];
     if (file && onUpload) {
       onUpload(file);
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      handleClick();
     }
   };
 
@@ -684,7 +827,7 @@ export const UploadZone: React.FC<UploadZoneProps> = ({ icon, title, sub, onUplo
       {previewUrl ? (
         <img
           src={previewUrl}
-          alt="Uploaded preview"
+          alt="Uploaded file preview"
           style={{
             maxWidth: '100%',
             maxHeight: 200,
@@ -694,20 +837,35 @@ export const UploadZone: React.FC<UploadZoneProps> = ({ icon, title, sub, onUplo
         />
       ) : (
         <>
-          <div style={{ fontSize: 28, marginBottom: 6 }}>{icon}</div>
+          <div style={{ fontSize: 28, marginBottom: 6 }} aria-hidden="true">{icon}</div>
           <div style={{ fontSize: 13, fontWeight: 600, color: C.textSecondary }}>{title}</div>
-          <div style={{ fontSize: 11, color: C.textMuted, marginTop: 4, maxWidth: 400 }}>{sub}</div>
+          <div id={descId} style={{ fontSize: 11, color: C.textMuted, marginTop: 4, maxWidth: 400 }}>{sub}</div>
         </>
       )}
       <input
         ref={inputRef}
+        id={inputId}
         type="file"
         accept="image/*"
         onChange={handleChange}
-        style={{ display: 'none' }}
+        aria-describedby={descId}
+        className="sr-only"
+        style={{
+          position: 'absolute',
+          width: 1,
+          height: 1,
+          padding: 0,
+          margin: -1,
+          overflow: 'hidden',
+          clip: 'rect(0, 0, 0, 0)',
+          whiteSpace: 'nowrap',
+          border: 0,
+        }}
       />
       <button
         onClick={handleClick}
+        onKeyDown={handleKeyDown}
+        aria-describedby={descId}
         style={{
           marginTop: 14,
           padding: '7px 18px',
@@ -726,7 +884,7 @@ export const UploadZone: React.FC<UploadZoneProps> = ({ icon, title, sub, onUplo
   );
 };
 
-// Validation Error Summary Banner
+// Validation Error Summary Banner with accessibility
 interface ValidationBannerProps {
   errorCount: number;
   onShowErrors: () => void;
@@ -736,18 +894,22 @@ export const ValidationBanner: React.FC<ValidationBannerProps> = ({ errorCount, 
   if (errorCount === 0) return null;
 
   return (
-    <div style={{
-      background: `${C.error}10`,
-      border: `1px solid ${C.error}30`,
-      borderRadius: 8,
-      padding: '12px 16px',
-      marginBottom: 16,
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-    }}>
+    <div
+      role="alert"
+      aria-live="polite"
+      style={{
+        background: `${C.error}10`,
+        border: `1px solid ${C.error}30`,
+        borderRadius: 8,
+        padding: '12px 16px',
+        marginBottom: 16,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+      }}
+    >
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={C.error} strokeWidth="2">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={C.error} strokeWidth="2" aria-hidden="true">
           <circle cx="12" cy="12" r="10" />
           <line x1="12" y1="8" x2="12" y2="12" />
           <line x1="12" y1="16" x2="12.01" y2="16" />
@@ -758,6 +920,7 @@ export const ValidationBanner: React.FC<ValidationBannerProps> = ({ errorCount, 
       </div>
       <button
         onClick={onShowErrors}
+        aria-label={`View ${errorCount} validation error${errorCount > 1 ? 's' : ''}`}
         style={{
           background: 'none',
           border: `1px solid ${C.error}40`,

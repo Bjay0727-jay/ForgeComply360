@@ -54,7 +54,8 @@ describe('DT Component', () => {
     it('should render Add Row button', () => {
       render(<DT {...defaultProps} />);
 
-      expect(screen.getByText(/Add Row/)).toBeInTheDocument();
+      // Use getByRole to find the button with accessible name containing "Add"
+      expect(screen.getByRole('button', { name: /Add.*Row/i })).toBeInTheDocument();
     });
 
     it('should render delete buttons for each row', () => {
@@ -70,7 +71,7 @@ describe('DT Component', () => {
       render(<DT {...defaultProps} rows={[]} />);
 
       expect(screen.getByText('Name')).toBeInTheDocument();
-      expect(screen.getByText(/Add Row/)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Add.*Row/i })).toBeInTheDocument();
     });
   });
 
@@ -79,7 +80,7 @@ describe('DT Component', () => {
       const onAdd = vi.fn();
       render(<DT {...defaultProps} onAdd={onAdd} />);
 
-      fireEvent.click(screen.getByText(/Add Row/));
+      fireEvent.click(screen.getByRole('button', { name: /Add.*Row/i }));
 
       expect(onAdd).toHaveBeenCalledTimes(1);
     });
