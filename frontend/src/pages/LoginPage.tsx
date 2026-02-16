@@ -14,6 +14,8 @@ export function LoginPage() {
   const [mfaRequired, setMfaRequired] = useState(false);
   const [mfaToken, setMfaToken] = useState('');
   const [mfaCode, setMfaCode] = useState('');
+  const [mfaSetupRequired, setMfaSetupRequired] = useState(false);
+  const [mfaSetupMessage, setMfaSetupMessage] = useState('');
 
   // Forgot password state
   const [showForgotPassword, setShowForgotPassword] = useState(false);
@@ -31,6 +33,9 @@ export function LoginPage() {
       if (result.mfa_required) {
         setMfaRequired(true);
         setMfaToken(result.mfa_token!);
+      } else if (result.mfa_setup_required) {
+        setMfaSetupRequired(true);
+        setMfaSetupMessage(result.message || 'MFA is required for privileged accounts.');
       }
     } catch (err: any) {
       setError(err.message || 'Login failed');
@@ -93,7 +98,35 @@ export function LoginPage() {
           <p className="text-blue-200 mt-1">Enterprise GRC Platform</p>
         </div>
 
-        {mfaRequired ? (
+        {/* NIST AC-8 / TAC 202: System Use Notification */}
+        <div className="bg-blue-950/80 border border-blue-400/30 rounded-lg p-4 mb-4 text-xs text-blue-100/80 leading-relaxed">
+          <p className="font-semibold text-blue-100 mb-1 text-sm">System Use Notification</p>
+          <p>This is a U.S. Government-authorized system for authorized use only. By accessing this system, you consent to monitoring and recording of all activities. Unauthorized use is prohibited and subject to criminal and civil penalties. Use of this system constitutes consent to monitoring.</p>
+        </div>
+
+        {mfaSetupRequired ? (
+          <div className="bg-white rounded-xl shadow-2xl p-8">
+            <div className="text-center mb-6">
+              <div className="w-12 h-12 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-3">
+                <svg className="w-6 h-6 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                </svg>
+              </div>
+              <h2 className="text-xl font-semibold text-gray-900">MFA Setup Required</h2>
+              <p className="text-sm text-gray-600 mt-2">{mfaSetupMessage}</p>
+            </div>
+            <p className="text-sm text-gray-500 mb-4 text-center">
+              As an administrator, two-factor authentication must be enabled before you can sign in. Please contact your system owner to enable MFA on your account, or use the security settings after initial setup.
+            </p>
+            <button
+              type="button"
+              onClick={() => { setMfaSetupRequired(false); setMfaSetupMessage(''); setError(''); }}
+              className="w-full py-2.5 bg-gray-600 text-white rounded-lg font-medium hover:bg-gray-700 transition-colors"
+            >
+              Back to login
+            </button>
+          </div>
+        ) : mfaRequired ? (
           <form onSubmit={handleMfaSubmit} className="bg-white rounded-xl shadow-2xl p-8">
             <div className="text-center mb-6">
               <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-3">

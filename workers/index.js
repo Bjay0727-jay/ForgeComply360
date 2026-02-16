@@ -525,6 +525,7 @@ async function handleRequest(request, env, url, ctx) {
 
   // Audit log
   if (path === '/api/v1/audit-log' && method === 'GET') return handleGetAuditLog(env, url, org, user);
+  if (path === '/api/v1/audit-log/export' && method === 'GET') return handleExportAuditLog(env, url, org, user);
   if (path === '/api/v1/activity/recent' && method === 'GET') return handleGetRecentActivity(env, url, org, user);
   if (path.match(/^\/api\/v1\/activity\/[\w_-]+\/[\w-]+$/) && method === 'GET') return handleGetResourceActivity(env, url, org, user, path.split('/')[4], path.split('/')[5]);
   if (path === '/api/v1/search' && method === 'GET') return handleGlobalSearch(env, url, org, user);
@@ -679,7 +680,7 @@ async function authenticateRequest(request, env) {
     const payload = await verifyJWT(token, requireJWTSecret(env));
     if (payload.purpose) return null; // reject MFA tokens used as access tokens
     const user = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(payload.sub).first();
-    if (!user) return null;
+    if (!user || user.status === 'deactivated') return null;
     const org = await env.DB.prepare('SELECT * FROM organizations WHERE id = ?').bind(user.org_id).first();
     if (!org) return null;
     return { user: sanitizeUser(user), org };
@@ -1464,6 +1465,14 @@ async function handleLogin(request, env) {
     const mfaToken = await createJWT({ sub: user.id, org: user.org_id, purpose: 'mfa' }, requireJWTSecret(env), 5);
     await auditLog(env, user.org_id, user.id, 'login_mfa_pending', 'user', user.id, {}, request);
     return jsonResponse({ mfa_required: true, mfa_token: mfaToken });
+  }
+
+  // TAC 202 / NIST IA-2(1): Enforce MFA for privileged accounts (admin, owner)
+  if (['admin', 'owner'].includes(user.role) && !user.mfa_enabled) {
+    const jwtSecret = requireJWTSecret(env);
+    const setupToken = await createJWT({ sub: user.id, org: user.org_id, role: user.role, purpose: 'mfa_setup' }, jwtSecret, 15);
+    await auditLog(env, user.org_id, user.id, 'login_mfa_setup_required', 'user', user.id, { role: user.role }, request);
+    return jsonResponse({ mfa_setup_required: true, mfa_setup_token: setupToken, message: 'MFA is required for privileged accounts. Please set up two-factor authentication.' });
   }
 
   const jwtSecret = requireJWTSecret(env);
@@ -4723,6 +4732,49 @@ async function handleGetAuditLog(env, url, org, user) {
   ).bind(...countParams).first();
 
   return jsonResponse({ logs: results, total, page, limit });
+}
+
+// HIPAA 164.312(b) / TAC 202 AU-6: Audit log export for SIEM integration and compliance reporting
+async function handleExportAuditLog(env, url, org, user) {
+  if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  const format = url.searchParams.get('format') || 'csv';
+  const dateFrom = url.searchParams.get('date_from');
+  const dateTo = url.searchParams.get('date_to');
+  const maxRows = Math.min(parseInt(url.searchParams.get('limit') || '10000'), 50000);
+
+  let where = 'WHERE al.org_id = ?';
+  const params = [org.id];
+  if (dateFrom) { where += ' AND al.created_at >= ?'; params.push(dateFrom); }
+  if (dateTo) { where += ' AND al.created_at <= ?'; params.push(dateTo + 'T23:59:59'); }
+  params.push(maxRows);
+
+  const { results } = await env.DB.prepare(
+    `SELECT al.id, al.action, al.resource_type, al.resource_id, al.user_id,
+            u.name as user_name, u.email as user_email,
+            al.details, al.ip_address, al.user_agent, al.integrity_hash, al.prev_hash, al.created_at
+     FROM audit_logs al LEFT JOIN users u ON u.id = al.user_id
+     ${where}
+     ORDER BY al.created_at DESC LIMIT ?`
+  ).bind(...params).all();
+
+  await auditLog(env, org.id, user.id, 'export', 'audit_log', null, { format, rows: results.length, date_from: dateFrom, date_to: dateTo });
+
+  if (format === 'json') {
+    return new Response(JSON.stringify({ exported_at: new Date().toISOString(), org_id: org.id, count: results.length, logs: results }, null, 2), {
+      headers: { 'Content-Type': 'application/json', 'Content-Disposition': 'attachment; filename="audit-log-export.json"' },
+    });
+  }
+
+  // CSV format (default)
+  const csvHeaders = ['id', 'timestamp', 'action', 'resource_type', 'resource_id', 'user_id', 'user_name', 'user_email', 'ip_address', 'user_agent', 'integrity_hash', 'details'];
+  const csvEscape = (v) => { const s = String(v || ''); return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replace(/"/g, '""')}"` : s; };
+  const csvRows = results.map(r => [r.id, r.created_at, r.action, r.resource_type, r.resource_id, r.user_id, r.user_name, r.user_email, r.ip_address, r.user_agent, r.integrity_hash, r.details].map(csvEscape).join(','));
+  const csv = [csvHeaders.join(','), ...csvRows].join('\n');
+
+  return new Response(csv, {
+    headers: { 'Content-Type': 'text/csv', 'Content-Disposition': 'attachment; filename="audit-log-export.csv"' },
+  });
 }
 
 async function handleGetRecentActivity(env, url, org, user) {

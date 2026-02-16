@@ -29,6 +29,21 @@ jobs:
       - name: Run frontend tests
         run: cd frontend && npm test
 
+      # TAC 202 SR / NIST SR-4: Software Bill of Materials (SBOM) generation
+      - name: Generate SBOM (CycloneDX)
+        run: |
+          npx @cyclonedx/cyclonedx-npm --output-file sbom-api.json --output-format json
+          cd frontend && npx @cyclonedx/cyclonedx-npm --output-file ../sbom-frontend.json --output-format json
+
+      - name: Upload SBOM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: |
+            sbom-api.json
+            sbom-frontend.json
+          retention-days: 90
+
   # ── Stage 1: Deploy to demo environment for smoke testing ──
   deploy-staging:
     name: Deploy to Staging (Demo)
