@@ -1,10 +1,20 @@
 node_modules/
 frontend/node_modules/
 frontend/dist/
+standalone-ssp-builder/node_modules/
+standalone-ssp-builder/dist/
 .wrangler/
 .dev.vars
-docker/.env
 *.zip
 *.docx
 .DS_Store
 Thumbs.db
+
+# Environment files — may contain secrets (JWT_SECRET, API keys, etc.)
+# Only intentionally checked-in env files are un-ignored below.
+.env
+.env.*
+!.env.example
+!.env.demo
+!.env.production
+docker/.env

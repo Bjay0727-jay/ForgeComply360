@@ -20,14 +20,20 @@ COPY docker/server.js ./docker/
 WORKDIR /app/docker
 RUN npm install --production
 
-# Create data directories
-RUN mkdir -p /data /data/kv /data/evidence
+# Create non-root user for security hardening
+RUN addgroup -S forge && adduser -S forge -G forge
+
+# Create data directories and set ownership
+RUN mkdir -p /data /data/kv /data/evidence && chown -R forge:forge /data
 
 WORKDIR /app
 
 # Copy entrypoint
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
+
+# Set ownership of app directory
+RUN chown -R forge:forge /app
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
@@ -36,6 +42,9 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
 EXPOSE 8787
 
 VOLUME ["/data"]
+
+# Run as non-root user
+USER forge
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["node", "docker/server.js"]

@@ -5,30 +5,34 @@ compatibility_flags = ["nodejs_compat"]
 
 # ============================================================================
 # LOCAL DEVELOPMENT (wrangler dev)
+# IMPORTANT: Dev resources are intentionally separate from production.
+#   Create with: wrangler d1 create forge-comply360-db-dev
+#                wrangler kv:namespace create KV_DEV
+#   Then replace the placeholder IDs below with the new resource IDs.
 # ============================================================================
 [[d1_databases]]
 binding = "DB"
-database_name = "forge-comply360-db"
-database_id = "73faffec-f001-44bc-880e-62bd932c25b1"
+database_name = "forge-comply360-db-dev"
+database_id = "local"  # Uses local SQLite in wrangler dev; replace with a real dev DB ID for remote dev
 
 [[kv_namespaces]]
 binding = "KV"
-id = "a3323bb1cfa14271a286170864082869"
+id = "local"  # Uses local emulation in wrangler dev; replace with a real dev KV ID for remote dev
 
 [[r2_buckets]]
 binding = "EVIDENCE_VAULT"
-bucket_name = "forge-evidence"
+bucket_name = "forge-evidence-dev"
 
 [[r2_buckets]]
 binding = "BACKUP_BUCKET"
-bucket_name = "forge-comply360-backups"
+bucket_name = "forge-comply360-backups-dev"
 
 [ai]
 binding = "AI"
 
 [vars]
 ENVIRONMENT = "development"
-CORS_ORIGIN = "https://forgecomply360.pages.dev"
+CORS_ORIGIN = "http://localhost:5173"
 
 # ============================================================================
 # PRODUCTION

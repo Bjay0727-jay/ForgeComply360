@@ -49,9 +49,10 @@ export default {
       headers.set('X-Content-Type-Options', 'nosniff');
       headers.set('X-Frame-Options', 'DENY');
       headers.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
-      // CSP - Improved security (NIST SP 800-53 SC-8 compliant)
-      // Note: 'unsafe-inline' for styles required by React runtime; scripts are bundled
-      headers.set('Content-Security-Policy', "default-src 'self'; script-src 'self' https://browser.sentry-cdn.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https://*.stanley-riley.workers.dev https://*.forgecomply360.pages.dev https://*.ingest.us.sentry.io https://api.pwnedpasswords.com; frame-ancestors 'none'; form-action 'self'; base-uri 'self'; object-src 'none'; upgrade-insecure-requests;");
+      // CSP — NIST SP 800-53 SC-8 compliant.
+      // 'unsafe-inline' removed from style-src: TailwindCSS compiles to static CSS
+      // files at build time and the frontend has zero inline style={} usage.
+      headers.set('Content-Security-Policy', "default-src 'self'; script-src 'self' https://browser.sentry-cdn.com; style-src 'self'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https://*.stanley-riley.workers.dev https://*.forgecomply360.pages.dev https://*.ingest.us.sentry.io https://api.pwnedpasswords.com; frame-ancestors 'none'; form-action 'self'; base-uri 'self'; object-src 'none'; upgrade-insecure-requests;");
       headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
       headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
       return new Response(response.body, { status: response.status, headers });
@@ -110,6 +111,11 @@ export default {
   },
 };
 
+// CORS Design Decision: Access-Control-Allow-Credentials is intentionally omitted.
+// Authentication uses the Authorization header (Bearer JWT), not cookies.
+// This avoids CSRF risks entirely and simplifies CORS. If cookie-based auth
+// is ever added, this header MUST be set to 'true' and wildcard origins MUST
+// be replaced with an explicit allowlist.
 function corsHeaders(origin) {
   return {
     'Access-Control-Allow-Origin': origin,
@@ -130,35 +136,30 @@ function jsonResponse(data, status = 200, corsOrigin = '*') {
 }
 
 // ============================================================================
-// RATE LIMITING
+// RATE LIMITING (KV-backed — low-latency, atomic via KV expiration)
+// Uses a fixed-window counter stored in KV with TTL-based expiration.
+// KV is eventually consistent, so under extreme concurrency a few extra
+// requests may slip through — acceptable for rate limiting.
 // ============================================================================
 
 async function checkRateLimit(env, key, maxRequests, windowSeconds) {
-  const now = Math.floor(Date.now() / 1000);
-  const windowStart = now - windowSeconds;
+  const windowId = Math.floor(Date.now() / 1000 / windowSeconds);
+  const kvKey = `ratelimit:${key}:${windowId}`;
 
   try {
-    // Clean old entries and get current count
-    await env.DB.prepare('DELETE FROM rate_limits WHERE window_start < ?').bind(windowStart).run();
+    const current = await env.KV.get(kvKey);
+    const count = current ? parseInt(current, 10) : 0;
 
-    const row = await env.DB.prepare('SELECT count FROM rate_limits WHERE key = ? AND window_start >= ?')
-      .bind(key, windowStart).first();
-
-    if (row && row.count >= maxRequests) {
+    if (count >= maxRequests) {
       return { limited: true, retryAfter: windowSeconds };
     }
 
-    // Upsert count
-    await env.DB.prepare(
-      'INSERT INTO rate_limits (key, count, window_start) VALUES (?, 1, ?) ON CONFLICT(key) DO UPDATE SET count = count + 1'
-    ).bind(key, now).run();
+    // Increment counter with TTL (window expiry + small buffer)
+    await env.KV.put(kvKey, String(count + 1), { expirationTtl: windowSeconds + 10 });
 
     return { limited: false };
   } catch {
-    // If rate limit table doesn't exist, create it and allow the request
-    try {
-      await env.DB.prepare(`CREATE TABLE IF NOT EXISTS rate_limits (key TEXT PRIMARY KEY, count INTEGER DEFAULT 1, window_start INTEGER NOT NULL)`).run();
-    } catch {}
+    // If KV is unavailable, fail open to avoid blocking all requests
     return { limited: false };
   }
 }
@@ -200,6 +201,22 @@ function validationErrorResponse(errors, corsOrigin = '*') {
     status: 400,
     headers: { ...corsHeaders(corsOrigin), 'Content-Type': 'application/json' },
   });
+}
+
+// ============================================================================
+// TEXT SANITIZATION — strips HTML/script content from user-supplied strings
+// used in notification messages, preventing stored XSS if the frontend ever
+// renders notifications as HTML.
+// ============================================================================
+
+function sanitizeText(str, maxLength = 200) {
+  if (typeof str !== 'string') return '';
+  return str
+    .replace(/[<>]/g, '')       // Strip angle brackets (HTML tags)
+    .replace(/["'`]/g, '')      // Strip quotes that could break attribute contexts
+    .replace(/javascript:/gi, '') // Strip JS protocol handlers
+    .replace(/on\w+\s*=/gi, '')  // Strip event handler attributes
+    .slice(0, maxLength);        // Truncate to prevent log/DB bloat
 }
 
 // ============================================================================
@@ -758,6 +775,24 @@ function base64urlEncode(str) {
 
 function base64urlDecode(str) {
   return atob(str.replace(/-/g, '+').replace(/_/g, '/'));
+}
+
+// ============================================================================
+// REFRESH TOKEN HASHING (HMAC-SHA256)
+// Uses JWT_SECRET as the HMAC key — deterministic (supports DB lookup by hash)
+// but cryptographically bound to the server secret, unlike the old static salt.
+// ============================================================================
+
+async function hmacRefreshToken(token, secret) {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(token));
+  return Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
 // ============================================================================
@@ -1360,9 +1395,10 @@ async function handleRegister(request, env) {
   // Record initial password in history
   await recordPasswordHistory(env, userId, passwordHash, salt);
 
-  const accessToken = await createJWT({ sub: userId, org: orgId, role: 'owner' }, requireJWTSecret(env), 60);
+  const jwtSecret = requireJWTSecret(env);
+  const accessToken = await createJWT({ sub: userId, org: orgId, role: 'owner' }, jwtSecret, 60);
   const refreshToken = generateId() + generateId();
-  const refreshHash = await hashPassword(refreshToken, 'refresh-salt');
+  const refreshHash = await hmacRefreshToken(refreshToken, jwtSecret);
   const refreshExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
   await env.DB.prepare(
@@ -1390,7 +1426,13 @@ async function handleLogin(request, env) {
   if (valErrors) return validationErrorResponse(valErrors);
 
   const user = await env.DB.prepare('SELECT * FROM users WHERE email = ?').bind(email.toLowerCase()).first();
-  if (!user) return jsonResponse({ error: 'Invalid credentials' }, 401);
+  if (!user) {
+    // Timing-safe: perform a dummy PBKDF2 hash so the response time is
+    // indistinguishable from a valid-user-wrong-password attempt.
+    // Prevents account enumeration via timing side-channel.
+    await hashPassword(password, 'timing-safe-dummy-salt-000000000000');
+    return jsonResponse({ error: 'Invalid credentials' }, 401);
+  }
 
   // Deactivated account check
   if (user.status === 'deactivated') {
@@ -1424,9 +1466,10 @@ async function handleLogin(request, env) {
     return jsonResponse({ mfa_required: true, mfa_token: mfaToken });
   }
 
-  const accessToken = await createJWT({ sub: user.id, org: user.org_id, role: user.role }, requireJWTSecret(env), 60);
+  const jwtSecret = requireJWTSecret(env);
+  const accessToken = await createJWT({ sub: user.id, org: user.org_id, role: user.role }, jwtSecret, 60);
   const refreshToken = generateId() + generateId();
-  const refreshHash = await hashPassword(refreshToken, 'refresh-salt');
+  const refreshHash = await hmacRefreshToken(refreshToken, jwtSecret);
   const refreshExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
   await env.DB.prepare(
@@ -1447,7 +1490,8 @@ async function handleRefreshToken(request, env) {
   const { refresh_token } = await request.json();
   if (!refresh_token) return jsonResponse({ error: 'Refresh token required' }, 400);
 
-  const tokenHash = await hashPassword(refresh_token, 'refresh-salt');
+  const jwtSecret = requireJWTSecret(env);
+  const tokenHash = await hmacRefreshToken(refresh_token, jwtSecret);
   const stored = await env.DB.prepare(
     'SELECT * FROM refresh_tokens WHERE token_hash = ? AND revoked = 0 AND expires_at > datetime("now")'
   ).bind(tokenHash).first();
@@ -1461,9 +1505,9 @@ async function handleRefreshToken(request, env) {
   if (!user) return jsonResponse({ error: 'User not found' }, 404);
   if (user.status === 'deactivated') return jsonResponse({ error: 'Account has been deactivated' }, 403);
 
-  const accessToken = await createJWT({ sub: user.id, org: user.org_id, role: user.role }, requireJWTSecret(env), 60);
+  const accessToken = await createJWT({ sub: user.id, org: user.org_id, role: user.role }, jwtSecret, 60);
   const newRefreshToken = generateId() + generateId();
-  const newRefreshHash = await hashPassword(newRefreshToken, 'refresh-salt');
+  const newRefreshHash = await hmacRefreshToken(newRefreshToken, jwtSecret);
   const refreshExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
   await env.DB.prepare(
@@ -1592,9 +1636,10 @@ async function handleMFAVerify(request, env) {
 
   // Issue real tokens
   const org = await env.DB.prepare('SELECT * FROM organizations WHERE id = ?').bind(user.org_id).first();
-  const accessToken = await createJWT({ sub: user.id, org: user.org_id, role: user.role }, requireJWTSecret(env), 60);
+  const jwtSecret = requireJWTSecret(env);
+  const accessToken = await createJWT({ sub: user.id, org: user.org_id, role: user.role }, jwtSecret, 60);
   const refreshToken = generateId() + generateId();
-  const refreshHash = await hashPassword(refreshToken, 'refresh-salt');
+  const refreshHash = await hmacRefreshToken(refreshToken, jwtSecret);
   const refreshExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
   await env.DB.prepare('INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)')
@@ -2181,7 +2226,7 @@ async function handleCreatePoam(request, env, org, user) {
     vendor_id || null, vendor_dependency_notes || null, oscalUuid, related_observations || '[]', related_risks || '[]').run();
 
   await auditLog(env, org.id, user.id, 'create', 'poam', id, { poam_id: poamId, weakness_name, data_classification, vendor_id });
-  await notifyOrgRole(env, org.id, user.id, 'manager', 'poam_update', 'New POA&M Created', 'POA&M "' + weakness_name + '" was created', 'poam', id, {});
+  await notifyOrgRole(env, org.id, user.id, 'manager', 'poam_update', 'New POA&M Created', 'POA&M "' + sanitizeText(weakness_name) + '" was created', 'poam', id, {});
   if (assigned_to && assigned_to !== user.id) {
     await createNotification(env, org.id, assigned_to, 'poam_update', 'POA&M Assigned to You', 'You were assigned to POA&M "' + weakness_name + '"', 'poam', id, {});
   }
@@ -2246,7 +2291,7 @@ async function handleUpdatePoam(request, env, org, user, poamId) {
     const changes = computeDiff(poam, body, ['weakness_name', 'weakness_description', 'risk_level', 'status', 'scheduled_completion', 'actual_completion', 'responsible_party', 'resources_required', 'cost_estimate', 'assigned_to', 'vendor_dependency', 'data_classification', 'deviation_type']);
     await auditLog(env, org.id, user.id, 'update', 'poam', poamId, { ...body, _changes: changes });
     if (body.status) {
-      await notifyOrgRole(env, org.id, user.id, 'manager', 'poam_update', 'POA&M Status Changed', 'POA&M "' + poam.weakness_name + '" status changed to ' + body.status, 'poam', poamId, { status: body.status });
+      await notifyOrgRole(env, org.id, user.id, 'manager', 'poam_update', 'POA&M Status Changed', 'POA&M "' + sanitizeText(poam.weakness_name) + '" status changed to ' + sanitizeText(body.status, 50), 'poam', poamId, { status: body.status });
       if (poam.assigned_to && poam.assigned_to !== user.id) {
         await createNotification(env, org.id, poam.assigned_to, 'poam_update', 'POA&M Status Changed', 'POA&M "' + poam.weakness_name + '" status changed to ' + body.status, 'poam', poamId, {});
       }
@@ -2338,7 +2383,7 @@ async function handleCreateComment(request, env, org, user, poamId) {
   if (poam.assigned_to && poam.assigned_to !== user.id) {
     await createNotification(env, org.id, poam.assigned_to, 'poam_update', 'New Comment on POA&M', user.name + ' commented on POA&M "' + poam.weakness_name + '"', 'poam', poamId, {});
   }
-  await notifyOrgRole(env, org.id, user.id, 'manager', 'poam_update', 'New Comment on POA&M', user.name + ' commented on POA&M "' + poam.weakness_name + '"', 'poam', poamId, {});
+  await notifyOrgRole(env, org.id, user.id, 'manager', 'poam_update', 'New Comment on POA&M', sanitizeText(user.name) + ' commented on POA&M "' + sanitizeText(poam.weakness_name) + '"', 'poam', poamId, {});
   const comment = await env.DB.prepare('SELECT c.*, u.name as author_name FROM poam_comments c LEFT JOIN users u ON u.id = c.user_id WHERE c.id = ?').bind(id).first();
   return jsonResponse({ comment }, 201);
 }
@@ -2663,6 +2708,40 @@ async function handleListEvidence(env, org, url) {
   return jsonResponse({ evidence: results, total, page, limit });
 }
 
+// Maximum evidence file size: 25 MB
+const EVIDENCE_MAX_FILE_SIZE = 25 * 1024 * 1024;
+
+// Allowed MIME types for evidence uploads
+const EVIDENCE_ALLOWED_TYPES = new Set([
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'text/plain',
+  'text/csv',
+  'text/xml',
+  'application/json',
+  'application/xml',
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/svg+xml',
+  'image/webp',
+  'application/zip',
+  'application/gzip',
+]);
+
+// Allowed file extensions (fallback when MIME type is generic)
+const EVIDENCE_ALLOWED_EXTENSIONS = new Set([
+  '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+  '.txt', '.csv', '.xml', '.json', '.yaml', '.yml',
+  '.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp',
+  '.zip', '.gz', '.tar.gz',
+]);
+
 async function handleUploadEvidence(request, env, org, user) {
   if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
   const formData = await request.formData();
@@ -2674,7 +2753,27 @@ async function handleUploadEvidence(request, env, org, user) {
 
   if (!file) return jsonResponse({ error: 'No file provided' }, 400);
 
+  // Validate file size before buffering (use Content-Length hint if available)
+  if (file.size && file.size > EVIDENCE_MAX_FILE_SIZE) {
+    return jsonResponse({ error: `File too large. Maximum size is ${EVIDENCE_MAX_FILE_SIZE / (1024 * 1024)} MB.` }, 413);
+  }
+
+  // Validate file type by MIME type
+  const fileType = (file.type || '').toLowerCase();
+  const fileExt = ('.' + (file.name || '').split('.').pop()).toLowerCase();
+  if (fileType && !EVIDENCE_ALLOWED_TYPES.has(fileType) && !EVIDENCE_ALLOWED_EXTENSIONS.has(fileExt)) {
+    return jsonResponse({ error: `File type not allowed. Accepted types: PDF, Office documents, images, CSV, JSON, XML, TXT, ZIP.` }, 415);
+  }
+  if (!fileType && !EVIDENCE_ALLOWED_EXTENSIONS.has(fileExt)) {
+    return jsonResponse({ error: `File type not allowed. Accepted extensions: ${[...EVIDENCE_ALLOWED_EXTENSIONS].join(', ')}` }, 415);
+  }
+
   const arrayBuffer = await file.arrayBuffer();
+
+  // Enforce size limit after buffering (in case Content-Length was missing or spoofed)
+  if (arrayBuffer.byteLength > EVIDENCE_MAX_FILE_SIZE) {
+    return jsonResponse({ error: `File too large. Maximum size is ${EVIDENCE_MAX_FILE_SIZE / (1024 * 1024)} MB.` }, 413);
+  }
   const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
   const sha256 = Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
 
@@ -2691,7 +2790,7 @@ async function handleUploadEvidence(request, env, org, user) {
   ).bind(id, org.id, title, description, file.name, arrayBuffer.byteLength, file.type, r2Key, sha256, user.id, collectionDate, expiryDate).run();
 
   await auditLog(env, org.id, user.id, 'upload', 'evidence', id, { file_name: file.name, size: arrayBuffer.byteLength });
-  await notifyOrgRole(env, org.id, user.id, 'manager', 'evidence_upload', 'New Evidence Uploaded', 'Evidence file "' + file.name + '" was uploaded', 'evidence', id, {});
+  await notifyOrgRole(env, org.id, user.id, 'manager', 'evidence_upload', 'New Evidence Uploaded', 'Evidence file "' + sanitizeText(file.name) + '" was uploaded', 'evidence', id, {});
 
   const evidence = await env.DB.prepare('SELECT * FROM evidence WHERE id = ?').bind(id).first();
   return jsonResponse({ evidence }, 201);
@@ -3950,7 +4049,7 @@ async function handleCreateRisk(request, env, org, user) {
   ).bind(id, org.id, system_id || null, riskId, title, description || null, category || 'technical', l, i, riskLevel, treatment || 'mitigate', treatment_plan || null, treatment_due_date || null, owner || null, related_controls ? JSON.stringify(related_controls) : '[]').run();
 
   await auditLog(env, org.id, user.id, 'create', 'risk', id, { title, risk_level: riskLevel });
-  if (['high', 'critical'].includes(riskLevel)) await notifyOrgRole(env, org.id, user.id, 'manager', 'risk_alert', 'High Risk Created', 'Risk "' + title + '" rated ' + riskLevel, 'risk', id, { risk_level: riskLevel });
+  if (['high', 'critical'].includes(riskLevel)) await notifyOrgRole(env, org.id, user.id, 'manager', 'risk_alert', 'High Risk Created', 'Risk "' + sanitizeText(title) + '" rated ' + riskLevel, 'risk', id, { risk_level: riskLevel });
   const risk = await env.DB.prepare('SELECT r.*, s.name as system_name FROM risks r LEFT JOIN systems s ON s.id = r.system_id WHERE r.id = ?').bind(id).first();
   return jsonResponse({ risk }, 201);
 }
@@ -5316,7 +5415,7 @@ async function handleEmergencyAccess(request, env) {
 
   // Create a new refresh token
   const refreshToken = generateId() + generateId();
-  const refreshHash = await hashPassword(refreshToken, 'refresh-salt');
+  const refreshHash = await hmacRefreshToken(refreshToken, requireJWTSecret(env));
   const refreshExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
   await env.DB.prepare(
     'INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)'
@@ -5413,7 +5512,7 @@ async function handleRunMonitoringCheck(request, env, org, user, checkId) {
     "UPDATE monitoring_checks SET last_result = ?, last_result_details = ?, last_run_at = datetime('now'), updated_at = datetime('now') WHERE id = ?"
   ).bind(result, notes || '', checkId).run();
   await auditLog(env, org.id, user.id, 'run', 'monitoring_check', checkId, { result, notes });
-  if (['fail', 'error'].includes(result)) await notifyOrgRole(env, org.id, user.id, 'analyst', 'monitoring_fail', 'Monitoring Check Failed', 'Check "' + check.check_name + '" result: ' + result, 'monitoring_check', checkId, { result });
+  if (['fail', 'error'].includes(result)) await notifyOrgRole(env, org.id, user.id, 'analyst', 'monitoring_fail', 'Monitoring Check Failed', 'Check "' + sanitizeText(check.check_name) + '" result: ' + result, 'monitoring_check', checkId, { result });
   return jsonResponse({ message: 'Check result recorded', result_id: resultId, result }, 201);
 }
 
