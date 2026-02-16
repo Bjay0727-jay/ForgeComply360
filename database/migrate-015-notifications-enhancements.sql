@@ -37,5 +37,5 @@ CREATE INDEX IF NOT EXISTS idx_notifications_batch ON notifications(batch_id);
 -- ============================================================================
 
 INSERT OR IGNORE INTO schema_migrations (version, name, description) VALUES
-  ('015', 'notifications-enhancements', 'Notification version tracking and priority levels');
+  ('migrate-015-notifications-enhancements', 'notifications-enhancements', 'Notification version tracking and priority levels');
 

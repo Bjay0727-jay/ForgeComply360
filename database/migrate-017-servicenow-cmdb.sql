@@ -73,3 +73,7 @@ ALTER TABLE assets ADD COLUMN servicenow_last_synced_at TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_assets_servicenow_sysid ON assets(org_id, servicenow_sys_id);
 CREATE INDEX IF NOT EXISTS idx_assets_servicenow_connector ON assets(servicenow_sync_connector_id);
+
+-- Track migration
+INSERT OR IGNORE INTO schema_migrations (version, name, description) VALUES
+  ('migrate-017-servicenow-cmdb', 'servicenow-cmdb', 'ServiceNow CMDB integration tables and asset extensions');

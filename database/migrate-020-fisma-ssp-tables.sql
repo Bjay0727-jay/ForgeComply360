@@ -222,6 +222,10 @@ CREATE TABLE IF NOT EXISTS ssp_cm_baselines (
 
 CREATE INDEX IF NOT EXISTS idx_ssp_cm_baselines_ssp ON ssp_cm_baselines(ssp_id);
 
+-- Track migration
+INSERT OR IGNORE INTO schema_migrations (version, name, description) VALUES
+  ('migrate-020-fisma-ssp-tables', 'fisma-ssp-tables', 'FISMA SSP Builder supporting tables');
+
 -- 11. Enhanced POA&M for FISMA SSP (links to existing poams table)
 CREATE TABLE IF NOT EXISTS ssp_poam_summary (
   id TEXT PRIMARY KEY,

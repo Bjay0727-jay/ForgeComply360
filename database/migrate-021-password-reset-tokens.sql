@@ -21,4 +21,4 @@ CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_expires ON password_reset_t
 
 -- Track schema migration
 INSERT OR IGNORE INTO schema_migrations (version, name, description, applied_by)
-VALUES ('021', 'password_reset_tokens', 'Self-service password reset tokens table', 'claude');
+VALUES ('migrate-021-password-reset-tokens', 'password-reset-tokens', 'Self-service password reset tokens table', 'claude');

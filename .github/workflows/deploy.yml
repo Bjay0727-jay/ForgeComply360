@@ -155,6 +155,29 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
+      - name: Reconcile untracked migrations
+        run: |
+          echo "Detecting migrations applied before tracking was added..."
+          # Some migrations were applied to the DB (columns exist) but never
+          # recorded in schema_migrations. Detect them by checking for
+          # characteristic columns and mark as applied to prevent re-runs.
+          wrangler d1 execute forge-comply360-db --env production --remote \
+            --command "
+              INSERT OR IGNORE INTO schema_migrations (version, name, description)
+              SELECT 'migrate-014-asset-enhancements', 'asset-enhancements', 'Reconciled: columns already present'
+              WHERE EXISTS (SELECT 1 FROM pragma_table_info('assets') WHERE name = 'first_seen_at');
+
+              INSERT OR IGNORE INTO schema_migrations (version, name, description)
+              SELECT 'migrate-017-servicenow-cmdb', 'servicenow-cmdb', 'Reconciled: columns already present'
+              WHERE EXISTS (SELECT 1 FROM pragma_table_info('assets') WHERE name = 'servicenow_sys_id');
+
+              INSERT OR IGNORE INTO schema_migrations (version, name, description)
+              SELECT 'migrate-020-fisma-ssp-tables', 'fisma-ssp-tables', 'Reconciled: columns already present'
+              WHERE EXISTS (SELECT 1 FROM pragma_table_info('ssp_documents') WHERE name = 'ssp_type');
+            " || echo "Reconciliation step completed (some checks may have been skipped)"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
       - name: Run Migrations
         run: |
           FAILED=0

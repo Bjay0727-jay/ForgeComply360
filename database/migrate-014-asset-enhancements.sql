@@ -9,7 +9,9 @@
 -- ============================================================================
 
 -- Add first_seen_at to track when asset was first discovered
-ALTER TABLE assets ADD COLUMN first_seen_at TEXT DEFAULT (datetime('now'));
+-- Note: D1 does not allow expression defaults in ALTER TABLE ADD COLUMN,
+-- so we use NULL default and backfill existing rows below.
+ALTER TABLE assets ADD COLUMN first_seen_at TEXT;
 
 -- Add risk score fields (0-100 scale based on vulnerability findings)
 ALTER TABLE assets ADD COLUMN risk_score INTEGER DEFAULT 0;
@@ -54,5 +56,5 @@ UPDATE assets SET first_seen_at = created_at WHERE first_seen_at IS NULL;
 -- ============================================================================
 
 INSERT OR IGNORE INTO schema_migrations (version, name, description) VALUES
-  ('014', 'asset-enhancements', 'Asset first_seen tracking, risk scores, scan history');
+  ('migrate-014-asset-enhancements', 'asset-enhancements', 'Asset first_seen tracking, risk scores, scan history');
 
