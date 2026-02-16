@@ -461,12 +461,15 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   details TEXT DEFAULT '{}',
   ip_address TEXT,
   user_agent TEXT,
+  integrity_hash TEXT,
+  prev_hash TEXT,
   created_at TEXT DEFAULT (datetime('now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_org ON audit_logs(org_id);
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs(action);
+CREATE INDEX IF NOT EXISTS idx_audit_integrity ON audit_logs(org_id, created_at, integrity_hash);
 
 -- ============================================================================
 -- NOTIFICATIONS & ALERTS
@@ -748,3 +751,43 @@ CREATE TABLE IF NOT EXISTS policy_control_links (
 
 CREATE INDEX IF NOT EXISTS idx_policy_control_links_policy ON policy_control_links(policy_id);
 CREATE INDEX IF NOT EXISTS idx_policy_control_links_impl ON policy_control_links(implementation_id);
+
+-- ============================================================================
+-- PASSWORD HISTORY (TAC-003 / NIST IA-5)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS password_history (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  password_hash TEXT NOT NULL,
+  salt TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_password_history_user ON password_history(user_id, created_at DESC);
+
+-- ============================================================================
+-- SECURITY INCIDENTS (TAC-006 / NIST IR)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS security_incidents (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  org_id TEXT NOT NULL,
+  incident_type TEXT NOT NULL,
+  severity TEXT NOT NULL CHECK (severity IN ('low', 'medium', 'high', 'critical')),
+  title TEXT NOT NULL,
+  description TEXT,
+  source_ip TEXT,
+  affected_user_id TEXT,
+  status TEXT DEFAULT 'open' CHECK (status IN ('open', 'investigating', 'contained', 'resolved', 'closed')),
+  detected_at TEXT DEFAULT (datetime('now')),
+  resolved_at TEXT,
+  dir_notified INTEGER DEFAULT 0,
+  dir_notification_deadline TEXT,
+  details TEXT DEFAULT '{}',
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_security_incidents_org ON security_incidents(org_id, status);
+CREATE INDEX IF NOT EXISTS idx_security_incidents_type ON security_incidents(incident_type, detected_at);

@@ -1,13 +1,11 @@
 -- ============================================================================
 -- Migration 016: Audit Log Integrity & Retention (TAC-002 / NIST AU-9, AU-11)
--- Adds hash chaining for tamper detection and password history tracking.
+-- Adds hash chaining for tamper detection, password history, and incident tracking.
+-- IDEMPOTENT: All statements safe to re-run (no bare ALTER TABLE)
+--
+-- NOTE: integrity_hash and prev_hash columns on audit_logs are also defined
+-- in schema.sql for fresh databases. This migration adds supplemental tables.
 -- ============================================================================
-
--- Add integrity hash chain column to audit logs
-ALTER TABLE audit_logs ADD COLUMN integrity_hash TEXT;
-
--- Add previous hash reference for chain verification
-ALTER TABLE audit_logs ADD COLUMN prev_hash TEXT;
 
 -- Index for efficient chain verification queries
 CREATE INDEX IF NOT EXISTS idx_audit_integrity ON audit_logs(org_id, created_at, integrity_hash);
