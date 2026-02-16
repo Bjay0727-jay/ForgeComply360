@@ -1,15 +1,26 @@
 -- ============================================================================
 -- MIGRATION 014: Asset-Finding Relationship Enhancements
 -- Adds scan history tracking for FedRAMP CM-8, RA-5 compliance
--- IDEMPOTENT: All statements safe to re-run (no bare ALTER TABLE)
 --
--- NOTE: risk_score, risk_score_updated_at, and first_seen_at columns on the
--- assets table are defined in schema.sql and created on fresh databases.
--- This migration only adds supplemental tables/indexes and records itself.
+-- NOTE: D1 does not support expression defaults in ALTER TABLE, so new columns
+-- use NULL defaults. The risk_score column already exists on the assets table
+-- from the original schema; only first_seen_at and risk_score_updated_at need
+-- to be added here.
+--
+-- D1 executes files atomically — if any statement fails the entire batch is
+-- rolled back, so bare ALTER TABLE is safe (it either all applies or none).
 -- ============================================================================
 
 -- ============================================================================
--- 1. ASSET SCAN HISTORY JUNCTION TABLE
+-- 1. ADD MISSING COLUMNS TO ASSETS TABLE
+-- risk_score already exists — do NOT re-add it (would cause duplicate column error)
+-- ============================================================================
+
+ALTER TABLE assets ADD COLUMN first_seen_at TEXT;
+ALTER TABLE assets ADD COLUMN risk_score_updated_at TEXT;
+
+-- ============================================================================
+-- 2. ASSET SCAN HISTORY JUNCTION TABLE
 -- Tracks which scans discovered/found each asset over time
 -- ============================================================================
 
@@ -32,20 +43,20 @@ CREATE INDEX IF NOT EXISTS idx_asset_scan_history_scan ON asset_scan_history(sca
 CREATE INDEX IF NOT EXISTS idx_asset_scan_history_seen ON asset_scan_history(seen_at DESC);
 
 -- ============================================================================
--- 2. ENSURE INDEXES EXIST (idempotent)
+-- 3. ENSURE INDEXES EXIST ON ASSETS TABLE
 -- ============================================================================
 
 CREATE INDEX IF NOT EXISTS idx_assets_first_seen ON assets(first_seen_at);
 CREATE INDEX IF NOT EXISTS idx_assets_risk_score ON assets(risk_score DESC);
 
 -- ============================================================================
--- 3. BACKFILL EXISTING DATA
+-- 4. BACKFILL EXISTING DATA
 -- ============================================================================
 
 UPDATE assets SET first_seen_at = created_at WHERE first_seen_at IS NULL;
 
 -- ============================================================================
--- 4. UPDATE SCHEMA MIGRATIONS TRACKING
+-- 5. UPDATE SCHEMA MIGRATIONS TRACKING
 -- ============================================================================
 
 INSERT OR IGNORE INTO schema_migrations (version, name, description) VALUES
