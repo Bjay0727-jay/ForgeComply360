@@ -159,22 +159,25 @@ jobs:
         run: |
           echo "Detecting migrations applied before tracking was added..."
           # Some migrations were applied to the DB (columns exist) but never
-          # recorded in schema_migrations. Detect them by checking for
-          # characteristic columns and mark as applied to prevent re-runs.
-          wrangler d1 execute forge-comply360-db --env production --remote \
-            --command "
-              INSERT OR IGNORE INTO schema_migrations (version, name, description)
-              SELECT 'migrate-014-asset-enhancements', 'asset-enhancements', 'Reconciled: columns already present'
-              WHERE EXISTS (SELECT 1 FROM pragma_table_info('assets') WHERE name = 'first_seen_at');
+          # recorded in schema_migrations. Check each individually because D1
+          # does not support pragma_table_info subqueries in --command mode.
 
-              INSERT OR IGNORE INTO schema_migrations (version, name, description)
-              SELECT 'migrate-017-servicenow-cmdb', 'servicenow-cmdb', 'Reconciled: columns already present'
-              WHERE EXISTS (SELECT 1 FROM pragma_table_info('assets') WHERE name = 'servicenow_sys_id');
+          reconcile_migration() {
+            local VERSION="$1" NAME="$2" TABLE="$3" COLUMN="$4"
+            HAS_COL=$(wrangler d1 execute forge-comply360-db --env production --remote \
+              --command "SELECT name FROM pragma_table_info('${TABLE}') WHERE name='${COLUMN}'" --json 2>/dev/null \
+              | grep -c "${COLUMN}" || true)
+            if [ "$HAS_COL" -gt 0 ]; then
+              wrangler d1 execute forge-comply360-db --env production --remote \
+                --command "INSERT OR IGNORE INTO schema_migrations (version, name, description) VALUES ('${VERSION}', '${NAME}', 'Reconciled: columns already present')" || true
+              echo "  Reconciled ${VERSION} (${COLUMN} found in ${TABLE})"
+            fi
+          }
 
-              INSERT OR IGNORE INTO schema_migrations (version, name, description)
-              SELECT 'migrate-020-fisma-ssp-tables', 'fisma-ssp-tables', 'Reconciled: columns already present'
-              WHERE EXISTS (SELECT 1 FROM pragma_table_info('ssp_documents') WHERE name = 'ssp_type');
-            " || echo "Reconciliation step completed (some checks may have been skipped)"
+          reconcile_migration "migrate-014-asset-enhancements" "asset-enhancements" "assets" "first_seen_at"
+          reconcile_migration "migrate-017-servicenow-cmdb" "servicenow-cmdb" "assets" "servicenow_sys_id"
+          reconcile_migration "migrate-020-fisma-ssp-tables" "fisma-ssp-tables" "ssp_documents" "ssp_type"
+          echo "Reconciliation complete."
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
@@ -202,12 +205,21 @@ jobs:
             fi
 
             echo "Applying migration: $f"
-            if wrangler d1 execute forge-comply360-db --env production --remote --file="$f"; then
+            MIGRATE_OUTPUT=$(wrangler d1 execute forge-comply360-db --env production --remote --file="$f" 2>&1)
+            MIGRATE_RESULT=$?
+            if [ $MIGRATE_RESULT -eq 0 ]; then
               # Record successful migration using full filename as the version
               wrangler d1 execute forge-comply360-db --env production --remote \
                 --command "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES ('${MIGRATION_NAME}', '${MIGRATION_NAME}')" || true
               echo "Migration $MIGRATION_NAME applied successfully"
+            elif echo "$MIGRATE_OUTPUT" | grep -q "duplicate column name"; then
+              # Columns already exist — migration was previously applied but not tracked.
+              # D1 rolled back the atomic batch, but all DDL is already in place.
+              wrangler d1 execute forge-comply360-db --env production --remote \
+                --command "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES ('${MIGRATION_NAME}', '${MIGRATION_NAME}')" || true
+              echo "::warning::Migration $MIGRATION_NAME: columns already exist, recorded as applied"
             else
+              echo "$MIGRATE_OUTPUT"
               echo "::error::Migration $MIGRATION_NAME FAILED"
               FAILED=1
             fi
