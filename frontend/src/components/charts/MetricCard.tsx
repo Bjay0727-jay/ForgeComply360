@@ -25,6 +25,8 @@ interface MetricCardProps {
   accentColor?: string;
   icon?: React.ReactNode;
   href?: string;
+  onClick?: () => void;
+  selected?: boolean;
   dark?: boolean;
 }
 
@@ -37,6 +39,8 @@ export function MetricCard({
   accentColor,
   icon,
   href,
+  onClick,
+  selected,
   dark: darkProp = true,
 }: MetricCardProps) {
   const { isDark } = useTheme();
@@ -46,11 +50,18 @@ export function MetricCard({
 
   const content = (
     <div
-      className={`rounded-xl border p-4 relative overflow-hidden transition-shadow hover:shadow-lg ${
-        dark
-          ? 'bg-gray-700 border-blue-500/60 text-white'
-          : 'bg-white border-blue-300 text-gray-900'
+      className={`rounded-xl border p-4 relative overflow-hidden transition-all hover:shadow-lg ${
+        onClick ? 'cursor-pointer' : ''
+      } ${
+        selected
+          ? dark
+            ? 'bg-gray-600 border-blue-400 ring-2 ring-blue-400/50 text-white'
+            : 'bg-blue-50 border-blue-500 ring-2 ring-blue-500/50 text-gray-900'
+          : dark
+            ? 'bg-gray-700 border-blue-500/60 text-white'
+            : 'bg-white border-blue-300 text-gray-900'
       }`}
+      onClick={onClick}
     >
       {/* Accent bar at top */}
       <div

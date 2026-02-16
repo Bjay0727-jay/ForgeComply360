@@ -249,3 +249,47 @@ export const ComplianceScoresResponseSchema = z.object({
 });
 
 export type ComplianceScoresResponse = z.infer<typeof ComplianceScoresResponseSchema>;
+
+// Dashboard Recommendation
+export const DashboardRecommendationSchema = z.object({
+  id: z.string(),
+  type: z.enum([
+    'critical_control', 'evidence_gap', 'poam_overdue', 'expiring_evidence', 'control_gap',
+    'policy_review', 'vendor_assessment', 'system_authorization',
+    'evidence_schedule_overdue', 'risk_treatment_overdue', 'audit_task_due'
+  ]),
+  priority: z.enum(['critical', 'high', 'medium', 'low']),
+  title: z.string(),
+  description: z.string(),
+  framework_name: z.string().optional(),
+  control_id: z.string().optional(),
+  affected_count: z.number().default(0),
+  action_text: z.string(),
+  action_href: z.string(),
+  impact_score: z.number().default(0),
+});
+
+export type DashboardRecommendation = z.infer<typeof DashboardRecommendationSchema>;
+
+// Recommendations summary
+export const RecommendationsSummarySchema = z.object({
+  critical: z.number().default(0),
+  high: z.number().default(0),
+  medium: z.number().default(0),
+  low: z.number().default(0),
+});
+
+export type RecommendationsSummary = z.infer<typeof RecommendationsSummarySchema>;
+
+// Dashboard recommendations response
+export const DashboardRecommendationsResponseSchema = z.object({
+  recommendations: z.array(DashboardRecommendationSchema).default([]),
+  summary: RecommendationsSummarySchema.default({
+    critical: 0,
+    high: 0,
+    medium: 0,
+    low: 0,
+  }),
+});
+
+export type DashboardRecommendationsResponse = z.infer<typeof DashboardRecommendationsResponseSchema>;

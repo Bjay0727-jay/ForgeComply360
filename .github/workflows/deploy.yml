@@ -29,10 +29,55 @@ jobs:
       - name: Run frontend tests
         run: cd frontend && npm test
 
+  # ── Stage 1: Deploy to demo environment for smoke testing ──
+  deploy-staging:
+    name: Deploy to Staging (Demo)
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Deploy Worker to demo
+        run: npx wrangler deploy --env demo
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+      - name: Install frontend dependencies
+        run: cd frontend && npm ci
+
+      - name: Build frontend (staging)
+        run: cd frontend && npm run build
+        env:
+          VITE_API_URL: https://forge-comply360-api-demo.stanley-riley.workers.dev
+
+      - name: Deploy frontend to staging
+        run: npx wrangler pages deploy frontend/dist --project-name=forgecomply360 --branch=demo
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+      - name: Smoke test staging API
+        run: |
+          echo "Verifying staging API health..."
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://forge-comply360-api-demo.stanley-riley.workers.dev/health)
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "::error::Staging health check failed with HTTP $HTTP_STATUS"
+            exit 1
+          fi
+          echo "Staging API healthy (HTTP $HTTP_STATUS)"
+
+  # ── Stage 2: Deploy to production (after staging succeeds) ──
   deploy-api:
     name: Deploy Workers API
     runs-on: ubuntu-latest
-    needs: test
+    needs: deploy-staging
     steps:
       - uses: actions/checkout@v4
 
@@ -52,7 +97,7 @@ jobs:
   deploy-frontend:
     name: Deploy Frontend (Pages)
     runs-on: ubuntu-latest
-    needs: test
+    needs: deploy-staging
     steps:
       - uses: actions/checkout@v4
 
@@ -92,37 +137,108 @@ jobs:
       - name: Install Wrangler
         run: npm install -g wrangler@3
 
+      - name: Bootstrap schema_migrations table
+        run: |
+          echo "Ensuring schema_migrations table exists..."
+          wrangler d1 execute forge-comply360-db --env production --remote \
+            --command "CREATE TABLE IF NOT EXISTS schema_migrations (
+              id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+              version TEXT NOT NULL UNIQUE,
+              name TEXT NOT NULL,
+              description TEXT,
+              applied_at TEXT DEFAULT (datetime('now')),
+              applied_by TEXT,
+              checksum TEXT,
+              execution_time_ms INTEGER,
+              success INTEGER DEFAULT 1
+            );"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+      - name: Reconcile untracked migrations
+        run: |
+          echo "Detecting migrations applied before tracking was added..."
+          # Some migrations were applied to the DB (columns exist) but never
+          # recorded in schema_migrations. Detect them by checking for
+          # characteristic columns and mark as applied to prevent re-runs.
+          wrangler d1 execute forge-comply360-db --env production --remote \
+            --command "
+              INSERT OR IGNORE INTO schema_migrations (version, name, description)
+              SELECT 'migrate-014-asset-enhancements', 'asset-enhancements', 'Reconciled: columns already present'
+              WHERE EXISTS (SELECT 1 FROM pragma_table_info('assets') WHERE name = 'first_seen_at');
+
+              INSERT OR IGNORE INTO schema_migrations (version, name, description)
+              SELECT 'migrate-017-servicenow-cmdb', 'servicenow-cmdb', 'Reconciled: columns already present'
+              WHERE EXISTS (SELECT 1 FROM pragma_table_info('assets') WHERE name = 'servicenow_sys_id');
+
+              INSERT OR IGNORE INTO schema_migrations (version, name, description)
+              SELECT 'migrate-020-fisma-ssp-tables', 'fisma-ssp-tables', 'Reconciled: columns already present'
+              WHERE EXISTS (SELECT 1 FROM pragma_table_info('ssp_documents') WHERE name = 'ssp_type');
+            " || echo "Reconciliation step completed (some checks may have been skipped)"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
       - name: Run Migrations
         run: |
-          for f in database/migrate-*.sql; do
-            if [ -f "$f" ]; then
-              echo "Running migration: $f"
-              wrangler d1 execute forge-comply360-db --env production --remote --file="$f" || echo "⚠️  Migration $f failed (likely already applied) — continuing"
+          FAILED=0
+          for f in $(ls database/migrate-*.sql 2>/dev/null | sort); do
+            MIGRATION_NAME=$(basename "$f" .sql)
+            # Extract the 3-digit number: migrate-001-foo → 001
+            MIGRATION_NUM=$(echo "$MIGRATION_NAME" | sed 's/^migrate-\([0-9]*\)-.*/\1/')
+            echo "::group::Migration: $MIGRATION_NAME"
+
+            # Check if migration was already applied.
+            # Migration 013 seeded historical versions as short numbers ('001'),
+            # while the runner records full filenames ('migrate-001-poam-enhancements').
+            # Check for BOTH formats to handle either convention.
+            ALREADY_APPLIED=$(wrangler d1 execute forge-comply360-db --env production --remote \
+              --command "SELECT version FROM schema_migrations WHERE version = '${MIGRATION_NAME}' OR version = '${MIGRATION_NUM}'" --json 2>/dev/null \
+              | grep -cE "(${MIGRATION_NAME}|\"${MIGRATION_NUM}\")" || true)
+
+            if [ "$ALREADY_APPLIED" -gt 0 ]; then
+              echo "Skipping $MIGRATION_NAME (already applied)"
+              echo "::endgroup::"
+              continue
             fi
+
+            echo "Applying migration: $f"
+            if wrangler d1 execute forge-comply360-db --env production --remote --file="$f"; then
+              # Record successful migration using full filename as the version
+              wrangler d1 execute forge-comply360-db --env production --remote \
+                --command "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES ('${MIGRATION_NAME}', '${MIGRATION_NAME}')" || true
+              echo "Migration $MIGRATION_NAME applied successfully"
+            else
+              echo "::error::Migration $MIGRATION_NAME FAILED"
+              FAILED=1
+            fi
+            echo "::endgroup::"
           done
+          if [ "$FAILED" -ne 0 ]; then
+            echo "::error::One or more migrations failed. Aborting deployment."
+            exit 1
+          fi
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
       # Note: Full schema.sql is only needed for fresh databases.
       # For existing production databases, use incremental migrate-*.sql files.
-      # Skipping full schema execution to avoid D1 timeout/reset errors on large files.
       - name: Verify DB Connection
         run: wrangler d1 execute forge-comply360-db --env production --remote --command "SELECT COUNT(*) FROM organizations"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
-      # Seed steps use INSERT OR IGNORE so they're safe to run multiple times
+      # Seed steps use INSERT OR IGNORE so they are idempotent and safe to re-run.
       - name: Seed DB
-        run: wrangler d1 execute forge-comply360-db --env production --remote --file=database/seed.sql || echo "⚠️  Seed failed (likely already seeded) — continuing"
+        run: wrangler d1 execute forge-comply360-db --env production --remote --file=database/seed.sql
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
       - name: Seed Expanded Controls
-        run: wrangler d1 execute forge-comply360-db --env production --remote --file=database/seed-controls-expanded.sql || echo "⚠️  Seed controls failed — continuing"
+        run: wrangler d1 execute forge-comply360-db --env production --remote --file=database/seed-controls-expanded.sql
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
       - name: Seed TCF Controls
-        run: wrangler d1 execute forge-comply360-db --env production --remote --file=database/seed-tcf-controls.sql || echo "⚠️  Seed TCF controls failed — continuing"
+        run: wrangler d1 execute forge-comply360-db --env production --remote --file=database/seed-tcf-controls.sql
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

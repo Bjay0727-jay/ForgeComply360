@@ -18,6 +18,7 @@ import { PageLoader } from './components/PageLoader';
 // ============================================================================
 import { LoginPage } from './pages/LoginPage';
 import { RegisterPage } from './pages/RegisterPage';
+import { ResetPasswordPage } from './pages/ResetPasswordPage';
 import { OnboardingWizard } from './pages/OnboardingWizard';
 import { DashboardPage } from './pages/DashboardPage';  // Default route - keep static
 import { BadgeVerifyPage } from './pages/BadgeVerifyPage';
@@ -37,6 +38,7 @@ const ImportPage = lazy(() => import('./pages/ImportPage').then(m => ({ default:
 const RisksPage = lazy(() => import('./pages/RisksPage').then(m => ({ default: m.RisksPage })));                // 46K
 const PoliciesPage = lazy(() => import('./pages/PoliciesPage').then(m => ({ default: m.PoliciesPage })));          // 43K
 const SSPPage = lazy(() => import('./pages/SSPPage').then(m => ({ default: m.SSPPage })));                    // 36K
+const FISMASSPBuilderPage = lazy(() => import('./pages/FISMASSPBuilderPage').then(m => ({ default: m.FISMASSPBuilderPage }))); // FISMA 23-section SSP
 const AssessmentWizardPage = lazy(() => import('./pages/AssessmentWizardPage').then(m => ({ default: m.AssessmentWizardPage }))); // 35K
 const VendorsPage = lazy(() => import('./pages/VendorsPage').then(m => ({ default: m.VendorsPage })));            // 34K
 const MonitoringPage = lazy(() => import('./pages/MonitoringPage').then(m => ({ default: m.MonitoringPage })));      // 34K
@@ -67,6 +69,7 @@ const EvidenceTestResultsPage = lazy(() => import('./pages/EvidenceTestResultsPa
 const EvidencePage = lazy(() => import('./pages/EvidencePage').then(m => ({ default: m.EvidencePage })));          // 11K
 const QuestionnairesPage = lazy(() => import('./pages/QuestionnairesPage').then(m => ({ default: m.QuestionnairesPage }))); // 11K
 const ConnectorsPage = lazy(() => import('./pages/ConnectorsPage').then(m => ({ default: m.ConnectorsPage })));      // 11K
+const ServiceNowPage = lazy(() => import('./pages/ServiceNowPage').then(m => ({ default: m.ServiceNowPage })));      // 12K
 const QuestionnaireResponsesPage = lazy(() => import('./pages/QuestionnaireResponsesPage').then(m => ({ default: m.QuestionnaireResponsesPage }))); // 10K
 const NotificationsPage = lazy(() => import('./pages/NotificationsPage').then(m => ({ default: m.NotificationsPage }))); // 9K
 const PortalActivityPage = lazy(() => import('./pages/PortalActivityPage').then(m => ({ default: m.PortalActivityPage }))); // 7K
@@ -139,6 +142,7 @@ function AppRoutes() {
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/register" element={<RegisterPage />} />
+        <Route path="/reset-password" element={<ResetPasswordPage />} />
         {/* Public routes - no auth required */}
         <Route path="/verify/:code" element={<BadgeVerifyPage />} />
         <Route path="/q/:token" element={<LazyPage><PublicQuestionnairePage /></LazyPage>} />
@@ -189,6 +193,7 @@ function AppRoutes() {
 
           {/* Documentation */}
           <Route path="/ssp" element={<LazyPage><SSPPage /></LazyPage>} />
+          <Route path="/ssp/fisma/:id" element={<ProtectedRoute minRole="analyst"><LazyPage><FISMASSPBuilderPage /></LazyPage></ProtectedRoute>} />
           <Route path="/ssp/compare" element={<ProtectedRoute minRole="analyst"><LazyPage><SSPComparisonPage /></LazyPage></ProtectedRoute>} />
           <Route path="/policies" element={<LazyPage><PoliciesPage /></LazyPage>} />
           <Route path="/audit-prep" element={<ProtectedRoute minRole="analyst"><LazyPage><AuditPrepPage /></LazyPage></ProtectedRoute>} />
@@ -208,6 +213,7 @@ function AppRoutes() {
           {/* Administration */}
           <Route path="/users" element={<ProtectedRoute minRole="admin"><LazyPage><UsersPage /></LazyPage></ProtectedRoute>} />
           <Route path="/connectors" element={<ProtectedRoute minRole="admin"><LazyPage><ConnectorsPage /></LazyPage></ProtectedRoute>} />
+          <Route path="/servicenow" element={<ProtectedRoute minRole="manager"><LazyPage><ServiceNowPage /></LazyPage></ProtectedRoute>} />
           <Route path="/portals" element={<ProtectedRoute minRole="admin"><LazyPage><AuditorPortalsPage /></LazyPage></ProtectedRoute>} />
           <Route path="/portals/new" element={<ProtectedRoute minRole="admin"><LazyPage><PortalBuilderPage /></LazyPage></ProtectedRoute>} />
           <Route path="/portals/:id/edit" element={<ProtectedRoute minRole="admin"><LazyPage><PortalBuilderPage /></LazyPage></ProtectedRoute>} />

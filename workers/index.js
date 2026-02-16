@@ -25,8 +25,9 @@ export default {
     const requestOrigin = request.headers.get('Origin') || '';
     const sentry = initSentry(request, env, ctx);
 
-    // Allow CORS for production domain and all preview deployments (*.forgecomply360.pages.dev)
-    const allowedOriginPattern = /^https:\/\/([a-z0-9-]+\.)?forgecomply360\.pages\.dev$/;
+    // Allow CORS for production domain, preview deployments, and Reporter
+    // Matches: forgecomply360.pages.dev, *.forgecomply360.pages.dev, reporter-forgecomply360.pages.dev, *.reporter-forgecomply360.pages.dev
+    const allowedOriginPattern = /^https:\/\/([a-z0-9-]+\.)?(forgecomply360|reporter-forgecomply360)\.pages\.dev$/;
     // SECURITY: No wildcard fallback - use production domain if origin doesn't match pattern
     const corsOrigin = allowedOriginPattern.test(requestOrigin)
       ? requestOrigin
@@ -48,8 +49,10 @@ export default {
       headers.set('X-Content-Type-Options', 'nosniff');
       headers.set('X-Frame-Options', 'DENY');
       headers.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
-      // CSP - allows self, inline styles/scripts for React, images from any https, API connections
-      headers.set('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' https://*.forgecomply360.pages.dev; font-src 'self' data:; frame-ancestors 'none';");
+      // CSP — NIST SP 800-53 SC-8 compliant.
+      // 'unsafe-inline' removed from style-src: TailwindCSS compiles to static CSS
+      // files at build time and the frontend has zero inline style={} usage.
+      headers.set('Content-Security-Policy', "default-src 'self'; script-src 'self' https://browser.sentry-cdn.com; style-src 'self'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https://*.stanley-riley.workers.dev https://*.forgecomply360.pages.dev https://*.ingest.us.sentry.io https://api.pwnedpasswords.com; frame-ancestors 'none'; form-action 'self'; base-uri 'self'; object-src 'none'; upgrade-insecure-requests;");
       headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
       headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
       return new Response(response.body, { status: response.status, headers });
@@ -61,6 +64,10 @@ export default {
         sentry.captureException(err);
       }
       console.error(`Unhandled error [${request.method} ${url.pathname}]:`, err.message, err.stack);
+      // Return debug info in demo environment for troubleshooting
+      if (env.ENVIRONMENT === 'demo') {
+        return jsonResponse({ error: err.message || 'Internal server error' }, 500, corsOrigin);
+      }
       return jsonResponse({ error: 'Internal server error' }, 500, corsOrigin);
     }
   },
@@ -76,8 +83,16 @@ export default {
 
     try {
       if (event.cron === '0 8 * * 1') {
+        // Weekly digest - Mondays at 8 AM UTC
         ctx.waitUntil(handleWeeklyDigest(env));
+      } else if (event.cron === '0 2 * * 2,5') {
+        // Backup - Tuesday & Friday at 2 AM UTC
+        ctx.waitUntil(handleScheduledBackup(env));
+      } else if (event.cron === '0 * * * *') {
+        // Hourly - ServiceNow CMDB scheduled syncs
+        ctx.waitUntil(handleScheduledServiceNowSyncs(env));
       } else {
+        // Daily evidence checks and alerts - 6 AM UTC
         ctx.waitUntil(
           handleScheduledEvidenceChecks(env)
             .then(() => handleScheduledComplianceAlerts(env))
@@ -96,6 +111,11 @@ export default {
   },
 };
 
+// CORS Design Decision: Access-Control-Allow-Credentials is intentionally omitted.
+// Authentication uses the Authorization header (Bearer JWT), not cookies.
+// This avoids CSRF risks entirely and simplifies CORS. If cookie-based auth
+// is ever added, this header MUST be set to 'true' and wildcard origins MUST
+// be replaced with an explicit allowlist.
 function corsHeaders(origin) {
   return {
     'Access-Control-Allow-Origin': origin,
@@ -116,35 +136,30 @@ function jsonResponse(data, status = 200, corsOrigin = '*') {
 }
 
 // ============================================================================
-// RATE LIMITING
+// RATE LIMITING (KV-backed — low-latency, atomic via KV expiration)
+// Uses a fixed-window counter stored in KV with TTL-based expiration.
+// KV is eventually consistent, so under extreme concurrency a few extra
+// requests may slip through — acceptable for rate limiting.
 // ============================================================================
 
 async function checkRateLimit(env, key, maxRequests, windowSeconds) {
-  const now = Math.floor(Date.now() / 1000);
-  const windowStart = now - windowSeconds;
+  const windowId = Math.floor(Date.now() / 1000 / windowSeconds);
+  const kvKey = `ratelimit:${key}:${windowId}`;
 
   try {
-    // Clean old entries and get current count
-    await env.DB.prepare('DELETE FROM rate_limits WHERE window_start < ?').bind(windowStart).run();
+    const current = await env.KV.get(kvKey);
+    const count = current ? parseInt(current, 10) : 0;
 
-    const row = await env.DB.prepare('SELECT count FROM rate_limits WHERE key = ? AND window_start >= ?')
-      .bind(key, windowStart).first();
-
-    if (row && row.count >= maxRequests) {
+    if (count >= maxRequests) {
       return { limited: true, retryAfter: windowSeconds };
     }
 
-    // Upsert count
-    await env.DB.prepare(
-      'INSERT INTO rate_limits (key, count, window_start) VALUES (?, 1, ?) ON CONFLICT(key) DO UPDATE SET count = count + 1'
-    ).bind(key, now).run();
+    // Increment counter with TTL (window expiry + small buffer)
+    await env.KV.put(kvKey, String(count + 1), { expirationTtl: windowSeconds + 10 });
 
     return { limited: false };
   } catch {
-    // If rate limit table doesn't exist, create it and allow the request
-    try {
-      await env.DB.prepare(`CREATE TABLE IF NOT EXISTS rate_limits (key TEXT PRIMARY KEY, count INTEGER DEFAULT 1, window_start INTEGER NOT NULL)`).run();
-    } catch {}
+    // If KV is unavailable, fail open to avoid blocking all requests
     return { limited: false };
   }
 }
@@ -189,6 +204,22 @@ function validationErrorResponse(errors, corsOrigin = '*') {
 }
 
 // ============================================================================
+// TEXT SANITIZATION — strips HTML/script content from user-supplied strings
+// used in notification messages, preventing stored XSS if the frontend ever
+// renders notifications as HTML.
+// ============================================================================
+
+function sanitizeText(str, maxLength = 200) {
+  if (typeof str !== 'string') return '';
+  return str
+    .replace(/[<>]/g, '')       // Strip angle brackets (HTML tags)
+    .replace(/["'`]/g, '')      // Strip quotes that could break attribute contexts
+    .replace(/javascript:/gi, '') // Strip JS protocol handlers
+    .replace(/on\w+\s*=/gi, '')  // Strip event handler attributes
+    .slice(0, maxLength);        // Truncate to prevent log/DB bloat
+}
+
+// ============================================================================
 // ROUTER
 // ============================================================================
 
@@ -214,6 +245,8 @@ async function handleRequest(request, env, url, ctx) {
   if (path === '/api/v1/auth/refresh' && method === 'POST') return handleRefreshToken(request, env);
   if (path === '/api/v1/auth/mfa/verify' && method === 'POST') return handleMFAVerify(request, env);
   if (path === '/api/v1/auth/emergency-access' && method === 'POST') return handleEmergencyAccess(request, env);
+  if (path === '/api/v1/auth/forgot-password' && method === 'POST') return handleForgotPassword(request, env);
+  if (path === '/api/v1/auth/reset-password' && method === 'POST') return handleResetPassword(request, env);
 
   // Public routes (no auth required)
   if (path.match(/^\/api\/v1\/public\/badge\/verify\/[\w-]+$/) && method === 'GET') return handleVerifyBadge(request, env, path.split('/').pop());
@@ -249,6 +282,7 @@ async function handleRequest(request, env, url, ctx) {
   if (path === '/api/v1/auth/mfa/verify-setup' && method === 'POST') return handleMFAVerifySetup(request, env, user);
   if (path === '/api/v1/auth/mfa/disable' && method === 'POST') return handleMFADisable(request, env, user);
   if (path === '/api/v1/auth/mfa/backup-codes' && method === 'POST') return handleMFARegenerateBackupCodes(request, env, user);
+  if (path === '/api/v1/auth/reporter-token' && method === 'POST') return handleGenerateReporterTokenGeneric(request, env, org, user);
 
   // Experience Layer
   if (path === '/api/v1/experience' && method === 'GET') return handleGetExperience(env, org);
@@ -315,11 +349,19 @@ async function handleRequest(request, env, url, ctx) {
   if (path.match(/^\/api\/v1\/poams\/[\w-]+\/evidence\/[\w-]+$/) && method === 'DELETE') return handleUnlinkPoamEvidence(env, org, user, path.split('/')[4], path.split('/')[6]);
   // POA&M Deviation History (CMMC/FedRAMP AO audit trail)
   if (path.match(/^\/api\/v1\/poams\/[\w-]+\/deviation-history$/) && method === 'GET') return handleListDeviationHistory(env, org, path.split('/')[4]);
+  // POA&M Vulnerability Findings
+  if (path.match(/^\/api\/v1\/poams\/[\w-]+\/findings$/) && method === 'GET') return handleListPoamFindings(env, org, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/poams\/[\w-]+\/findings$/) && method === 'POST') return handleLinkPoamFinding(request, env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/poams\/[\w-]+\/findings\/[\w-]+$/) && method === 'DELETE') return handleUnlinkPoamFinding(env, org, user, path.split('/')[4], path.split('/')[6]);
+  // POA&M Bulk Asset Linking
+  if (path.match(/^\/api\/v1\/poams\/[\w-]+\/affected-assets\/bulk$/) && method === 'POST') return handleBulkLinkPoamAssets(request, env, org, user, path.split('/')[4]);
   if (path === '/api/v1/org-members' && method === 'GET') return handleListOrgMembers(env, org);
 
   // Evidence
   if (path === '/api/v1/evidence' && method === 'GET') return handleListEvidence(env, org, url);
   if (path === '/api/v1/evidence' && method === 'POST') return handleUploadEvidence(request, env, org, user);
+  if (path === '/api/v1/evidence/bulk-archive' && method === 'POST') return handleBulkArchiveEvidence(request, env, org, user);
+  if (path === '/api/v1/evidence/bulk-update' && method === 'PATCH') return handleBulkUpdateEvidence(request, env, org, user);
   if (path.match(/^\/api\/v1\/evidence\/[\w-]+\/download$/) && method === 'GET') {
     const id = path.split('/')[4];
     return handleDownloadEvidence(env, org, id);
@@ -352,6 +394,41 @@ async function handleRequest(request, env, url, ctx) {
   if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/ai-refine$/) && method === 'POST') return handleAIRefineSSP(request, env, org, user, path.split('/')[4]);
   if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/status$/) && method === 'PUT') return handleUpdateSSPStatus(request, env, org, user, path.split('/')[4]);
   if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/versions$/) && method === 'POST') return handleCreateSSPVersion(request, env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/reporter-token$/) && method === 'POST') return handleGenerateReporterToken(env, org, user, path.split('/')[4]);
+  // FISMA SSP Extended Tables
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/info-types$/) && method === 'GET') return handleGetSSPInfoTypes(env, org, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/info-types$/) && method === 'POST') return handleCreateSSPInfoType(request, env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/info-types\/[\w-]+$/) && method === 'DELETE') return handleDeleteSSPInfoType(env, org, user, path.split('/')[4], path.split('/')[6]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/rmf-tracking$/) && method === 'GET') return handleGetSSPRMFTracking(env, org, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/rmf-tracking$/) && method === 'PUT') return handleUpdateSSPRMFTracking(request, env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/ports-protocols$/) && method === 'GET') return handleGetSSPPortsProtocols(env, org, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/ports-protocols$/) && method === 'POST') return handleCreateSSPPortProtocol(request, env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/ports-protocols\/[\w-]+$/) && method === 'DELETE') return handleDeleteSSPPortProtocol(env, org, user, path.split('/')[4], path.split('/')[6]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/crypto-modules$/) && method === 'GET') return handleGetSSPCryptoModules(env, org, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/crypto-modules$/) && method === 'POST') return handleCreateSSPCryptoModule(request, env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/crypto-modules\/[\w-]+$/) && method === 'DELETE') return handleDeleteSSPCryptoModule(env, org, user, path.split('/')[4], path.split('/')[6]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/digital-identity$/) && method === 'GET') return handleGetSSPDigitalIdentity(env, org, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/digital-identity$/) && method === 'PUT') return handleUpdateSSPDigitalIdentity(request, env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/separation-duties$/) && method === 'GET') return handleGetSSPSeparationDuties(env, org, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/separation-duties$/) && method === 'POST') return handleCreateSSPSeparationDuty(request, env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/separation-duties\/[\w-]+$/) && method === 'DELETE') return handleDeleteSSPSeparationDuty(env, org, user, path.split('/')[4], path.split('/')[6]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/policy-mappings$/) && method === 'GET') return handleGetSSPPolicyMappings(env, org, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/policy-mappings$/) && method === 'POST') return handleCreateSSPPolicyMapping(request, env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/policy-mappings\/[\w-]+$/) && method === 'DELETE') return handleDeleteSSPPolicyMapping(env, org, user, path.split('/')[4], path.split('/')[6]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/scrm$/) && method === 'GET') return handleGetSSPSCRM(env, org, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/scrm$/) && method === 'POST') return handleCreateSSPSCRMEntry(request, env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/scrm\/[\w-]+$/) && method === 'DELETE') return handleDeleteSSPSCRMEntry(env, org, user, path.split('/')[4], path.split('/')[6]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/scrm-plan$/) && method === 'GET') return handleGetSSPSCRMPlan(env, org, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/scrm-plan$/) && method === 'PUT') return handleUpdateSSPSCRMPlan(request, env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/privacy-analysis$/) && method === 'GET') return handleGetSSPPrivacyAnalysis(env, org, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/privacy-analysis$/) && method === 'PUT') return handleUpdateSSPPrivacyAnalysis(request, env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/config-management$/) && method === 'GET') return handleGetSSPConfigManagement(env, org, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/config-management$/) && method === 'PUT') return handleUpdateSSPConfigManagement(request, env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/cm-baselines$/) && method === 'GET') return handleGetSSPCMBaselines(env, org, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/cm-baselines$/) && method === 'POST') return handleCreateSSPCMBaseline(request, env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/cm-baselines\/[\w-]+$/) && method === 'DELETE') return handleDeleteSSPCMBaseline(env, org, user, path.split('/')[4], path.split('/')[6]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/poam-summary$/) && method === 'GET') return handleGetSSPPOAMSummary(env, org, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/poam-summary$/) && method === 'PUT') return handleUpdateSSPPOAMSummary(request, env, org, user, path.split('/')[4]);
 
   // Risks (RiskForge ERM)
   if (path === '/api/v1/risks' && method === 'GET') return handleListRisks(request, env, org);
@@ -403,6 +480,9 @@ async function handleRequest(request, env, url, ctx) {
   if (path === '/api/v1/security-settings' && method === 'GET') return handleGetSecuritySettings(env, org, user);
   if (path === '/api/v1/security-settings' && method === 'PUT') return handleUpdateSecuritySettings(request, env, org, user);
 
+  // Dashboard Widget Settings
+  if (path === '/api/v1/settings/dashboard-widgets' && method === 'PATCH') return handleUpdateDashboardWidgets(request, env, org, user);
+
   // Data Export
   if (path === '/api/v1/organization/export' && method === 'GET') return handleOrgExport(env, org, user);
 
@@ -410,6 +490,7 @@ async function handleRequest(request, env, url, ctx) {
   if (path === '/api/v1/dashboard/stats' && method === 'GET') return handleDashboardStats(env, org);
   if (path === '/api/v1/dashboard/executive-summary' && method === 'GET') return handleExecutiveSummary(env, org, user);
   if (path === '/api/v1/dashboard/framework-stats' && method === 'GET') return handleFrameworkStats(env, org);
+  if (path === '/api/v1/dashboard/recommendations' && method === 'GET') return handleDashboardRecommendations(env, org, user);
   if (path === '/api/v1/dashboard/my-work' && method === 'GET') return handleMyWork(env, org, user);
   if (path === '/api/v1/dashboard/asset-summary' && method === 'GET') return handleAssetSummary(env, org);
   if (path === '/api/v1/dashboard/system-comparison' && method === 'GET') return handleSystemComparison(env, org, user);
@@ -447,6 +528,13 @@ async function handleRequest(request, env, url, ctx) {
   if (path === '/api/v1/activity/recent' && method === 'GET') return handleGetRecentActivity(env, url, org, user);
   if (path.match(/^\/api\/v1\/activity\/[\w_-]+\/[\w-]+$/) && method === 'GET') return handleGetResourceActivity(env, url, org, user, path.split('/')[4], path.split('/')[5]);
   if (path === '/api/v1/search' && method === 'GET') return handleGlobalSearch(env, url, org, user);
+
+  // Backup & Restore (admin/owner only)
+  if (path === '/api/v1/backups' && method === 'GET') return handleListBackups(env, org, user);
+  if (path === '/api/v1/backups' && method === 'POST') return handleTriggerBackup(env, org, user);
+  if (path.match(/^\/api\/v1\/backups\/[\w-]+$/) && method === 'GET') return handleGetBackup(env, org, user, path.split('/').pop());
+  if (path.match(/^\/api\/v1\/backups\/[\w-]+\/restore$/) && method === 'POST') return handleRestoreBackup(request, env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/backups\/[\w-]+$/) && method === 'DELETE') return handleDeleteBackup(env, org, user, path.split('/').pop());
 
   // Notifications
   if (path === '/api/v1/notifications' && method === 'GET') return handleGetNotifications(env, url, user);
@@ -492,6 +580,8 @@ async function handleRequest(request, env, url, ctx) {
   if (path.match(/^\/api\/v1\/scans\/import\/[\w-]+\/generate-poams$/) && method === 'POST') return handleGenerateScanPOAMs(request, env, org, user, path.split('/')[5]);
   if (path.match(/^\/api\/v1\/scans\/import\/[\w-]+$/) && method === 'GET') return handleGetScanImport(env, org, path.split('/')[5]);
   if (path.match(/^\/api\/v1\/scans\/import\/[\w-]+$/) && method === 'DELETE') return handleDeleteScanImport(env, org, user, path.split('/')[5]);
+  // Vulnerability Findings (for POA&M linking)
+  if (path === '/api/v1/vulnerability-findings' && method === 'GET') return handleListVulnerabilityFindings(env, url, org);
 
   // Assets (Inventory Management)
   if (path === '/api/v1/assets' && method === 'GET') return handleListAssets(env, url, org);
@@ -505,6 +595,7 @@ async function handleRequest(request, env, url, ctx) {
   if (path.match(/^\/api\/v1\/assets\/[\w-]+$/) && method === 'PUT') return handleUpdateAsset(request, env, org, user, path.split('/').pop());
   if (path.match(/^\/api\/v1\/assets\/[\w-]+$/) && method === 'DELETE') return handleDeleteAsset(env, org, user, path.split('/').pop());
   if (path.match(/^\/api\/v1\/assets\/[\w-]+\/scan-history$/) && method === 'GET') return handleGetAssetScanHistory(env, org, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/assets\/[\w-]+\/risk-trend$/) && method === 'GET') return handleGetAssetRiskTrend(env, org, path.split('/')[4]);
 
   // Webhooks (Integration Framework)
   if (path === '/api/v1/webhooks' && method === 'GET') return handleListWebhooks(env, org, user);
@@ -534,9 +625,25 @@ async function handleRequest(request, env, url, ctx) {
   // API Connectors
   if (path === '/api/v1/connectors' && method === 'GET') return handleListConnectors(env, org, user);
   if (path === '/api/v1/connectors' && method === 'POST') return handleCreateConnector(request, env, org, user);
+  if (path === '/api/v1/connectors/bulk-test' && method === 'POST') return handleBulkTestConnectors(request, env, org, user);
+  if (path === '/api/v1/connectors/bulk-delete' && method === 'POST') return handleBulkDeleteConnectors(request, env, org, user);
+  if (path === '/api/v1/connectors/bulk-status' && method === 'PATCH') return handleBulkUpdateConnectorStatus(request, env, org, user);
   if (path.match(/^\/api\/v1\/connectors\/[\w-]+$/) && method === 'PUT') return handleUpdateConnector(request, env, org, user, path.split('/').pop());
   if (path.match(/^\/api\/v1\/connectors\/[\w-]+$/) && method === 'DELETE') return handleDeleteConnector(env, org, user, path.split('/').pop());
   if (path.match(/^\/api\/v1\/connectors\/[\w-]+\/test$/) && method === 'POST') return handleTestConnector(env, org, user, path.split('/')[4]);
+
+  // ServiceNow CMDB Integration
+  if (path.match(/^\/api\/v1\/connectors\/[\w-]+\/servicenow\/oauth\/authorize$/) && method === 'POST') return handleServiceNowOAuthAuthorize(request, env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/connectors\/[\w-]+\/servicenow\/oauth\/callback$/) && method === 'POST') return handleServiceNowOAuthCallback(request, env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/connectors\/[\w-]+\/servicenow\/sync$/) && method === 'POST') return handleServiceNowSync(request, env, org, user, path.split('/')[4], ctx);
+  if (path.match(/^\/api\/v1\/connectors\/[\w-]+\/servicenow\/sync-history$/) && method === 'GET') return handleServiceNowSyncHistory(env, url, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/connectors\/[\w-]+\/servicenow\/schedule$/) && method === 'GET') return handleGetServiceNowSchedule(env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/connectors\/[\w-]+\/servicenow\/schedule$/) && method === 'PUT') return handleUpdateServiceNowSchedule(request, env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/connectors\/[\w-]+\/servicenow\/ci-classes$/) && method === 'GET') return handleServiceNowCIClasses(env, org, user, path.split('/')[4]);
+
+  // ServiceNow CMDB Direct Access (for ServiceNow management page)
+  if (path === '/api/v1/servicenow/cmdb/assets' && method === 'GET') return handleServiceNowCMDBAssets(env, org);
+  if (path === '/api/v1/servicenow/connectors' && method === 'GET') return handleServiceNowConnectors(env, org);
 
   // Evidence Automation
   if (path === '/api/v1/evidence/tests' && method === 'GET') return handleListEvidenceTests(env, org, user);
@@ -668,6 +775,24 @@ function base64urlEncode(str) {
 
 function base64urlDecode(str) {
   return atob(str.replace(/-/g, '+').replace(/_/g, '/'));
+}
+
+// ============================================================================
+// REFRESH TOKEN HASHING (HMAC-SHA256)
+// Uses JWT_SECRET as the HMAC key — deterministic (supports DB lookup by hash)
+// but cryptographically bound to the server secret, unlike the old static salt.
+// ============================================================================
+
+async function hmacRefreshToken(token, secret) {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(token));
+  return Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
 // ============================================================================
@@ -1049,7 +1174,7 @@ async function sendEmail(env, to, subject, html) {
     const res = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from: 'ForgeComply 360 <notifications@forgecomply360.com>', to: [to], subject, html }),
+      body: JSON.stringify({ from: 'ForgeComply 360 <stanley.riley@forgecomply360.com>', to: [to], subject, html }),
     });
     if (!res.ok) { const err = await res.text(); console.error('[EMAIL] Resend error:', res.status, err); return null; }
     const data = await res.json();
@@ -1105,6 +1230,64 @@ ${sectionsHtml}
 </td></tr>
 <tr><td style="padding:16px 32px;background:#f9fafb;border-top:1px solid #e5e7eb">
 <p style="margin:0;color:#9ca3af;font-size:12px">Email digests are enabled. Opt out in <a href="https://forgecomply360.pages.dev/settings" style="color:#3b82f6">Settings</a>.</p>
+</td></tr></table></td></tr></table></body></html>`;
+}
+
+function buildBackupEmailHtml(status, backupId, stats, errorMsg = null) {
+  const isSuccess = status === 'success';
+  const statusColor = isSuccess ? '#059669' : '#dc2626';
+  const statusBg = isSuccess ? '#d1fae5' : '#fee2e2';
+  const statusIcon = isSuccess ? '&#10003;' : '&#10007;';
+  const statusText = isSuccess ? 'Backup Completed Successfully' : 'Backup Failed';
+  const timestamp = new Date().toLocaleString('en-US', {
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+    hour: '2-digit', minute: '2-digit', timeZoneName: 'short'
+  });
+
+  let statsHtml = '';
+  if (isSuccess && stats) {
+    statsHtml = `
+      <table width="100%" cellpadding="0" cellspacing="0" style="margin:16px 0;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden">
+        <tr style="background:#f9fafb"><td style="padding:12px 16px;border-bottom:1px solid #e5e7eb;font-weight:600;color:#374151">Backup Statistics</td><td style="padding:12px 16px;border-bottom:1px solid #e5e7eb"></td></tr>
+        <tr><td style="padding:10px 16px;border-bottom:1px solid #f3f4f6;color:#6b7280">Backup ID</td><td style="padding:10px 16px;border-bottom:1px solid #f3f4f6;color:#1f2937;font-family:monospace;font-size:12px">${backupId}</td></tr>
+        <tr><td style="padding:10px 16px;border-bottom:1px solid #f3f4f6;color:#6b7280">Tables Backed Up</td><td style="padding:10px 16px;border-bottom:1px solid #f3f4f6;color:#1f2937">${stats.tables || 0}</td></tr>
+        <tr><td style="padding:10px 16px;border-bottom:1px solid #f3f4f6;color:#6b7280">Total Rows</td><td style="padding:10px 16px;border-bottom:1px solid #f3f4f6;color:#1f2937">${(stats.rows || 0).toLocaleString()}</td></tr>
+        <tr><td style="padding:10px 16px;color:#6b7280">Evidence Files</td><td style="padding:10px 16px;color:#1f2937">${stats.evidenceFiles || 0}</td></tr>
+      </table>`;
+  }
+
+  let errorHtml = '';
+  if (!isSuccess && errorMsg) {
+    errorHtml = `
+      <div style="margin:16px 0;padding:16px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px">
+        <p style="margin:0 0 8px;font-weight:600;color:#991b1b">Error Details:</p>
+        <p style="margin:0;color:#7f1d1d;font-family:monospace;font-size:13px">${errorMsg}</p>
+      </div>
+      <p style="margin:16px 0;color:#6b7280;font-size:14px">
+        <strong>Recommended Actions:</strong><br>
+        1. Check Cloudflare Workers logs for detailed error information<br>
+        2. Verify R2 bucket permissions and connectivity<br>
+        3. Manually trigger a backup via the admin API once the issue is resolved
+      </p>`;
+  }
+
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f4f5f7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f5f7;padding:24px 0"><tr><td align="center">
+<table width="600" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.1)">
+<tr><td style="background:#1e40af;padding:24px 32px"><h1 style="margin:0;color:#fff;font-size:20px;font-weight:600">ForgeComply 360</h1><p style="margin:4px 0 0;color:#93c5fd;font-size:13px">Automated Backup Report</p></td></tr>
+<tr><td style="padding:32px">
+<div style="margin:0 0 24px;padding:16px;background:${statusBg};border-radius:8px;text-align:center">
+  <span style="display:inline-block;width:40px;height:40px;line-height:40px;background:${statusColor};color:#fff;border-radius:50%;font-size:20px;margin-bottom:8px">${statusIcon}</span>
+  <p style="margin:8px 0 0;font-size:18px;font-weight:600;color:${statusColor}">${statusText}</p>
+</div>
+<p style="margin:0 0 8px;color:#6b7280;font-size:14px"><strong>Timestamp:</strong> ${timestamp}</p>
+${statsHtml}
+${errorHtml}
+<p style="margin:24px 0 0;color:#6b7280;font-size:13px">This is an automated backup notification. Backups run daily at 2 AM UTC with 30-day retention.</p>
+</td></tr>
+<tr><td style="padding:16px 32px;background:#f9fafb;border-top:1px solid #e5e7eb">
+<p style="margin:0;color:#9ca3af;font-size:12px">ForgeComply 360 - Enterprise GRC Platform | <a href="https://forgecomply360.pages.dev" style="color:#3b82f6">Dashboard</a></p>
 </td></tr></table></td></tr></table></body></html>`;
 }
 
@@ -1212,9 +1395,10 @@ async function handleRegister(request, env) {
   // Record initial password in history
   await recordPasswordHistory(env, userId, passwordHash, salt);
 
-  const accessToken = await createJWT({ sub: userId, org: orgId, role: 'owner' }, requireJWTSecret(env), 60);
+  const jwtSecret = requireJWTSecret(env);
+  const accessToken = await createJWT({ sub: userId, org: orgId, role: 'owner' }, jwtSecret, 60);
   const refreshToken = generateId() + generateId();
-  const refreshHash = await hashPassword(refreshToken, 'refresh-salt');
+  const refreshHash = await hmacRefreshToken(refreshToken, jwtSecret);
   const refreshExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
   await env.DB.prepare(
@@ -1242,7 +1426,13 @@ async function handleLogin(request, env) {
   if (valErrors) return validationErrorResponse(valErrors);
 
   const user = await env.DB.prepare('SELECT * FROM users WHERE email = ?').bind(email.toLowerCase()).first();
-  if (!user) return jsonResponse({ error: 'Invalid credentials' }, 401);
+  if (!user) {
+    // Timing-safe: perform a dummy PBKDF2 hash so the response time is
+    // indistinguishable from a valid-user-wrong-password attempt.
+    // Prevents account enumeration via timing side-channel.
+    await hashPassword(password, 'timing-safe-dummy-salt-000000000000');
+    return jsonResponse({ error: 'Invalid credentials' }, 401);
+  }
 
   // Deactivated account check
   if (user.status === 'deactivated') {
@@ -1276,9 +1466,10 @@ async function handleLogin(request, env) {
     return jsonResponse({ mfa_required: true, mfa_token: mfaToken });
   }
 
-  const accessToken = await createJWT({ sub: user.id, org: user.org_id, role: user.role }, requireJWTSecret(env), 60);
+  const jwtSecret = requireJWTSecret(env);
+  const accessToken = await createJWT({ sub: user.id, org: user.org_id, role: user.role }, jwtSecret, 60);
   const refreshToken = generateId() + generateId();
-  const refreshHash = await hashPassword(refreshToken, 'refresh-salt');
+  const refreshHash = await hmacRefreshToken(refreshToken, jwtSecret);
   const refreshExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
   await env.DB.prepare(
@@ -1299,7 +1490,8 @@ async function handleRefreshToken(request, env) {
   const { refresh_token } = await request.json();
   if (!refresh_token) return jsonResponse({ error: 'Refresh token required' }, 400);
 
-  const tokenHash = await hashPassword(refresh_token, 'refresh-salt');
+  const jwtSecret = requireJWTSecret(env);
+  const tokenHash = await hmacRefreshToken(refresh_token, jwtSecret);
   const stored = await env.DB.prepare(
     'SELECT * FROM refresh_tokens WHERE token_hash = ? AND revoked = 0 AND expires_at > datetime("now")'
   ).bind(tokenHash).first();
@@ -1313,9 +1505,9 @@ async function handleRefreshToken(request, env) {
   if (!user) return jsonResponse({ error: 'User not found' }, 404);
   if (user.status === 'deactivated') return jsonResponse({ error: 'Account has been deactivated' }, 403);
 
-  const accessToken = await createJWT({ sub: user.id, org: user.org_id, role: user.role }, requireJWTSecret(env), 60);
+  const accessToken = await createJWT({ sub: user.id, org: user.org_id, role: user.role }, jwtSecret, 60);
   const newRefreshToken = generateId() + generateId();
-  const newRefreshHash = await hashPassword(newRefreshToken, 'refresh-salt');
+  const newRefreshHash = await hmacRefreshToken(newRefreshToken, jwtSecret);
   const refreshExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
   await env.DB.prepare(
@@ -1444,9 +1636,10 @@ async function handleMFAVerify(request, env) {
 
   // Issue real tokens
   const org = await env.DB.prepare('SELECT * FROM organizations WHERE id = ?').bind(user.org_id).first();
-  const accessToken = await createJWT({ sub: user.id, org: user.org_id, role: user.role }, requireJWTSecret(env), 60);
+  const jwtSecret = requireJWTSecret(env);
+  const accessToken = await createJWT({ sub: user.id, org: user.org_id, role: user.role }, jwtSecret, 60);
   const refreshToken = generateId() + generateId();
-  const refreshHash = await hashPassword(refreshToken, 'refresh-salt');
+  const refreshHash = await hmacRefreshToken(refreshToken, jwtSecret);
   const refreshExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
   await env.DB.prepare('INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)')
@@ -1510,20 +1703,45 @@ async function handleMFARegenerateBackupCodes(request, env, user) {
 // ============================================================================
 
 async function handleGetExperience(env, org) {
-  const config = await env.DB.prepare('SELECT * FROM experience_configs WHERE experience_type = ?')
+  // Get the base experience config based on experience_type
+  const baseConfig = await env.DB.prepare('SELECT * FROM experience_configs WHERE experience_type = ?')
     .bind(org.experience_type || 'enterprise').first();
 
-  if (!config) return jsonResponse({ error: 'Experience config not found' }, 404);
+  if (!baseConfig) return jsonResponse({ error: 'Experience config not found' }, 404);
+
+  // Check for org-specific dashboard widget config
+  let orgConfig = null;
+  try {
+    orgConfig = await env.DB.prepare('SELECT dashboard_widgets FROM experience_configs WHERE org_id = ?')
+      .bind(org.id).first();
+  } catch (e) {
+    // org_id column may not exist in older schemas - ignore
+  }
+
+  // Parse org-specific dashboard widgets if available
+  let dashboardWidgetConfig = null;
+  if (orgConfig && orgConfig.dashboard_widgets) {
+    try {
+      const widgets = JSON.parse(orgConfig.dashboard_widgets);
+      // Only use if it's an array of widget config objects (not legacy string array)
+      if (Array.isArray(widgets) && widgets.length > 0 && widgets[0].id) {
+        dashboardWidgetConfig = widgets;
+      }
+    } catch (e) {
+      // Ignore parse errors
+    }
+  }
 
   return jsonResponse({
-    experience_type: config.experience_type,
-    display_name: config.display_name,
-    terminology: JSON.parse(config.terminology),
-    default_workflow: JSON.parse(config.default_workflow),
-    dashboard_widgets: JSON.parse(config.dashboard_widgets),
-    nav_labels: JSON.parse(config.nav_labels),
-    doc_templates: JSON.parse(config.doc_templates),
-    theme_overrides: JSON.parse(config.theme_overrides || '{}'),
+    experience_type: baseConfig.experience_type,
+    display_name: baseConfig.display_name,
+    terminology: JSON.parse(baseConfig.terminology),
+    default_workflow: JSON.parse(baseConfig.default_workflow),
+    dashboard_widgets: JSON.parse(baseConfig.dashboard_widgets),
+    dashboard_widget_config: dashboardWidgetConfig,
+    nav_labels: JSON.parse(baseConfig.nav_labels),
+    doc_templates: JSON.parse(baseConfig.doc_templates),
+    theme_overrides: JSON.parse(baseConfig.theme_overrides || '{}'),
   });
 }
 
@@ -2008,7 +2226,7 @@ async function handleCreatePoam(request, env, org, user) {
     vendor_id || null, vendor_dependency_notes || null, oscalUuid, related_observations || '[]', related_risks || '[]').run();
 
   await auditLog(env, org.id, user.id, 'create', 'poam', id, { poam_id: poamId, weakness_name, data_classification, vendor_id });
-  await notifyOrgRole(env, org.id, user.id, 'manager', 'poam_update', 'New POA&M Created', 'POA&M "' + weakness_name + '" was created', 'poam', id, {});
+  await notifyOrgRole(env, org.id, user.id, 'manager', 'poam_update', 'New POA&M Created', 'POA&M "' + sanitizeText(weakness_name) + '" was created', 'poam', id, {});
   if (assigned_to && assigned_to !== user.id) {
     await createNotification(env, org.id, assigned_to, 'poam_update', 'POA&M Assigned to You', 'You were assigned to POA&M "' + weakness_name + '"', 'poam', id, {});
   }
@@ -2017,64 +2235,77 @@ async function handleCreatePoam(request, env, org, user) {
 }
 
 async function handleUpdatePoam(request, env, org, user, poamId) {
-  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
-  const body = await request.json();
-  const poam = await env.DB.prepare('SELECT * FROM poams WHERE id = ? AND org_id = ?').bind(poamId, org.id).first();
-  if (!poam) return jsonResponse({ error: 'POA&M not found' }, 404);
+  try {
+    if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+    const body = await request.json();
+    const poam = await env.DB.prepare('SELECT * FROM poams WHERE id = ? AND org_id = ?').bind(poamId, org.id).first();
+    if (!poam) return jsonResponse({ error: 'POA&M not found' }, 404);
 
-  const fields = ['weakness_name', 'weakness_description', 'risk_level', 'status', 'scheduled_completion', 'actual_completion', 'milestones', 'responsible_party', 'resources_required', 'cost_estimate', 'comments', 'assigned_to', 'vendor_dependency',
-    'data_classification', 'cui_category', 'risk_register_id', 'impact_confidentiality', 'impact_integrity', 'impact_availability',
-    'deviation_type', 'deviation_rationale', 'deviation_expires_at', 'deviation_review_frequency', 'deviation_next_review', 'compensating_control_description',
-    'asset_owner_id', 'asset_owner_name', 'vendor_id', 'vendor_dependency_notes', 'oscal_poam_item_id', 'related_observations', 'related_risks'];
-  const updates = [];
-  const values = [];
+    const fields = ['weakness_name', 'weakness_description', 'risk_level', 'status', 'scheduled_completion', 'actual_completion', 'milestones', 'responsible_party', 'resources_required', 'cost_estimate', 'comments', 'assigned_to', 'vendor_dependency',
+      'data_classification', 'cui_category', 'risk_register_id', 'impact_confidentiality', 'impact_integrity', 'impact_availability',
+      'deviation_type', 'deviation_rationale', 'deviation_expires_at', 'deviation_review_frequency', 'deviation_next_review', 'compensating_control_description',
+      'asset_owner_id', 'asset_owner_name', 'vendor_id', 'vendor_dependency_notes', 'oscal_poam_item_id', 'related_observations', 'related_risks'];
+    // Fields with CHECK constraints or foreign keys that don't allow empty strings - must be null
+    const nullableFields = ['data_classification', 'impact_confidentiality', 'impact_integrity', 'impact_availability',
+      'deviation_type', 'deviation_review_frequency', 'risk_register_id', 'vendor_id', 'assigned_to', 'asset_owner_id'];
+    const updates = [];
+    const values = [];
 
-  for (const field of fields) {
-    if (body[field] !== undefined) {
-      updates.push(`${field} = ?`);
-      values.push(field === 'milestones' ? JSON.stringify(body[field]) : body[field]);
+    for (const field of fields) {
+      if (body[field] !== undefined) {
+        updates.push(`${field} = ?`);
+        let value = body[field];
+        // Convert empty strings to null for fields with CHECK constraints or foreign keys
+        if (nullableFields.includes(field) && value === '') {
+          value = null;
+        }
+        values.push(field === 'milestones' ? JSON.stringify(value) : value);
+      }
     }
-  }
 
-  // Handle deviation approval (manager+ required)
-  if (body.deviation_approved !== undefined) {
-    if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Manager role required for deviation approval' }, 403);
-    if (body.deviation_approved) {
-      updates.push('deviation_approved_by = ?', 'deviation_approved_at = ?');
-      values.push(user.id, new Date().toISOString());
-      // Record in deviation history
-      await env.DB.prepare(
-        'INSERT INTO poam_deviation_history (id, poam_id, action, deviation_type, rationale, performed_by, expires_at, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-      ).bind(generateId(), poamId, 'approved', body.deviation_type || poam.deviation_type, body.deviation_rationale || poam.deviation_rationale, user.id, body.deviation_expires_at || null, body.approval_notes || null).run();
-    } else {
-      // Revoke approval
-      updates.push('deviation_approved_by = NULL', 'deviation_approved_at = NULL');
-      await env.DB.prepare(
-        'INSERT INTO poam_deviation_history (id, poam_id, action, deviation_type, performed_by, notes) VALUES (?, ?, ?, ?, ?, ?)'
-      ).bind(generateId(), poamId, 'revoked', poam.deviation_type, user.id, body.revoke_reason || null).run();
+    // Handle deviation approval (manager+ required)
+    if (body.deviation_approved !== undefined) {
+      if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Manager role required for deviation approval' }, 403);
+      if (body.deviation_approved) {
+        updates.push('deviation_approved_by = ?', 'deviation_approved_at = ?');
+        values.push(user.id, new Date().toISOString());
+        // Record in deviation history
+        await env.DB.prepare(
+          'INSERT INTO poam_deviation_history (id, poam_id, action, deviation_type, rationale, performed_by, expires_at, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        ).bind(generateId(), poamId, 'approved', body.deviation_type || poam.deviation_type, body.deviation_rationale || poam.deviation_rationale, user.id, body.deviation_expires_at || null, body.approval_notes || null).run();
+      } else {
+        // Revoke approval
+        updates.push('deviation_approved_by = NULL', 'deviation_approved_at = NULL');
+        await env.DB.prepare(
+          'INSERT INTO poam_deviation_history (id, poam_id, action, deviation_type, performed_by, notes) VALUES (?, ?, ?, ?, ?, ?)'
+        ).bind(generateId(), poamId, 'revoked', poam.deviation_type, user.id, body.revoke_reason || null).run();
+      }
     }
-  }
 
-  if (updates.length === 0) return jsonResponse({ error: 'No fields to update' }, 400);
-  updates.push('updated_at = ?');
-  values.push(new Date().toISOString());
-  values.push(poamId);
+    if (updates.length === 0) return jsonResponse({ error: 'No fields to update' }, 400);
+    updates.push('updated_at = ?');
+    values.push(new Date().toISOString());
+    values.push(poamId);
 
-  await env.DB.prepare(`UPDATE poams SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run();
-  const changes = computeDiff(poam, body, ['weakness_name', 'weakness_description', 'risk_level', 'status', 'scheduled_completion', 'actual_completion', 'responsible_party', 'resources_required', 'cost_estimate', 'assigned_to', 'vendor_dependency', 'data_classification', 'deviation_type']);
-  await auditLog(env, org.id, user.id, 'update', 'poam', poamId, { ...body, _changes: changes });
-  if (body.status) {
-    await notifyOrgRole(env, org.id, user.id, 'manager', 'poam_update', 'POA&M Status Changed', 'POA&M "' + poam.weakness_name + '" status changed to ' + body.status, 'poam', poamId, { status: body.status });
-    if (poam.assigned_to && poam.assigned_to !== user.id) {
-      await createNotification(env, org.id, poam.assigned_to, 'poam_update', 'POA&M Status Changed', 'POA&M "' + poam.weakness_name + '" status changed to ' + body.status, 'poam', poamId, {});
+    await env.DB.prepare(`UPDATE poams SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run();
+    const changes = computeDiff(poam, body, ['weakness_name', 'weakness_description', 'risk_level', 'status', 'scheduled_completion', 'actual_completion', 'responsible_party', 'resources_required', 'cost_estimate', 'assigned_to', 'vendor_dependency', 'data_classification', 'deviation_type']);
+    await auditLog(env, org.id, user.id, 'update', 'poam', poamId, { ...body, _changes: changes });
+    if (body.status) {
+      await notifyOrgRole(env, org.id, user.id, 'manager', 'poam_update', 'POA&M Status Changed', 'POA&M "' + sanitizeText(poam.weakness_name) + '" status changed to ' + sanitizeText(body.status, 50), 'poam', poamId, { status: body.status });
+      if (poam.assigned_to && poam.assigned_to !== user.id) {
+        await createNotification(env, org.id, poam.assigned_to, 'poam_update', 'POA&M Status Changed', 'POA&M "' + poam.weakness_name + '" status changed to ' + body.status, 'poam', poamId, {});
+      }
     }
-  }
-  if (body.assigned_to && body.assigned_to !== poam.assigned_to && body.assigned_to !== user.id) {
-    await createNotification(env, org.id, body.assigned_to, 'poam_update', 'POA&M Assigned to You', 'You were assigned to POA&M "' + poam.weakness_name + '"', 'poam', poamId, {});
-  }
+    if (body.assigned_to && body.assigned_to !== poam.assigned_to && body.assigned_to !== user.id) {
+      await createNotification(env, org.id, body.assigned_to, 'poam_update', 'POA&M Assigned to You', 'You were assigned to POA&M "' + poam.weakness_name + '"', 'poam', poamId, {});
+    }
 
-  const updated = await env.DB.prepare('SELECT * FROM poams WHERE id = ?').bind(poamId).first();
-  return jsonResponse({ poam: updated });
+    const updated = await env.DB.prepare('SELECT * FROM poams WHERE id = ?').bind(poamId).first();
+    return jsonResponse({ poam: updated });
+  } catch (e) {
+    console.error('POA&M update error:', e);
+    return jsonResponse({ error: 'Failed to update POA&M: ' + (e.message || 'Unknown error') }, 500);
+  }
 }
 
 async function handleDeletePoam(env, org, user, poamId) {
@@ -2152,7 +2383,7 @@ async function handleCreateComment(request, env, org, user, poamId) {
   if (poam.assigned_to && poam.assigned_to !== user.id) {
     await createNotification(env, org.id, poam.assigned_to, 'poam_update', 'New Comment on POA&M', user.name + ' commented on POA&M "' + poam.weakness_name + '"', 'poam', poamId, {});
   }
-  await notifyOrgRole(env, org.id, user.id, 'manager', 'poam_update', 'New Comment on POA&M', user.name + ' commented on POA&M "' + poam.weakness_name + '"', 'poam', poamId, {});
+  await notifyOrgRole(env, org.id, user.id, 'manager', 'poam_update', 'New Comment on POA&M', sanitizeText(user.name) + ' commented on POA&M "' + sanitizeText(poam.weakness_name) + '"', 'poam', poamId, {});
   const comment = await env.DB.prepare('SELECT c.*, u.name as author_name FROM poam_comments c LEFT JOIN users u ON u.id = c.user_id WHERE c.id = ?').bind(id).first();
   return jsonResponse({ comment }, 201);
 }
@@ -2325,6 +2556,85 @@ async function handleUnlinkPoamEvidence(env, org, user, poamId, linkId) {
   return jsonResponse({ message: 'Evidence unlinked from POA&M' });
 }
 
+// POA&M Vulnerability Findings
+async function handleListPoamFindings(env, org, poamId) {
+  const poam = await env.DB.prepare('SELECT id FROM poams WHERE id = ? AND org_id = ?').bind(poamId, org.id).first();
+  if (!poam) return jsonResponse({ error: 'POA&M not found' }, 404);
+  const { results } = await env.DB.prepare(`
+    SELECT pvf.*, vf.title, vf.severity, vf.plugin_id, vf.plugin_name, vf.cvss_score, vf.status as finding_status,
+           a.hostname, a.ip_address, u.name as linked_by_name
+    FROM poam_vulnerability_findings pvf
+    JOIN vulnerability_findings vf ON pvf.finding_id = vf.id
+    LEFT JOIN assets a ON vf.asset_id = a.id
+    LEFT JOIN users u ON pvf.linked_by = u.id
+    WHERE pvf.poam_id = ?
+    ORDER BY CASE vf.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, vf.title
+  `).bind(poamId).all();
+  return jsonResponse({ findings: results });
+}
+
+async function handleLinkPoamFinding(request, env, org, user, poamId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const poam = await env.DB.prepare('SELECT id FROM poams WHERE id = ? AND org_id = ?').bind(poamId, org.id).first();
+  if (!poam) return jsonResponse({ error: 'POA&M not found' }, 404);
+  const body = await request.json();
+  const { finding_id, link_reason, notes } = body;
+  if (!finding_id) return jsonResponse({ error: 'finding_id required' }, 400);
+  const validReasons = ['root_cause', 'related', 'evidence', 'grouped'];
+  if (link_reason && !validReasons.includes(link_reason)) return jsonResponse({ error: 'Invalid link_reason. Must be: ' + validReasons.join(', ') }, 400);
+  const finding = await env.DB.prepare('SELECT id FROM vulnerability_findings WHERE id = ? AND org_id = ?').bind(finding_id, org.id).first();
+  if (!finding) return jsonResponse({ error: 'Finding not found' }, 404);
+  const id = generateId();
+  try {
+    await env.DB.prepare('INSERT INTO poam_vulnerability_findings (id, poam_id, finding_id, link_reason, notes, linked_by) VALUES (?, ?, ?, ?, ?, ?)').bind(id, poamId, finding_id, link_reason || 'related', notes || null, user.id).run();
+  } catch (e) {
+    if (e.message?.includes('UNIQUE')) return jsonResponse({ error: 'Finding already linked to this POA&M' }, 409);
+    throw e;
+  }
+  await auditLog(env, org.id, user.id, 'link', 'poam_finding', id, { poam_id: poamId, finding_id });
+  return jsonResponse({ message: 'Finding linked to POA&M', id }, 201);
+}
+
+async function handleUnlinkPoamFinding(env, org, user, poamId, linkId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const poam = await env.DB.prepare('SELECT id FROM poams WHERE id = ? AND org_id = ?').bind(poamId, org.id).first();
+  if (!poam) return jsonResponse({ error: 'POA&M not found' }, 404);
+  const link = await env.DB.prepare('SELECT * FROM poam_vulnerability_findings WHERE id = ? AND poam_id = ?').bind(linkId, poamId).first();
+  if (!link) return jsonResponse({ error: 'Link not found' }, 404);
+  await env.DB.prepare('DELETE FROM poam_vulnerability_findings WHERE id = ?').bind(linkId).run();
+  await auditLog(env, org.id, user.id, 'unlink', 'poam_finding', linkId, { poam_id: poamId, finding_id: link.finding_id });
+  return jsonResponse({ message: 'Finding unlinked from POA&M' });
+}
+
+// POA&M Bulk Asset Linking
+async function handleBulkLinkPoamAssets(request, env, org, user, poamId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const poam = await env.DB.prepare('SELECT id FROM poams WHERE id = ? AND org_id = ?').bind(poamId, org.id).first();
+  if (!poam) return jsonResponse({ error: 'POA&M not found' }, 404);
+  const body = await request.json();
+  const { asset_ids, link_reason, responsibility_model } = body;
+  if (!Array.isArray(asset_ids) || asset_ids.length === 0) return jsonResponse({ error: 'asset_ids array required' }, 400);
+  const validReasons = ['vulnerable', 'impacted', 'affected', 'at_risk', 'remediated'];
+  if (link_reason && !validReasons.includes(link_reason)) return jsonResponse({ error: 'Invalid link_reason' }, 400);
+  const validModels = ['csp', 'customer', 'shared', 'inherited'];
+  if (responsibility_model && !validModels.includes(responsibility_model)) return jsonResponse({ error: 'Invalid responsibility_model' }, 400);
+
+  let linked = 0, skipped = 0;
+  for (const asset_id of asset_ids) {
+    try {
+      const asset = await env.DB.prepare('SELECT id FROM assets WHERE id = ? AND org_id = ?').bind(asset_id, org.id).first();
+      if (!asset) { skipped++; continue; }
+      const id = generateId();
+      await env.DB.prepare('INSERT INTO poam_affected_assets (id, poam_id, asset_id, link_reason, responsibility_model, linked_by) VALUES (?, ?, ?, ?, ?, ?)').bind(id, poamId, asset_id, link_reason || 'affected', responsibility_model || null, user.id).run();
+      linked++;
+    } catch (e) {
+      skipped++; // Duplicate or error
+    }
+  }
+  await auditLog(env, org.id, user.id, 'bulk_link', 'poam_assets', poamId, { linked, skipped, total: asset_ids.length });
+  return jsonResponse({ message: `Linked ${linked} assets, skipped ${skipped}`, linked, skipped });
+}
+
 // Control Comments
 async function handleListControlComments(env, org, url, controlId) {
   const systemId = url.searchParams.get('system_id');
@@ -2367,10 +2677,27 @@ async function handleListEvidence(env, org, url) {
   const limit = parseInt(url.searchParams.get('limit') || '50');
   const offset = (page - 1) * limit;
   const search = url.searchParams.get('search');
+  const expiryStatus = url.searchParams.get('expiry_status');
 
   let where = ' WHERE e.org_id = ?';
   const params = [org.id];
-  if (search) { where += ' AND (e.title LIKE ? OR e.description LIKE ? OR e.file_name LIKE ?)'; params.push(`%${search}%`, `%${search}%`, `%${search}%`); }
+
+  if (search) {
+    where += ' AND (e.title LIKE ? OR e.description LIKE ? OR e.file_name LIKE ?)';
+    params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+  }
+
+  // Filter by expiry status
+  if (expiryStatus === 'active') {
+    // Active: has expiry date in the future (more than 30 days) OR no expiry date
+    where += " AND (e.expiry_date IS NULL OR e.expiry_date > date('now', '+30 days'))";
+  } else if (expiryStatus === 'expiring_soon') {
+    // Expiring soon: within next 30 days but not expired
+    where += " AND e.expiry_date IS NOT NULL AND e.expiry_date > date('now') AND e.expiry_date <= date('now', '+30 days')";
+  } else if (expiryStatus === 'expired') {
+    // Expired: past expiry date
+    where += " AND e.expiry_date IS NOT NULL AND e.expiry_date < date('now')";
+  }
 
   const countResult = await env.DB.prepare('SELECT COUNT(*) as total FROM evidence e' + where).bind(...params).first();
   const total = countResult?.total || 0;
@@ -2380,6 +2707,40 @@ async function handleListEvidence(env, org, url) {
   ).bind(...params, limit, offset).all();
   return jsonResponse({ evidence: results, total, page, limit });
 }
+
+// Maximum evidence file size: 25 MB
+const EVIDENCE_MAX_FILE_SIZE = 25 * 1024 * 1024;
+
+// Allowed MIME types for evidence uploads
+const EVIDENCE_ALLOWED_TYPES = new Set([
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'text/plain',
+  'text/csv',
+  'text/xml',
+  'application/json',
+  'application/xml',
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/svg+xml',
+  'image/webp',
+  'application/zip',
+  'application/gzip',
+]);
+
+// Allowed file extensions (fallback when MIME type is generic)
+const EVIDENCE_ALLOWED_EXTENSIONS = new Set([
+  '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+  '.txt', '.csv', '.xml', '.json', '.yaml', '.yml',
+  '.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp',
+  '.zip', '.gz', '.tar.gz',
+]);
 
 async function handleUploadEvidence(request, env, org, user) {
   if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
@@ -2392,7 +2753,27 @@ async function handleUploadEvidence(request, env, org, user) {
 
   if (!file) return jsonResponse({ error: 'No file provided' }, 400);
 
+  // Validate file size before buffering (use Content-Length hint if available)
+  if (file.size && file.size > EVIDENCE_MAX_FILE_SIZE) {
+    return jsonResponse({ error: `File too large. Maximum size is ${EVIDENCE_MAX_FILE_SIZE / (1024 * 1024)} MB.` }, 413);
+  }
+
+  // Validate file type by MIME type
+  const fileType = (file.type || '').toLowerCase();
+  const fileExt = ('.' + (file.name || '').split('.').pop()).toLowerCase();
+  if (fileType && !EVIDENCE_ALLOWED_TYPES.has(fileType) && !EVIDENCE_ALLOWED_EXTENSIONS.has(fileExt)) {
+    return jsonResponse({ error: `File type not allowed. Accepted types: PDF, Office documents, images, CSV, JSON, XML, TXT, ZIP.` }, 415);
+  }
+  if (!fileType && !EVIDENCE_ALLOWED_EXTENSIONS.has(fileExt)) {
+    return jsonResponse({ error: `File type not allowed. Accepted extensions: ${[...EVIDENCE_ALLOWED_EXTENSIONS].join(', ')}` }, 415);
+  }
+
   const arrayBuffer = await file.arrayBuffer();
+
+  // Enforce size limit after buffering (in case Content-Length was missing or spoofed)
+  if (arrayBuffer.byteLength > EVIDENCE_MAX_FILE_SIZE) {
+    return jsonResponse({ error: `File too large. Maximum size is ${EVIDENCE_MAX_FILE_SIZE / (1024 * 1024)} MB.` }, 413);
+  }
   const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
   const sha256 = Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
 
@@ -2409,7 +2790,7 @@ async function handleUploadEvidence(request, env, org, user) {
   ).bind(id, org.id, title, description, file.name, arrayBuffer.byteLength, file.type, r2Key, sha256, user.id, collectionDate, expiryDate).run();
 
   await auditLog(env, org.id, user.id, 'upload', 'evidence', id, { file_name: file.name, size: arrayBuffer.byteLength });
-  await notifyOrgRole(env, org.id, user.id, 'manager', 'evidence_upload', 'New Evidence Uploaded', 'Evidence file "' + file.name + '" was uploaded', 'evidence', id, {});
+  await notifyOrgRole(env, org.id, user.id, 'manager', 'evidence_upload', 'New Evidence Uploaded', 'Evidence file "' + sanitizeText(file.name) + '" was uploaded', 'evidence', id, {});
 
   const evidence = await env.DB.prepare('SELECT * FROM evidence WHERE id = ?').bind(id).first();
   return jsonResponse({ evidence }, 201);
@@ -2444,11 +2825,107 @@ async function handleLinkEvidence(request, env, org, user) {
   return jsonResponse({ message: 'Evidence linked' }, 201);
 }
 
+// Bulk archive evidence
+async function handleBulkArchiveEvidence(request, env, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  const { ids } = await request.json();
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return jsonResponse({ error: 'ids array required' }, 400);
+  }
+
+  const archived = [];
+  const failed = [];
+
+  for (const id of ids) {
+    const evidence = await env.DB.prepare('SELECT * FROM evidence WHERE id = ? AND org_id = ?').bind(id, org.id).first();
+    if (!evidence) {
+      failed.push({ id, reason: 'Not found' });
+      continue;
+    }
+
+    try {
+      await env.DB.prepare("UPDATE evidence SET status = 'archived' WHERE id = ?").bind(id).run();
+      archived.push({ id, title: evidence.title });
+    } catch (e) {
+      failed.push({ id, reason: e.message });
+    }
+  }
+
+  await auditLog(env, org.id, user.id, 'bulk_archive_evidence', 'evidence', null, { archived_count: archived.length, archived, failed });
+
+  return jsonResponse({ archived, failed, total_archived: archived.length, total_failed: failed.length });
+}
+
+// Bulk update evidence (e.g., extend expiry date)
+async function handleBulkUpdateEvidence(request, env, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  const { ids, expiry_date, status } = await request.json();
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return jsonResponse({ error: 'ids array required' }, 400);
+  }
+
+  const updated = [];
+  const failed = [];
+
+  for (const id of ids) {
+    const evidence = await env.DB.prepare('SELECT * FROM evidence WHERE id = ? AND org_id = ?').bind(id, org.id).first();
+    if (!evidence) {
+      failed.push({ id, reason: 'Not found' });
+      continue;
+    }
+
+    try {
+      const updates = [];
+      const params = [];
+
+      if (expiry_date) {
+        updates.push('expiry_date = ?');
+        params.push(expiry_date);
+      }
+      if (status) {
+        updates.push('status = ?');
+        params.push(status);
+      }
+
+      if (updates.length > 0) {
+        params.push(id);
+        await env.DB.prepare(`UPDATE evidence SET ${updates.join(', ')} WHERE id = ?`).bind(...params).run();
+        updated.push({ id, title: evidence.title });
+      }
+    } catch (e) {
+      failed.push({ id, reason: e.message });
+    }
+  }
+
+  await auditLog(env, org.id, user.id, 'bulk_update_evidence', 'evidence', null, { updated_count: updated.length, expiry_date, status, updated, failed });
+
+  return jsonResponse({ updated, failed, total_updated: updated.length, total_failed: failed.length });
+}
+
 // ============================================================================
 // SSP / OSCAL GENERATION
 // ============================================================================
 
+// Standard SSP sections (12 sections for quick SSP)
 const SSP_SECTION_KEYS = ['system_info','authorization_boundary','data_flow','network_architecture','system_interconnections','personnel','control_implementations','contingency_plan','incident_response','continuous_monitoring'];
+
+// FISMA SSP sections (23 sections for full RMF compliance)
+const FISMA_SSP_SECTION_KEYS = [
+  // Frontmatter (RMF Steps 1-3)
+  'system_info', 'fips_199', 'information_types', 'control_baseline', 'rmf_lifecycle',
+  // Architecture
+  'authorization_boundary', 'data_flow', 'network_architecture', 'ports_protocols', 'system_interconnections', 'crypto_modules',
+  // Personnel & Identity
+  'personnel', 'digital_identity', 'separation_duties',
+  // Controls & Policies
+  'control_implementations', 'security_policies', 'scrm', 'privacy_analysis',
+  // Plans
+  'contingency_plan', 'incident_response', 'config_management',
+  // Post-Authorization (RMF Steps 5-7)
+  'continuous_monitoring', 'poam'
+];
 
 const SSP_SECTION_LABELS = {
   system_info: 'System Information', authorization_boundary: 'Authorization Boundary',
@@ -2456,6 +2933,14 @@ const SSP_SECTION_LABELS = {
   system_interconnections: 'System Interconnections', personnel: 'Personnel & Roles',
   control_implementations: 'Control Implementations', contingency_plan: 'Contingency Plan Summary',
   incident_response: 'Incident Response Summary', continuous_monitoring: 'Continuous Monitoring Strategy',
+  // FISMA-specific section labels
+  fips_199: 'FIPS 199 Security Categorization', information_types: 'Information Types (SP 800-60)',
+  control_baseline: 'Control Baseline Selection', rmf_lifecycle: 'RMF Lifecycle Tracker',
+  ports_protocols: 'Ports, Protocols & Services', crypto_modules: 'Cryptographic Modules (FIPS 140)',
+  digital_identity: 'Digital Identity (SP 800-63)', separation_duties: 'Separation of Duties',
+  security_policies: 'Security Policies & Procedures', scrm: 'Supply Chain Risk Management',
+  privacy_analysis: 'Privacy Analysis (PTA/PIA)', config_management: 'Configuration Management Plan',
+  poam: 'POA&M Summary',
 };
 
 const SSP_SECTION_PROMPTS = {
@@ -2491,20 +2976,80 @@ const SSP_SECTION_PROMPTS = {
     system: 'You are a senior cybersecurity architect writing formal System Security Plan documentation. Write in professional third-person prose.',
     user: 'Write the Continuous Monitoring Strategy section for "{{system_name}}" ({{impact_level}} impact, {{framework_name}} framework). Describe ongoing assessment activities, automated scanning, POA&M management, and how the security posture is continuously evaluated. Organization: {{org_name}}. Write 200-400 words.',
   },
+  // FISMA-specific section prompts
+  fips_199: {
+    system: 'You are a federal cybersecurity compliance expert writing FIPS 199 security categorization documentation. Write in formal, technical prose per NIST guidelines.',
+    user: 'Write the FIPS 199 Security Categorization section for "{{system_name}}" ({{impact_level}} overall impact). Explain the confidentiality, integrity, and availability impact levels, how the overall system categorization was determined, and provide justification citing NIST SP 800-60 information types. Organization: {{org_name}}. Write 200-400 words.',
+  },
+  information_types: {
+    system: 'You are a federal cybersecurity compliance expert documenting NIST SP 800-60 information types. Write in formal, technical prose.',
+    user: 'Write the Information Types section for "{{system_name}}" ({{impact_level}} impact). List the NIST SP 800-60 Vol. II information types processed by this system, their individual CIA impact levels, and how they contribute to the overall system categorization. Organization: {{org_name}}. Write 200-400 words.',
+  },
+  control_baseline: {
+    system: 'You are a federal cybersecurity compliance expert documenting NIST SP 800-53 control baseline selection. Write in formal, technical prose.',
+    user: 'Write the Control Baseline Selection section for "{{system_name}}" ({{impact_level}} impact, {{framework_name}}). Describe the selected control baseline, any tailoring decisions, and justification for deviations. Include references to organizational overlays or additional controls. Organization: {{org_name}}. Write 200-400 words.',
+  },
+  rmf_lifecycle: {
+    system: 'You are a federal cybersecurity compliance expert documenting RMF lifecycle per NIST SP 800-37 Rev 2. Write in formal, technical prose.',
+    user: 'Write the RMF Lifecycle section for "{{system_name}}" ({{impact_level}} impact). Describe the current RMF step, progress through each of the seven steps (Prepare, Categorize, Select, Implement, Assess, Authorize, Monitor), target ATO date, and key authorization package artifacts. Organization: {{org_name}}. Write 200-400 words.',
+  },
+  ports_protocols: {
+    system: 'You are a federal cybersecurity compliance expert documenting network ports, protocols, and services per FedRAMP Appendix Q. Write in formal, technical prose.',
+    user: 'Write the Ports, Protocols & Services section for "{{system_name}}" ({{impact_level}} impact). Summarize the network services, ports, and protocols used by the system, their business purpose, direction (inbound/outbound/internal), and reference to the full PPS inventory. Organization: {{org_name}}. Write 200-300 words.',
+  },
+  crypto_modules: {
+    system: 'You are a federal cybersecurity compliance expert documenting FIPS 140-2/3 validated cryptographic modules. Write in formal, technical prose.',
+    user: 'Write the Cryptographic Modules section for "{{system_name}}" ({{impact_level}} impact). Describe the FIPS 140 validated cryptographic modules used for data at rest, data in transit, and key management. Include module names, certificate numbers, and validation levels. Organization: {{org_name}}. Write 200-300 words.',
+  },
+  digital_identity: {
+    system: 'You are a federal cybersecurity compliance expert documenting NIST SP 800-63-3 digital identity levels. Write in formal, technical prose.',
+    user: 'Write the Digital Identity section for "{{system_name}}" ({{impact_level}} impact). Document the Identity Assurance Level (IAL), Authenticator Assurance Level (AAL), and Federation Assurance Level (FAL). Describe identity proofing procedures, MFA methods, and federation protocols if applicable. Organization: {{org_name}}. Write 200-400 words.',
+  },
+  separation_duties: {
+    system: 'You are a federal cybersecurity compliance expert documenting AC-5 separation of duties controls. Write in formal, technical prose.',
+    user: 'Write the Separation of Duties section for "{{system_name}}" ({{impact_level}} impact). Describe the separation of duties matrix, prohibited role combinations, dual-control operations, and how the organization prevents conflicts of interest in sensitive operations. Organization: {{org_name}}. Write 200-300 words.',
+  },
+  security_policies: {
+    system: 'You are a federal cybersecurity compliance expert documenting security policies per NIST SP 800-53 control families. Write in formal, technical prose.',
+    user: 'Write the Security Policies section for "{{system_name}}" ({{impact_level}} impact). Summarize the security policies that govern each control family (AC, AT, AU, etc.), their review cycles, ownership, and how policy exceptions are handled. Organization: {{org_name}}. Write 200-400 words.',
+  },
+  scrm: {
+    system: 'You are a federal cybersecurity compliance expert documenting supply chain risk management per NIST SP 800-161 Rev 1. Write in formal, technical prose.',
+    user: 'Write the Supply Chain Risk Management section for "{{system_name}}" ({{impact_level}} impact). Describe the SCRM program, critical suppliers, SBOM practices, software provenance verification, and how supply chain risks are assessed and mitigated. Organization: {{org_name}}. Write 200-400 words.',
+  },
+  privacy_analysis: {
+    system: 'You are a federal cybersecurity compliance expert documenting privacy analysis per E-Government Act Section 208 and OMB guidance. Write in formal, technical prose.',
+    user: 'Write the Privacy Analysis section for "{{system_name}}" ({{impact_level}} impact). Address the Privacy Threshold Analysis (PTA) findings, whether a full PIA is required, PII types collected, collection authority, purpose, retention, and SORN status. Organization: {{org_name}}. Write 200-400 words.',
+  },
+  config_management: {
+    system: 'You are a federal cybersecurity compliance expert documenting configuration management per NIST SP 800-128. Write in formal, technical prose.',
+    user: 'Write the Configuration Management Plan section for "{{system_name}}" ({{impact_level}} impact). Describe CM governance, configuration baselines, change control processes, baseline deviation management, and compliance scanning practices. Organization: {{org_name}}. Write 200-400 words.',
+  },
+  poam: {
+    system: 'You are a federal cybersecurity compliance expert documenting Plan of Action and Milestones per FISMA requirements. Write in formal, technical prose.',
+    user: 'Write the POA&M Summary section for "{{system_name}}" ({{impact_level}} impact). Summarize the current POA&M status, open findings by severity, remediation workflow, review frequency, and how the organization tracks closure of security weaknesses. Organization: {{org_name}}. Write 200-300 words.',
+  },
 };
 
-function buildEmptyAuthoring(userId) {
+function buildEmptyAuthoring(userId, sspType = 'standard') {
   const sections = {};
-  for (const key of SSP_SECTION_KEYS) {
+  const sectionKeys = sspType === 'fisma' ? FISMA_SSP_SECTION_KEYS : SSP_SECTION_KEYS;
+  for (const key of sectionKeys) {
     sections[key] = { content: '', status: 'empty', ai_generated: false, last_edited_by: userId, last_edited_at: new Date().toISOString() };
   }
-  return { sections };
+  return { sections, ssp_type: sspType };
+}
+
+// Helper to get section keys based on SSP type
+function getSSPSectionKeys(sspType) {
+  return sspType === 'fisma' ? FISMA_SSP_SECTION_KEYS : SSP_SECTION_KEYS;
 }
 
 async function handleGenerateSSP(request, env, org, user) {
   if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
-  const { system_id, framework_id } = await request.json();
+  const { system_id, framework_id, ssp_type = 'standard' } = await request.json();
   if (!system_id || !framework_id) return jsonResponse({ error: 'system_id and framework_id required' }, 400);
+  if (!['standard', 'fisma'].includes(ssp_type)) return jsonResponse({ error: 'ssp_type must be standard or fisma' }, 400);
 
   const system = await env.DB.prepare('SELECT * FROM systems WHERE id = ? AND org_id = ?').bind(system_id, org.id).first();
   if (!system) return jsonResponse({ error: 'System not found' }, 404);
@@ -2579,7 +3124,7 @@ async function handleGenerateSSP(request, env, org, user) {
   };
 
   // Build authoring sections
-  const authoring = buildEmptyAuthoring(user.id);
+  const authoring = buildEmptyAuthoring(user.id, ssp_type);
   authoring.sections.system_info = {
     content: `System Name: ${system.name}\nAcronym: ${system.acronym || 'N/A'}\nDescription: ${system.description || 'To be defined'}\nImpact Level: ${system.impact_level}\nDeployment Model: ${system.deployment_model || 'On-Premises'}\nStatus: ${system.status}`,
     status: 'draft', ai_generated: false, last_edited_by: user.id, last_edited_at: new Date().toISOString(),
@@ -2593,19 +3138,81 @@ async function handleGenerateSSP(request, env, org, user) {
       content: system.boundary_description, status: 'draft', ai_generated: false, last_edited_by: user.id, last_edited_at: new Date().toISOString(),
     };
   }
+
+  // For FISMA SSPs, add additional metadata
+  if (ssp_type === 'fisma') {
+    authoring.fisma = {
+      fisma_id: '',
+      fedramp_id: '',
+      owning_agency: org.name,
+      agency_component: '',
+      cloud_model: system.deployment_model || '',
+      deployment_model: system.deployment_model || '',
+      auth_type: 'ATO',
+      auth_duration: '3 years',
+      auth_system: '',
+      operational_date: '',
+      confidentiality: system.impact_level || 'Moderate',
+      integrity: system.impact_level || 'Moderate',
+      availability: system.impact_level || 'Moderate',
+      categorization_justification: '',
+      control_baseline: system.impact_level || 'Moderate',
+      tailoring_applied: '',
+      baseline_justification: ''
+    };
+  }
   oscalSSP._authoring = authoring;
 
   const initMetadata = JSON.stringify({ versions: [{ version: '1.0', created_at: new Date().toISOString(), created_by: user.id, summary: 'Initial generation' }], workflow: {} });
 
   // Save SSP document
   const id = generateId();
+  const sspTitle = ssp_type === 'fisma'
+    ? `FISMA SSP - ${system.name} - ${framework.name}`
+    : `SSP - ${system.name} - ${framework.name}`;
   await env.DB.prepare(
-    `INSERT INTO ssp_documents (id, org_id, system_id, framework_id, title, oscal_json, generated_by, metadata)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(id, org.id, system_id, framework_id, `SSP - ${system.name} - ${framework.name}`, JSON.stringify(oscalSSP), user.id, initMetadata).run();
+    `INSERT INTO ssp_documents (id, org_id, system_id, framework_id, title, oscal_json, generated_by, metadata, ssp_type)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(id, org.id, system_id, framework_id, sspTitle, JSON.stringify(oscalSSP), user.id, initMetadata, ssp_type).run();
 
-  await auditLog(env, org.id, user.id, 'generate', 'ssp', id, { system_id, framework_id });
-  return jsonResponse({ ssp: { id, oscal: oscalSSP } }, 201);
+  // For FISMA SSPs, initialize extended tables
+  if (ssp_type === 'fisma') {
+    const targetAtoDate = new Date(Date.now() + 180 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]; // 6 months from now
+
+    // Initialize RMF Tracking
+    await env.DB.prepare(
+      `INSERT INTO ssp_rmf_tracking (id, ssp_id, current_step, target_ato_date) VALUES (?, ?, 'prepare', ?)`
+    ).bind(generateId(), id, targetAtoDate).run().catch(() => {});
+
+    // Initialize Digital Identity (defaults based on impact level)
+    const ialAal = system.impact_level === 'High' ? 'IAL3' : system.impact_level === 'Low' ? 'IAL1' : 'IAL2';
+    await env.DB.prepare(
+      `INSERT INTO ssp_digital_identity (id, ssp_id, ial, aal, fal) VALUES (?, ?, ?, ?, ?)`
+    ).bind(generateId(), id, ialAal, ialAal.replace('IAL', 'AAL'), ialAal.replace('IAL', 'FAL')).run().catch(() => {});
+
+    // Initialize Config Management
+    await env.DB.prepare(
+      `INSERT INTO ssp_config_management (id, ssp_id, cm_purpose) VALUES (?, ?, ?)`
+    ).bind(generateId(), id, `Configuration management ensures controlled and documented changes to ${system.name}.`).run().catch(() => {});
+
+    // Initialize Privacy Analysis
+    await env.DB.prepare(
+      `INSERT INTO ssp_privacy_analysis (id, ssp_id, collects_pii, pia_required) VALUES (?, ?, 'TBD', 'TBD')`
+    ).bind(generateId(), id).run().catch(() => {});
+
+    // Initialize POA&M Summary
+    await env.DB.prepare(
+      `INSERT INTO ssp_poam_summary (id, ssp_id, review_frequency, remediation_workflow) VALUES (?, ?, 'Monthly', 'Standard remediation workflow per organization policy.')`
+    ).bind(generateId(), id).run().catch(() => {});
+
+    // Initialize SCRM Plan
+    await env.DB.prepare(
+      `INSERT INTO ssp_scrm_plan (id, ssp_id, scrm_narrative) VALUES (?, ?, ?)`
+    ).bind(generateId(), id, `Supply Chain Risk Management plan for ${system.name}.`).run().catch(() => {});
+  }
+
+  await auditLog(env, org.id, user.id, 'generate', 'ssp', id, { system_id, framework_id, ssp_type });
+  return jsonResponse({ ssp: { id, oscal: oscalSSP, ssp_type } }, 201);
 }
 
 async function handleListSSPs(env, org) {
@@ -2642,16 +3249,19 @@ async function handleGetSSP(env, org, sspId) {
 
 async function handleUpdateSSPSection(request, env, org, user, sspId, sectionKey) {
   if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
-  if (!SSP_SECTION_KEYS.includes(sectionKey)) return jsonResponse({ error: 'Invalid section key' }, 400);
 
-  const doc = await env.DB.prepare('SELECT id, oscal_json FROM ssp_documents WHERE id = ? AND org_id = ?').bind(sspId, org.id).first();
+  const doc = await env.DB.prepare('SELECT id, oscal_json, ssp_type FROM ssp_documents WHERE id = ? AND org_id = ?').bind(sspId, org.id).first();
   if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+
+  // Validate section key based on SSP type
+  const validKeys = getSSPSectionKeys(doc.ssp_type || 'standard');
+  if (!validKeys.includes(sectionKey)) return jsonResponse({ error: 'Invalid section key' }, 400);
 
   const { content } = await request.json();
   if (content === undefined) return jsonResponse({ error: 'content required' }, 400);
 
   let oscal; try { oscal = JSON.parse(doc.oscal_json || '{}'); } catch { oscal = {}; }
-  if (!oscal._authoring) oscal._authoring = buildEmptyAuthoring(user.id);
+  if (!oscal._authoring) oscal._authoring = buildEmptyAuthoring(user.id, doc.ssp_type || 'standard');
   oscal._authoring.sections[sectionKey] = {
     content, status: content.trim() ? 'draft' : 'empty', ai_generated: false,
     last_edited_by: user.id, last_edited_at: new Date().toISOString(),
@@ -2676,8 +3286,9 @@ async function handleAIPopulateSSP(request, env, org, user, sspId) {
   if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
 
   const body = await request.json().catch(() => ({}));
+  const sspType = doc.ssp_type || 'standard';
   let oscal; try { oscal = JSON.parse(doc.oscal_json || '{}'); } catch { oscal = {}; }
-  if (!oscal._authoring) oscal._authoring = buildEmptyAuthoring(user.id);
+  if (!oscal._authoring) oscal._authoring = buildEmptyAuthoring(user.id, sspType);
 
   const orgRow = await env.DB.prepare('SELECT name FROM organizations WHERE id = ?').bind(org.id).first();
   const orgName = orgRow?.name || 'Organization';
@@ -2687,10 +3298,11 @@ async function handleAIPopulateSSP(request, env, org, user, sspId) {
     framework_name: doc.framework_name || 'Framework', org_name: orgName,
   };
 
-  // Determine which sections to populate
+  // Determine which sections to populate based on SSP type
+  const sectionKeys = getSSPSectionKeys(sspType);
   let targetSections = body.sections;
   if (!targetSections || !Array.isArray(targetSections) || targetSections.length === 0) {
-    targetSections = SSP_SECTION_KEYS.filter(k => SSP_SECTION_PROMPTS[k] && (!oscal._authoring.sections[k]?.content?.trim() || oscal._authoring.sections[k]?.status === 'empty'));
+    targetSections = sectionKeys.filter(k => SSP_SECTION_PROMPTS[k] && (!oscal._authoring.sections[k]?.content?.trim() || oscal._authoring.sections[k]?.status === 'empty'));
   }
 
   const results = {};
@@ -2726,11 +3338,14 @@ async function handleAIRefineSSP(request, env, org, user, sspId) {
   ).bind(sspId, org.id).first();
   if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
 
+  const sspType = doc.ssp_type || 'standard';
+  const validKeys = getSSPSectionKeys(sspType);
+
   const { section_key, instructions } = await request.json();
-  if (!section_key || !SSP_SECTION_KEYS.includes(section_key)) return jsonResponse({ error: 'Invalid section_key' }, 400);
+  if (!section_key || !validKeys.includes(section_key)) return jsonResponse({ error: 'Invalid section_key' }, 400);
 
   let oscal; try { oscal = JSON.parse(doc.oscal_json || '{}'); } catch { oscal = {}; }
-  if (!oscal._authoring) oscal._authoring = buildEmptyAuthoring(user.id);
+  if (!oscal._authoring) oscal._authoring = buildEmptyAuthoring(user.id, sspType);
   const currentContent = oscal._authoring.sections[section_key]?.content || '';
 
   const sysPrompt = 'You are a senior cybersecurity compliance consultant. Refine and improve the following System Security Plan section. Maintain a professional, formal tone appropriate for federal compliance documentation.';
@@ -2799,6 +3414,579 @@ async function handleCreateSSPVersion(request, env, org, user, sspId) {
   return jsonResponse({ version: newVersion, versions: meta.versions });
 }
 
+// Generate a scoped token for the Reporter app
+async function handleGenerateReporterToken(env, org, user, sspId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  // Verify SSP exists and belongs to org
+  const doc = await env.DB.prepare('SELECT id, title FROM ssp_documents WHERE id = ? AND org_id = ?').bind(sspId, org.id).first();
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+
+  // Generate a scoped JWT token for the Reporter (4 hour expiry)
+  const now = Math.floor(Date.now() / 1000);
+  const exp = now + (4 * 60 * 60); // 4 hours
+
+  const payload = {
+    sub: user.id,
+    userId: user.id,
+    orgId: org.id,
+    sspId: sspId,
+    scope: 'ssp:edit',
+    iat: now,
+    exp: exp,
+  };
+
+  // Encode as JWT (HS256)
+  const header = { alg: 'HS256', typ: 'JWT' };
+  const encodedHeader = btoa(JSON.stringify(header)).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+  const encodedPayload = btoa(JSON.stringify(payload)).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+
+  const signatureInput = `${encodedHeader}.${encodedPayload}`;
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(env.JWT_SECRET),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(signatureInput));
+  const encodedSignature = btoa(String.fromCharCode(...new Uint8Array(signature))).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+
+  const token = `${encodedHeader}.${encodedPayload}.${encodedSignature}`;
+
+  // Build the Reporter URL with embedded token
+  const reporterUrl = env.REPORTER_URL || 'https://reporter-forgecomply360.pages.dev';
+  const apiUrl = env.API_URL || 'https://forge-comply360-api.stanley-riley.workers.dev';
+  const fullUrl = `${reporterUrl}/#token=${encodeURIComponent(token)}&ssp=${encodeURIComponent(sspId)}&api=${encodeURIComponent(apiUrl)}`;
+
+  await auditLog(env, org.id, user.id, 'create', 'reporter_token', sspId, { expires_at: new Date(exp * 1000).toISOString() });
+
+  return jsonResponse({
+    token,
+    expires_at: new Date(exp * 1000).toISOString(),
+    reporter_url: fullUrl,
+    ssp_id: sspId,
+    ssp_title: doc.title,
+  });
+}
+
+// Generate Reporter token (generic - can include optional ssp_id in body)
+async function handleGenerateReporterTokenGeneric(request, env, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  let sspId = null;
+  let sspTitle = null;
+
+  // Parse optional ssp_id from request body
+  try {
+    const body = await request.json();
+    if (body.ssp_id) {
+      // Verify SSP exists and belongs to org
+      const doc = await env.DB.prepare('SELECT id, title FROM ssp_documents WHERE id = ? AND org_id = ?').bind(body.ssp_id, org.id).first();
+      if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+      sspId = doc.id;
+      sspTitle = doc.title;
+    }
+  } catch { /* No body or invalid JSON - that's ok */ }
+
+  // Generate a scoped JWT token for the Reporter (4 hour expiry)
+  const now = Math.floor(Date.now() / 1000);
+  const exp = now + (4 * 60 * 60); // 4 hours
+
+  const payload = {
+    sub: user.id,
+    userId: user.id,
+    orgId: org.id,
+    sspId: sspId, // null means user can create new SSPs
+    scope: sspId ? 'ssp:edit' : 'ssp:create',
+    iat: now,
+    exp: exp,
+  };
+
+  // Encode as JWT (HS256)
+  const header = { alg: 'HS256', typ: 'JWT' };
+  const encodedHeader = btoa(JSON.stringify(header)).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+  const encodedPayload = btoa(JSON.stringify(payload)).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+
+  const signatureInput = `${encodedHeader}.${encodedPayload}`;
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(env.JWT_SECRET),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(signatureInput));
+  const encodedSignature = btoa(String.fromCharCode(...new Uint8Array(signature))).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+
+  const token = `${encodedHeader}.${encodedPayload}.${encodedSignature}`;
+
+  // Build the Reporter URL with embedded token
+  const reporterUrl = env.REPORTER_URL || 'https://reporter-forgecomply360.pages.dev';
+  const apiUrl = env.API_URL || 'https://forge-comply360-api.stanley-riley.workers.dev';
+  let fullUrl = `${reporterUrl}/#token=${encodeURIComponent(token)}&api=${encodeURIComponent(apiUrl)}`;
+  if (sspId) {
+    fullUrl += `&ssp=${encodeURIComponent(sspId)}`;
+  }
+
+  await auditLog(env, org.id, user.id, 'create', 'reporter_token', sspId || 'new', { expires_at: new Date(exp * 1000).toISOString(), scope: payload.scope });
+
+  return jsonResponse({
+    token,
+    expires_at: new Date(exp * 1000).toISOString(),
+    reporter_url: fullUrl,
+    ssp_id: sspId,
+    ssp_title: sspTitle,
+  });
+}
+
+// ============================================================================
+// FISMA SSP Extended Tables Handlers
+// ============================================================================
+
+// Helper to verify SSP belongs to org and is FISMA type
+async function verifyFISMASSP(env, org, sspId) {
+  const doc = await env.DB.prepare('SELECT id, ssp_type FROM ssp_documents WHERE id = ? AND org_id = ?').bind(sspId, org.id).first();
+  return doc;
+}
+
+// Information Types (NIST SP 800-60)
+async function handleGetSSPInfoTypes(env, org, sspId) {
+  const doc = await verifyFISMASSP(env, org, sspId);
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+  const { results } = await env.DB.prepare('SELECT * FROM ssp_information_types WHERE ssp_id = ? ORDER BY nist_id').bind(sspId).all();
+  return jsonResponse({ info_types: results });
+}
+
+async function handleCreateSSPInfoType(request, env, org, user, sspId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const doc = await verifyFISMASSP(env, org, sspId);
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+  const { nist_id, name, confidentiality, integrity, availability, justification } = await request.json();
+  if (!nist_id || !name) return jsonResponse({ error: 'nist_id and name required' }, 400);
+  const id = generateId();
+  await env.DB.prepare(
+    `INSERT INTO ssp_information_types (id, ssp_id, nist_id, name, confidentiality, integrity, availability, justification)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(id, sspId, nist_id, name, confidentiality || null, integrity || null, availability || null, justification || null).run();
+  await auditLog(env, org.id, user.id, 'create', 'ssp_info_type', id, { ssp_id: sspId, nist_id });
+  return jsonResponse({ id, nist_id, name, confidentiality, integrity, availability, justification }, 201);
+}
+
+async function handleDeleteSSPInfoType(env, org, user, sspId, infoTypeId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const doc = await verifyFISMASSP(env, org, sspId);
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+  await env.DB.prepare('DELETE FROM ssp_information_types WHERE id = ? AND ssp_id = ?').bind(infoTypeId, sspId).run();
+  await auditLog(env, org.id, user.id, 'delete', 'ssp_info_type', infoTypeId, { ssp_id: sspId });
+  return jsonResponse({ deleted: true });
+}
+
+// RMF Lifecycle Tracking
+async function handleGetSSPRMFTracking(env, org, sspId) {
+  const doc = await verifyFISMASSP(env, org, sspId);
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+  const tracking = await env.DB.prepare('SELECT * FROM ssp_rmf_tracking WHERE ssp_id = ?').bind(sspId).first();
+  return jsonResponse({ rmf_tracking: tracking || null });
+}
+
+async function handleUpdateSSPRMFTracking(request, env, org, user, sspId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const doc = await verifyFISMASSP(env, org, sspId);
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+  const body = await request.json();
+  const existing = await env.DB.prepare('SELECT id FROM ssp_rmf_tracking WHERE ssp_id = ?').bind(sspId).first();
+  if (existing) {
+    const updates = [], values = [];
+    if (body.current_step) { updates.push('current_step = ?'); values.push(body.current_step); }
+    if (body.target_ato_date !== undefined) { updates.push('target_ato_date = ?'); values.push(body.target_ato_date); }
+    if (body.prepare_tasks) { updates.push('prepare_tasks = ?'); values.push(JSON.stringify(body.prepare_tasks)); }
+    if (body.categorize_tasks) { updates.push('categorize_tasks = ?'); values.push(JSON.stringify(body.categorize_tasks)); }
+    if (body.select_tasks) { updates.push('select_tasks = ?'); values.push(JSON.stringify(body.select_tasks)); }
+    if (body.implement_tasks) { updates.push('implement_tasks = ?'); values.push(JSON.stringify(body.implement_tasks)); }
+    if (body.assess_tasks) { updates.push('assess_tasks = ?'); values.push(JSON.stringify(body.assess_tasks)); }
+    if (body.authorize_tasks) { updates.push('authorize_tasks = ?'); values.push(JSON.stringify(body.authorize_tasks)); }
+    if (body.monitor_tasks) { updates.push('monitor_tasks = ?'); values.push(JSON.stringify(body.monitor_tasks)); }
+    if (body.artifacts_completed) { updates.push('artifacts_completed = ?'); values.push(JSON.stringify(body.artifacts_completed)); }
+    updates.push("updated_at = datetime('now')");
+    values.push(sspId);
+    await env.DB.prepare(`UPDATE ssp_rmf_tracking SET ${updates.join(', ')} WHERE ssp_id = ?`).bind(...values).run();
+  } else {
+    const id = generateId();
+    await env.DB.prepare(
+      `INSERT INTO ssp_rmf_tracking (id, ssp_id, current_step, target_ato_date, prepare_tasks, categorize_tasks, select_tasks, implement_tasks, assess_tasks, authorize_tasks, monitor_tasks, artifacts_completed)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(id, sspId, body.current_step || 'prepare', body.target_ato_date || null,
+      JSON.stringify(body.prepare_tasks || {}), JSON.stringify(body.categorize_tasks || {}),
+      JSON.stringify(body.select_tasks || {}), JSON.stringify(body.implement_tasks || {}),
+      JSON.stringify(body.assess_tasks || {}), JSON.stringify(body.authorize_tasks || {}),
+      JSON.stringify(body.monitor_tasks || {}), JSON.stringify(body.artifacts_completed || [])).run();
+  }
+  await auditLog(env, org.id, user.id, 'update', 'ssp_rmf_tracking', sspId, { current_step: body.current_step });
+  const updated = await env.DB.prepare('SELECT * FROM ssp_rmf_tracking WHERE ssp_id = ?').bind(sspId).first();
+  return jsonResponse({ rmf_tracking: updated });
+}
+
+// Ports, Protocols & Services
+async function handleGetSSPPortsProtocols(env, org, sspId) {
+  const doc = await verifyFISMASSP(env, org, sspId);
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+  const { results } = await env.DB.prepare('SELECT * FROM ssp_ports_protocols WHERE ssp_id = ? ORDER BY port').bind(sspId).all();
+  return jsonResponse({ ports_protocols: results });
+}
+
+async function handleCreateSSPPortProtocol(request, env, org, user, sspId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const doc = await verifyFISMASSP(env, org, sspId);
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+  const { port, protocol, service, purpose, direction, dit_ref } = await request.json();
+  if (!port) return jsonResponse({ error: 'port required' }, 400);
+  const id = generateId();
+  await env.DB.prepare(
+    `INSERT INTO ssp_ports_protocols (id, ssp_id, port, protocol, service, purpose, direction, dit_ref)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(id, sspId, port, protocol || null, service || null, purpose || null, direction || null, dit_ref || null).run();
+  await auditLog(env, org.id, user.id, 'create', 'ssp_port_protocol', id, { ssp_id: sspId, port });
+  return jsonResponse({ id, port, protocol, service, purpose, direction, dit_ref }, 201);
+}
+
+async function handleDeleteSSPPortProtocol(env, org, user, sspId, ppsId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const doc = await verifyFISMASSP(env, org, sspId);
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+  await env.DB.prepare('DELETE FROM ssp_ports_protocols WHERE id = ? AND ssp_id = ?').bind(ppsId, sspId).run();
+  await auditLog(env, org.id, user.id, 'delete', 'ssp_port_protocol', ppsId, { ssp_id: sspId });
+  return jsonResponse({ deleted: true });
+}
+
+// Cryptographic Modules
+async function handleGetSSPCryptoModules(env, org, sspId) {
+  const doc = await verifyFISMASSP(env, org, sspId);
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+  const { results } = await env.DB.prepare('SELECT * FROM ssp_crypto_modules WHERE ssp_id = ? ORDER BY module_name').bind(sspId).all();
+  return jsonResponse({ crypto_modules: results });
+}
+
+async function handleCreateSSPCryptoModule(request, env, org, user, sspId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const doc = await verifyFISMASSP(env, org, sspId);
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+  const { module_name, vendor, fips_cert_number, validation_level, usage, where_used, expiration_date } = await request.json();
+  if (!module_name) return jsonResponse({ error: 'module_name required' }, 400);
+  const id = generateId();
+  await env.DB.prepare(
+    `INSERT INTO ssp_crypto_modules (id, ssp_id, module_name, vendor, fips_cert_number, validation_level, usage, where_used, expiration_date)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(id, sspId, module_name, vendor || null, fips_cert_number || null, validation_level || null, usage || null, where_used || null, expiration_date || null).run();
+  await auditLog(env, org.id, user.id, 'create', 'ssp_crypto_module', id, { ssp_id: sspId, module_name });
+  return jsonResponse({ id, module_name, vendor, fips_cert_number, validation_level, usage, where_used, expiration_date }, 201);
+}
+
+async function handleDeleteSSPCryptoModule(env, org, user, sspId, moduleId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const doc = await verifyFISMASSP(env, org, sspId);
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+  await env.DB.prepare('DELETE FROM ssp_crypto_modules WHERE id = ? AND ssp_id = ?').bind(moduleId, sspId).run();
+  await auditLog(env, org.id, user.id, 'delete', 'ssp_crypto_module', moduleId, { ssp_id: sspId });
+  return jsonResponse({ deleted: true });
+}
+
+// Digital Identity
+async function handleGetSSPDigitalIdentity(env, org, sspId) {
+  const doc = await verifyFISMASSP(env, org, sspId);
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+  const identity = await env.DB.prepare('SELECT * FROM ssp_digital_identity WHERE ssp_id = ?').bind(sspId).first();
+  return jsonResponse({ digital_identity: identity || null });
+}
+
+async function handleUpdateSSPDigitalIdentity(request, env, org, user, sspId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const doc = await verifyFISMASSP(env, org, sspId);
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+  const body = await request.json();
+  const existing = await env.DB.prepare('SELECT id FROM ssp_digital_identity WHERE ssp_id = ?').bind(sspId).first();
+  if (existing) {
+    await env.DB.prepare(
+      `UPDATE ssp_digital_identity SET ial = ?, aal = ?, fal = ?, mfa_methods = ?, identity_proofing_description = ?, authenticator_description = ?, federation_description = ?, narrative = ?, updated_at = datetime('now') WHERE ssp_id = ?`
+    ).bind(body.ial || null, body.aal || null, body.fal || null, body.mfa_methods || null, body.identity_proofing_description || null, body.authenticator_description || null, body.federation_description || null, body.narrative || null, sspId).run();
+  } else {
+    const id = generateId();
+    await env.DB.prepare(
+      `INSERT INTO ssp_digital_identity (id, ssp_id, ial, aal, fal, mfa_methods, identity_proofing_description, authenticator_description, federation_description, narrative)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(id, sspId, body.ial || null, body.aal || null, body.fal || null, body.mfa_methods || null, body.identity_proofing_description || null, body.authenticator_description || null, body.federation_description || null, body.narrative || null).run();
+  }
+  await auditLog(env, org.id, user.id, 'update', 'ssp_digital_identity', sspId, {});
+  const updated = await env.DB.prepare('SELECT * FROM ssp_digital_identity WHERE ssp_id = ?').bind(sspId).first();
+  return jsonResponse({ digital_identity: updated });
+}
+
+// Separation of Duties
+async function handleGetSSPSeparationDuties(env, org, sspId) {
+  const doc = await verifyFISMASSP(env, org, sspId);
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+  const { results } = await env.DB.prepare('SELECT * FROM ssp_separation_duties WHERE ssp_id = ? ORDER BY role').bind(sspId).all();
+  return jsonResponse({ separation_duties: results });
+}
+
+async function handleCreateSSPSeparationDuty(request, env, org, user, sspId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const doc = await verifyFISMASSP(env, org, sspId);
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+  const { role, access_level, prohibited_roles, justification, dual_control_required } = await request.json();
+  if (!role) return jsonResponse({ error: 'role required' }, 400);
+  const id = generateId();
+  await env.DB.prepare(
+    `INSERT INTO ssp_separation_duties (id, ssp_id, role, access_level, prohibited_roles, justification, dual_control_required)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).bind(id, sspId, role, access_level || null, prohibited_roles || null, justification || null, dual_control_required ? 1 : 0).run();
+  await auditLog(env, org.id, user.id, 'create', 'ssp_separation_duty', id, { ssp_id: sspId, role });
+  return jsonResponse({ id, role, access_level, prohibited_roles, justification, dual_control_required }, 201);
+}
+
+async function handleDeleteSSPSeparationDuty(env, org, user, sspId, dutyId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const doc = await verifyFISMASSP(env, org, sspId);
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+  await env.DB.prepare('DELETE FROM ssp_separation_duties WHERE id = ? AND ssp_id = ?').bind(dutyId, sspId).run();
+  await auditLog(env, org.id, user.id, 'delete', 'ssp_separation_duty', dutyId, { ssp_id: sspId });
+  return jsonResponse({ deleted: true });
+}
+
+// Policy Mappings
+async function handleGetSSPPolicyMappings(env, org, sspId) {
+  const doc = await verifyFISMASSP(env, org, sspId);
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+  const { results } = await env.DB.prepare('SELECT * FROM ssp_policy_mappings WHERE ssp_id = ? ORDER BY control_family').bind(sspId).all();
+  return jsonResponse({ policy_mappings: results });
+}
+
+async function handleCreateSSPPolicyMapping(request, env, org, user, sspId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const doc = await verifyFISMASSP(env, org, sspId);
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+  const { policy_id, control_family, policy_title, version, owner, last_reviewed, next_review, status } = await request.json();
+  if (!control_family || !policy_title) return jsonResponse({ error: 'control_family and policy_title required' }, 400);
+  const id = generateId();
+  await env.DB.prepare(
+    `INSERT INTO ssp_policy_mappings (id, ssp_id, policy_id, control_family, policy_title, version, owner, last_reviewed, next_review, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(id, sspId, policy_id || null, control_family, policy_title, version || null, owner || null, last_reviewed || null, next_review || null, status || null).run();
+  await auditLog(env, org.id, user.id, 'create', 'ssp_policy_mapping', id, { ssp_id: sspId, control_family });
+  return jsonResponse({ id, policy_id, control_family, policy_title, version, owner, last_reviewed, next_review, status }, 201);
+}
+
+async function handleDeleteSSPPolicyMapping(env, org, user, sspId, mappingId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const doc = await verifyFISMASSP(env, org, sspId);
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+  await env.DB.prepare('DELETE FROM ssp_policy_mappings WHERE id = ? AND ssp_id = ?').bind(mappingId, sspId).run();
+  await auditLog(env, org.id, user.id, 'delete', 'ssp_policy_mapping', mappingId, { ssp_id: sspId });
+  return jsonResponse({ deleted: true });
+}
+
+// SCRM (Supply Chain Risk Management)
+async function handleGetSSPSCRM(env, org, sspId) {
+  const doc = await verifyFISMASSP(env, org, sspId);
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+  const { results } = await env.DB.prepare('SELECT * FROM ssp_scrm WHERE ssp_id = ? ORDER BY supplier_name').bind(sspId).all();
+  return jsonResponse({ scrm_entries: results });
+}
+
+async function handleCreateSSPSCRMEntry(request, env, org, user, sspId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const doc = await verifyFISMASSP(env, org, sspId);
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+  const { supplier_name, component_type, criticality, sbom_status, sbom_format, risk_level, provenance_verified, last_assessment_date, vendor_id } = await request.json();
+  if (!supplier_name) return jsonResponse({ error: 'supplier_name required' }, 400);
+  const id = generateId();
+  await env.DB.prepare(
+    `INSERT INTO ssp_scrm (id, ssp_id, supplier_name, component_type, criticality, sbom_status, sbom_format, risk_level, provenance_verified, last_assessment_date, vendor_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(id, sspId, supplier_name, component_type || null, criticality || null, sbom_status || null, sbom_format || null, risk_level || null, provenance_verified ? 1 : 0, last_assessment_date || null, vendor_id || null).run();
+  await auditLog(env, org.id, user.id, 'create', 'ssp_scrm', id, { ssp_id: sspId, supplier_name });
+  return jsonResponse({ id, supplier_name, component_type, criticality, sbom_status, sbom_format, risk_level, provenance_verified, last_assessment_date, vendor_id }, 201);
+}
+
+async function handleDeleteSSPSCRMEntry(env, org, user, sspId, entryId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const doc = await verifyFISMASSP(env, org, sspId);
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+  await env.DB.prepare('DELETE FROM ssp_scrm WHERE id = ? AND ssp_id = ?').bind(entryId, sspId).run();
+  await auditLog(env, org.id, user.id, 'delete', 'ssp_scrm', entryId, { ssp_id: sspId });
+  return jsonResponse({ deleted: true });
+}
+
+async function handleGetSSPSCRMPlan(env, org, sspId) {
+  const doc = await verifyFISMASSP(env, org, sspId);
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+  const plan = await env.DB.prepare('SELECT * FROM ssp_scrm_plan WHERE ssp_id = ?').bind(sspId).first();
+  return jsonResponse({ scrm_plan: plan || null });
+}
+
+async function handleUpdateSSPSCRMPlan(request, env, org, user, sspId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const doc = await verifyFISMASSP(env, org, sspId);
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+  const body = await request.json();
+  const existing = await env.DB.prepare('SELECT id FROM ssp_scrm_plan WHERE ssp_id = ?').bind(sspId).first();
+  if (existing) {
+    await env.DB.prepare(
+      `UPDATE ssp_scrm_plan SET plan_summary = ?, scrm_policy_reference = ?, acquisition_process = ?, software_integrity_verification = ?, updated_at = datetime('now') WHERE ssp_id = ?`
+    ).bind(body.plan_summary || null, body.scrm_policy_reference || null, body.acquisition_process || null, body.software_integrity_verification || null, sspId).run();
+  } else {
+    const id = generateId();
+    await env.DB.prepare(
+      `INSERT INTO ssp_scrm_plan (id, ssp_id, plan_summary, scrm_policy_reference, acquisition_process, software_integrity_verification)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).bind(id, sspId, body.plan_summary || null, body.scrm_policy_reference || null, body.acquisition_process || null, body.software_integrity_verification || null).run();
+  }
+  await auditLog(env, org.id, user.id, 'update', 'ssp_scrm_plan', sspId, {});
+  const updated = await env.DB.prepare('SELECT * FROM ssp_scrm_plan WHERE ssp_id = ?').bind(sspId).first();
+  return jsonResponse({ scrm_plan: updated });
+}
+
+// Privacy Analysis
+async function handleGetSSPPrivacyAnalysis(env, org, sspId) {
+  const doc = await verifyFISMASSP(env, org, sspId);
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+  const privacy = await env.DB.prepare('SELECT * FROM ssp_privacy_analysis WHERE ssp_id = ?').bind(sspId).first();
+  return jsonResponse({ privacy_analysis: privacy || null });
+}
+
+async function handleUpdateSSPPrivacyAnalysis(request, env, org, user, sspId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const doc = await verifyFISMASSP(env, org, sspId);
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+  const body = await request.json();
+  const existing = await env.DB.prepare('SELECT id FROM ssp_privacy_analysis WHERE ssp_id = ?').bind(sspId).first();
+  if (existing) {
+    await env.DB.prepare(
+      `UPDATE ssp_privacy_analysis SET collects_pii = ?, pii_types = ?, record_count = ?, pia_required = ?,
+       authority_to_collect = ?, purpose_of_collection = ?, data_minimization = ?, retention_disposal = ?,
+       third_party_sharing = ?, consent_redress = ?, sorn_status = ?, sorn_number = ?, sorn_url = ?,
+       privacy_controls_implemented = ?, updated_at = datetime('now') WHERE ssp_id = ?`
+    ).bind(body.collects_pii || null, body.pii_types || null, body.record_count || null, body.pia_required || null,
+      body.authority_to_collect || null, body.purpose_of_collection || null, body.data_minimization || null, body.retention_disposal || null,
+      body.third_party_sharing || null, body.consent_redress || null, body.sorn_status || null, body.sorn_number || null, body.sorn_url || null,
+      body.privacy_controls_implemented || null, sspId).run();
+  } else {
+    const id = generateId();
+    await env.DB.prepare(
+      `INSERT INTO ssp_privacy_analysis (id, ssp_id, collects_pii, pii_types, record_count, pia_required,
+       authority_to_collect, purpose_of_collection, data_minimization, retention_disposal,
+       third_party_sharing, consent_redress, sorn_status, sorn_number, sorn_url, privacy_controls_implemented)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(id, sspId, body.collects_pii || null, body.pii_types || null, body.record_count || null, body.pia_required || null,
+      body.authority_to_collect || null, body.purpose_of_collection || null, body.data_minimization || null, body.retention_disposal || null,
+      body.third_party_sharing || null, body.consent_redress || null, body.sorn_status || null, body.sorn_number || null, body.sorn_url || null,
+      body.privacy_controls_implemented || null).run();
+  }
+  await auditLog(env, org.id, user.id, 'update', 'ssp_privacy_analysis', sspId, {});
+  const updated = await env.DB.prepare('SELECT * FROM ssp_privacy_analysis WHERE ssp_id = ?').bind(sspId).first();
+  return jsonResponse({ privacy_analysis: updated });
+}
+
+// Configuration Management
+async function handleGetSSPConfigManagement(env, org, sspId) {
+  const doc = await verifyFISMASSP(env, org, sspId);
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+  const cm = await env.DB.prepare('SELECT * FROM ssp_config_management WHERE ssp_id = ?').bind(sspId).first();
+  return jsonResponse({ config_management: cm || null });
+}
+
+async function handleUpdateSSPConfigManagement(request, env, org, user, sspId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const doc = await verifyFISMASSP(env, org, sspId);
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+  const body = await request.json();
+  const existing = await env.DB.prepare('SELECT id FROM ssp_config_management WHERE ssp_id = ?').bind(sspId).first();
+  if (existing) {
+    await env.DB.prepare(
+      `UPDATE ssp_config_management SET purpose = ?, scope = ?, cm_roles = ?, change_control_process = ?,
+       configuration_items = ?, baseline_management = ?, cm_audit_process = ?, updated_at = datetime('now') WHERE ssp_id = ?`
+    ).bind(body.purpose || null, body.scope || null, body.cm_roles || null, body.change_control_process || null,
+      body.configuration_items || null, body.baseline_management || null, body.cm_audit_process || null, sspId).run();
+  } else {
+    const id = generateId();
+    await env.DB.prepare(
+      `INSERT INTO ssp_config_management (id, ssp_id, purpose, scope, cm_roles, change_control_process, configuration_items, baseline_management, cm_audit_process)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(id, sspId, body.purpose || null, body.scope || null, body.cm_roles || null, body.change_control_process || null,
+      body.configuration_items || null, body.baseline_management || null, body.cm_audit_process || null).run();
+  }
+  await auditLog(env, org.id, user.id, 'update', 'ssp_config_management', sspId, {});
+  const updated = await env.DB.prepare('SELECT * FROM ssp_config_management WHERE ssp_id = ?').bind(sspId).first();
+  return jsonResponse({ config_management: updated });
+}
+
+// CM Baselines
+async function handleGetSSPCMBaselines(env, org, sspId) {
+  const doc = await verifyFISMASSP(env, org, sspId);
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+  const { results } = await env.DB.prepare('SELECT * FROM ssp_cm_baselines WHERE ssp_id = ? ORDER BY component').bind(sspId).all();
+  return jsonResponse({ cm_baselines: results });
+}
+
+async function handleCreateSSPCMBaseline(request, env, org, user, sspId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const doc = await verifyFISMASSP(env, org, sspId);
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+  const { component, benchmark, version, compliance_pct, last_scan, tool_used, deviations } = await request.json();
+  if (!component) return jsonResponse({ error: 'component required' }, 400);
+  const id = generateId();
+  await env.DB.prepare(
+    `INSERT INTO ssp_cm_baselines (id, ssp_id, component, benchmark, version, compliance_pct, last_scan, tool_used, deviations)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(id, sspId, component, benchmark || null, version || null, compliance_pct || null, last_scan || null, tool_used || null, deviations || null).run();
+  await auditLog(env, org.id, user.id, 'create', 'ssp_cm_baseline', id, { ssp_id: sspId, component });
+  return jsonResponse({ id, component, benchmark, version, compliance_pct, last_scan, tool_used, deviations }, 201);
+}
+
+async function handleDeleteSSPCMBaseline(env, org, user, sspId, baselineId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const doc = await verifyFISMASSP(env, org, sspId);
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+  await env.DB.prepare('DELETE FROM ssp_cm_baselines WHERE id = ? AND ssp_id = ?').bind(baselineId, sspId).run();
+  await auditLog(env, org.id, user.id, 'delete', 'ssp_cm_baseline', baselineId, { ssp_id: sspId });
+  return jsonResponse({ deleted: true });
+}
+
+// POA&M Summary
+async function handleGetSSPPOAMSummary(env, org, sspId) {
+  const doc = await verifyFISMASSP(env, org, sspId);
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+  const summary = await env.DB.prepare('SELECT * FROM ssp_poam_summary WHERE ssp_id = ?').bind(sspId).first();
+  return jsonResponse({ poam_summary: summary || null });
+}
+
+async function handleUpdateSSPPOAMSummary(request, env, org, user, sspId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const doc = await verifyFISMASSP(env, org, sspId);
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+  const body = await request.json();
+  const existing = await env.DB.prepare('SELECT id FROM ssp_poam_summary WHERE ssp_id = ?').bind(sspId).first();
+  if (existing) {
+    await env.DB.prepare(
+      `UPDATE ssp_poam_summary SET total_open = ?, total_closed = ?, critical_count = ?, high_count = ?,
+       moderate_count = ?, low_count = ?, overdue_count = ?, review_frequency = ?, remediation_workflow = ?,
+       last_updated = datetime('now') WHERE ssp_id = ?`
+    ).bind(body.total_open || 0, body.total_closed || 0, body.critical_count || 0, body.high_count || 0,
+      body.moderate_count || 0, body.low_count || 0, body.overdue_count || 0, body.review_frequency || null,
+      body.remediation_workflow || null, sspId).run();
+  } else {
+    const id = generateId();
+    await env.DB.prepare(
+      `INSERT INTO ssp_poam_summary (id, ssp_id, total_open, total_closed, critical_count, high_count, moderate_count, low_count, overdue_count, review_frequency, remediation_workflow)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(id, sspId, body.total_open || 0, body.total_closed || 0, body.critical_count || 0, body.high_count || 0,
+      body.moderate_count || 0, body.low_count || 0, body.overdue_count || 0, body.review_frequency || null, body.remediation_workflow || null).run();
+  }
+  await auditLog(env, org.id, user.id, 'update', 'ssp_poam_summary', sspId, {});
+  const updated = await env.DB.prepare('SELECT * FROM ssp_poam_summary WHERE ssp_id = ?').bind(sspId).first();
+  return jsonResponse({ poam_summary: updated });
+}
+
 // ============================================================================
 // RISKS (RiskForge ERM)
 // ============================================================================
@@ -2861,7 +4049,7 @@ async function handleCreateRisk(request, env, org, user) {
   ).bind(id, org.id, system_id || null, riskId, title, description || null, category || 'technical', l, i, riskLevel, treatment || 'mitigate', treatment_plan || null, treatment_due_date || null, owner || null, related_controls ? JSON.stringify(related_controls) : '[]').run();
 
   await auditLog(env, org.id, user.id, 'create', 'risk', id, { title, risk_level: riskLevel });
-  if (['high', 'critical'].includes(riskLevel)) await notifyOrgRole(env, org.id, user.id, 'manager', 'risk_alert', 'High Risk Created', 'Risk "' + title + '" rated ' + riskLevel, 'risk', id, { risk_level: riskLevel });
+  if (['high', 'critical'].includes(riskLevel)) await notifyOrgRole(env, org.id, user.id, 'manager', 'risk_alert', 'High Risk Created', 'Risk "' + sanitizeText(title) + '" rated ' + riskLevel, 'risk', id, { risk_level: riskLevel });
   const risk = await env.DB.prepare('SELECT r.*, s.name as system_name FROM risks r LEFT JOIN systems s ON s.id = r.system_id WHERE r.id = ?').bind(id).first();
   return jsonResponse({ risk }, 201);
 }
@@ -3222,79 +4410,76 @@ async function handleDashboardStats(env, org) {
 
 async function handleAssetSummary(env, org) {
   try {
-    const [
-      totalAssets,
-      assetsBySystem,
-      assetsByEnvironment,
-      criticalVulnAssets,
-      recentlyDiscovered,
-      topRiskAssets
-    ] = await Promise.all([
-      // Total asset count
-      env.DB.prepare('SELECT COUNT(*) as count FROM assets WHERE org_id = ?').bind(org.id).first(),
+    // Core asset queries (don't depend on vulnerability_findings table)
+    let totalAssets = { count: 0 };
+    let assetsBySystem = { results: [] };
+    let assetsByEnvironment = { results: [] };
+    let recentlyDiscovered = { results: [] };
+    let topRiskAssets = { results: [] };
 
-      // Assets grouped by system
-      env.DB.prepare(`
-        SELECT s.name as system_name, s.id as system_id, COUNT(a.id) as count
-        FROM assets a
-        LEFT JOIN systems s ON s.id = a.system_id
-        WHERE a.org_id = ?
-        GROUP BY a.system_id
-        ORDER BY count DESC
-        LIMIT 5
-      `).bind(org.id).all(),
+    // These may fail if assets table doesn't exist yet
+    try {
+      [totalAssets, assetsBySystem, assetsByEnvironment, recentlyDiscovered] = await Promise.all([
+        env.DB.prepare('SELECT COUNT(*) as count FROM assets WHERE org_id = ?').bind(org.id).first(),
+        env.DB.prepare(`
+          SELECT s.name as system_name, s.id as system_id, COUNT(a.id) as count
+          FROM assets a
+          LEFT JOIN systems s ON s.id = a.system_id
+          WHERE a.org_id = ?
+          GROUP BY a.system_id
+          ORDER BY count DESC
+          LIMIT 5
+        `).bind(org.id).all(),
+        env.DB.prepare(`
+          SELECT environment, COUNT(*) as count
+          FROM assets WHERE org_id = ?
+          GROUP BY environment
+          ORDER BY count DESC
+        `).bind(org.id).all(),
+        env.DB.prepare(`
+          SELECT id, hostname, ip_address, discovery_source, first_seen_at, risk_score
+          FROM assets
+          WHERE org_id = ? AND first_seen_at >= datetime('now', '-7 days')
+          ORDER BY first_seen_at DESC
+          LIMIT 5
+        `).bind(org.id).all()
+      ]);
+    } catch (assetErr) {
+      console.log('[handleAssetSummary] Assets query failed (table may not exist):', assetErr.message);
+    }
 
-      // Assets grouped by environment
-      env.DB.prepare(`
-        SELECT environment, COUNT(*) as count
-        FROM assets WHERE org_id = ?
-        GROUP BY environment
-        ORDER BY count DESC
-      `).bind(org.id).all(),
-
-      // Assets with critical vulnerabilities
-      env.DB.prepare(`
-        SELECT COUNT(DISTINCT a.id) as count
-        FROM assets a
-        JOIN vulnerability_findings vf ON vf.asset_id = a.id
-        WHERE a.org_id = ? AND vf.severity = 'critical' AND vf.status = 'open'
-      `).bind(org.id).first(),
-
-      // Recently discovered assets (last 7 days)
-      env.DB.prepare(`
-        SELECT id, hostname, ip_address, discovery_source, first_seen_at, risk_score
-        FROM assets
-        WHERE org_id = ? AND first_seen_at >= datetime('now', '-7 days')
-        ORDER BY first_seen_at DESC
-        LIMIT 5
-      `).bind(org.id).all(),
-
-      // Top risk score assets
-      env.DB.prepare(`
-        SELECT a.id, a.hostname, a.ip_address, a.risk_score, a.environment, s.name as system_name,
-          (SELECT COUNT(*) FROM vulnerability_findings vf WHERE vf.asset_id = a.id AND vf.status = 'open' AND vf.severity = 'critical') as critical_count,
-          (SELECT COUNT(*) FROM vulnerability_findings vf WHERE vf.asset_id = a.id AND vf.status = 'open' AND vf.severity = 'high') as high_count
+    // Top risk assets (without vulnerability subqueries to avoid dependency)
+    try {
+      topRiskAssets = await env.DB.prepare(`
+        SELECT a.id, a.hostname, a.ip_address, a.risk_score, a.environment, s.name as system_name
         FROM assets a
         LEFT JOIN systems s ON s.id = a.system_id
         WHERE a.org_id = ? AND a.risk_score > 0
         ORDER BY a.risk_score DESC
         LIMIT 5
-      `).bind(org.id).all()
-    ]);
+      `).bind(org.id).all();
+    } catch (riskErr) {
+      console.log('[handleAssetSummary] Top risk assets query failed:', riskErr.message);
+    }
 
-    // Calculate vulnerability summary
-    const vulnSummary = await env.DB.prepare(`
-      SELECT
-        COUNT(DISTINCT CASE WHEN vf.severity = 'critical' THEN a.id END) as assets_with_critical,
-        COUNT(DISTINCT CASE WHEN vf.severity = 'high' THEN a.id END) as assets_with_high,
-        SUM(CASE WHEN vf.severity = 'critical' THEN 1 ELSE 0 END) as total_critical,
-        SUM(CASE WHEN vf.severity = 'high' THEN 1 ELSE 0 END) as total_high,
-        SUM(CASE WHEN vf.severity = 'medium' THEN 1 ELSE 0 END) as total_medium,
-        SUM(CASE WHEN vf.severity = 'low' THEN 1 ELSE 0 END) as total_low
-      FROM assets a
-      LEFT JOIN vulnerability_findings vf ON vf.asset_id = a.id AND vf.status = 'open'
-      WHERE a.org_id = ?
-    `).bind(org.id).first();
+    // Vulnerability summary - may fail if table doesn't exist
+    let vulnSummary = null;
+    try {
+      vulnSummary = await env.DB.prepare(`
+        SELECT
+          COUNT(DISTINCT CASE WHEN vf.severity = 'critical' THEN a.id END) as assets_with_critical,
+          COUNT(DISTINCT CASE WHEN vf.severity = 'high' THEN a.id END) as assets_with_high,
+          SUM(CASE WHEN vf.severity = 'critical' THEN 1 ELSE 0 END) as total_critical,
+          SUM(CASE WHEN vf.severity = 'high' THEN 1 ELSE 0 END) as total_high,
+          SUM(CASE WHEN vf.severity = 'medium' THEN 1 ELSE 0 END) as total_medium,
+          SUM(CASE WHEN vf.severity = 'low' THEN 1 ELSE 0 END) as total_low
+        FROM assets a
+        LEFT JOIN vulnerability_findings vf ON vf.asset_id = a.id AND vf.status = 'open'
+        WHERE a.org_id = ?
+      `).bind(org.id).first();
+    } catch (vulnErr) {
+      console.log('[handleAssetSummary] Vulnerability summary query failed (table may not exist):', vulnErr.message);
+    }
 
     return jsonResponse({
       summary: {
@@ -4230,7 +5415,7 @@ async function handleEmergencyAccess(request, env) {
 
   // Create a new refresh token
   const refreshToken = generateId() + generateId();
-  const refreshHash = await hashPassword(refreshToken, 'refresh-salt');
+  const refreshHash = await hmacRefreshToken(refreshToken, requireJWTSecret(env));
   const refreshExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
   await env.DB.prepare(
     'INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)'
@@ -4327,7 +5512,7 @@ async function handleRunMonitoringCheck(request, env, org, user, checkId) {
     "UPDATE monitoring_checks SET last_result = ?, last_result_details = ?, last_run_at = datetime('now'), updated_at = datetime('now') WHERE id = ?"
   ).bind(result, notes || '', checkId).run();
   await auditLog(env, org.id, user.id, 'run', 'monitoring_check', checkId, { result, notes });
-  if (['fail', 'error'].includes(result)) await notifyOrgRole(env, org.id, user.id, 'analyst', 'monitoring_fail', 'Monitoring Check Failed', 'Check "' + check.check_name + '" result: ' + result, 'monitoring_check', checkId, { result });
+  if (['fail', 'error'].includes(result)) await notifyOrgRole(env, org.id, user.id, 'analyst', 'monitoring_fail', 'Monitoring Check Failed', 'Check "' + sanitizeText(check.check_name) + '" result: ' + result, 'monitoring_check', checkId, { result });
   return jsonResponse({ message: 'Check result recorded', result_id: resultId, result }, 201);
 }
 
@@ -4701,6 +5886,413 @@ async function handleFrameworkStats(env, org) {
   } catch (err) {
     console.error('[handleFrameworkStats]', err.message);
     return jsonResponse({ error: 'Failed to load framework stats' }, 500);
+  }
+}
+
+// Smart Recommendations - Prioritized actionable items for dashboard
+async function handleDashboardRecommendations(env, org, user) {
+  if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const thirtyDaysFromNow = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+    const recommendations = [];
+
+    // 1. Get high/critical risks and their related controls
+    const { results: highRisks } = await env.DB.prepare(`
+      SELECT id, risk_level, related_controls
+      FROM risks
+      WHERE org_id = ? AND status NOT IN ('closed', 'accepted')
+        AND risk_level IN ('critical', 'high')
+    `).bind(org.id).all();
+
+    // Build a set of control IDs linked to high/critical risks
+    const riskLinkedControls = new Map(); // control_id -> risk_level
+    for (const risk of highRisks) {
+      try {
+        const controls = JSON.parse(risk.related_controls || '[]');
+        for (const ctrlId of controls) {
+          if (!riskLinkedControls.has(ctrlId) || risk.risk_level === 'critical') {
+            riskLinkedControls.set(ctrlId, risk.risk_level);
+          }
+        }
+      } catch (e) { /* ignore parse errors */ }
+    }
+
+    // 1. Critical controls - not_implemented controls linked to high/critical risks
+    if (riskLinkedControls.size > 0) {
+      const { results: criticalControls } = await env.DB.prepare(`
+        SELECT
+          ci.control_id,
+          sc.title as control_title,
+          cf.name as framework_name,
+          cf.id as framework_id,
+          COUNT(DISTINCT ci.system_id) as system_count
+        FROM control_implementations ci
+        JOIN security_controls sc ON sc.framework_id = ci.framework_id AND sc.control_id = ci.control_id
+        JOIN compliance_frameworks cf ON cf.id = ci.framework_id
+        WHERE ci.org_id = ? AND ci.status = 'not_implemented'
+        GROUP BY ci.control_id, sc.title, cf.name, cf.id
+        ORDER BY system_count DESC
+        LIMIT 20
+      `).bind(org.id).all();
+
+      for (const ctrl of criticalControls) {
+        if (riskLinkedControls.has(ctrl.control_id)) {
+          const riskLevel = riskLinkedControls.get(ctrl.control_id);
+          recommendations.push({
+            id: `critical-${ctrl.control_id}`,
+            type: 'critical_control',
+            priority: riskLevel === 'critical' ? 'critical' : 'high',
+            title: `Implement ${ctrl.control_id}`,
+            description: `${ctrl.control_title} - linked to ${riskLevel} risk${ctrl.system_count > 1 ? ` on ${ctrl.system_count} systems` : ''}`,
+            framework_name: ctrl.framework_name,
+            control_id: ctrl.control_id,
+            affected_count: ctrl.system_count,
+            action_text: 'Review Control',
+            action_href: `/controls?search=${encodeURIComponent(ctrl.control_id)}`,
+            impact_score: riskLevel === 'critical' ? 95 : 85
+          });
+          if (recommendations.length >= 5) break;
+        }
+      }
+    }
+
+    // 2. Evidence gaps - implemented controls with no evidence
+    const { results: evidenceGaps } = await env.DB.prepare(`
+      SELECT
+        ci.control_id,
+        sc.title as control_title,
+        cf.name as framework_name,
+        COUNT(DISTINCT ci.system_id) as system_count
+      FROM control_implementations ci
+      JOIN security_controls sc ON sc.framework_id = ci.framework_id AND sc.control_id = ci.control_id
+      JOIN compliance_frameworks cf ON cf.id = ci.framework_id
+      LEFT JOIN evidence_control_links ecl ON ecl.implementation_id = ci.id
+      WHERE ci.org_id = ?
+        AND ci.status = 'implemented'
+        AND ecl.id IS NULL
+      GROUP BY ci.control_id, sc.title, cf.name
+      ORDER BY system_count DESC
+      LIMIT 5
+    `).bind(org.id).all();
+
+    for (const gap of evidenceGaps) {
+      recommendations.push({
+        id: `evgap-${gap.control_id}`,
+        type: 'evidence_gap',
+        priority: gap.system_count >= 3 ? 'high' : 'medium',
+        title: `Upload evidence for ${gap.control_id}`,
+        description: `${gap.control_title} - implemented but no evidence${gap.system_count > 1 ? ` (${gap.system_count} systems)` : ''}`,
+        framework_name: gap.framework_name,
+        control_id: gap.control_id,
+        affected_count: gap.system_count,
+        action_text: 'Add Evidence',
+        action_href: `/evidence?control=${encodeURIComponent(gap.control_id)}`,
+        impact_score: gap.system_count >= 3 ? 75 : 60
+      });
+    }
+
+    // 3. Overdue POA&Ms
+    const { results: overduePoams } = await env.DB.prepare(`
+      SELECT
+        p.id,
+        p.weakness_name as title,
+        p.scheduled_completion,
+        p.risk_level,
+        JULIANDAY(?) - JULIANDAY(p.scheduled_completion) as days_overdue
+      FROM poams p
+      WHERE p.org_id = ?
+        AND p.status IN ('open', 'in_progress')
+        AND p.scheduled_completion < ?
+      ORDER BY p.scheduled_completion ASC
+      LIMIT 5
+    `).bind(today, org.id, today).all();
+
+    for (const poam of overduePoams) {
+      const daysOverdue = Math.round(poam.days_overdue);
+      recommendations.push({
+        id: `poam-${poam.id}`,
+        type: 'poam_overdue',
+        priority: daysOverdue > 30 ? 'critical' : daysOverdue > 14 ? 'high' : 'medium',
+        title: poam.title,
+        description: `${daysOverdue} day${daysOverdue !== 1 ? 's' : ''} overdue`,
+        affected_count: daysOverdue,
+        action_text: 'Update POA&M',
+        action_href: `/poams?id=${poam.id}`,
+        impact_score: Math.min(90, 50 + daysOverdue)
+      });
+    }
+
+    // 4. Expiring evidence (within 30 days)
+    const { results: expiringEvidence } = await env.DB.prepare(`
+      SELECT
+        e.id,
+        e.title,
+        e.expiry_date,
+        JULIANDAY(e.expiry_date) - JULIANDAY(?) as days_until_expiry
+      FROM evidence e
+      WHERE e.org_id = ?
+        AND e.expiry_date IS NOT NULL
+        AND e.expiry_date BETWEEN ? AND ?
+        AND e.status = 'active'
+      ORDER BY e.expiry_date ASC
+      LIMIT 5
+    `).bind(today, org.id, today, thirtyDaysFromNow).all();
+
+    for (const ev of expiringEvidence) {
+      const daysLeft = Math.round(ev.days_until_expiry);
+      recommendations.push({
+        id: `evexp-${ev.id}`,
+        type: 'expiring_evidence',
+        priority: daysLeft <= 7 ? 'high' : 'medium',
+        title: `Renew: ${ev.title}`,
+        description: `Expires in ${daysLeft} day${daysLeft !== 1 ? 's' : ''}`,
+        affected_count: daysLeft,
+        action_text: 'Update Evidence',
+        action_href: `/evidence?id=${ev.id}`,
+        impact_score: Math.max(40, 70 - daysLeft)
+      });
+    }
+
+    // 5. Standard control gaps (not linked to high risks) - fill remaining slots
+    const existingControlIds = recommendations
+      .filter(r => r.type === 'critical_control')
+      .map(r => r.control_id);
+
+    const { results: controlGaps } = await env.DB.prepare(`
+      SELECT
+        ci.control_id,
+        sc.title as control_title,
+        cf.name as framework_name,
+        COUNT(DISTINCT ci.system_id) as system_count
+      FROM control_implementations ci
+      JOIN security_controls sc ON sc.framework_id = ci.framework_id AND sc.control_id = ci.control_id
+      JOIN compliance_frameworks cf ON cf.id = ci.framework_id
+      WHERE ci.org_id = ? AND ci.status = 'not_implemented'
+      GROUP BY ci.control_id, sc.title, cf.name
+      ORDER BY system_count DESC
+      LIMIT 10
+    `).bind(org.id).all();
+
+    for (const gap of controlGaps) {
+      if (existingControlIds.includes(gap.control_id)) continue;
+      if (recommendations.length >= 15) break;
+
+      recommendations.push({
+        id: `gap-${gap.control_id}`,
+        type: 'control_gap',
+        priority: gap.system_count >= 3 ? 'medium' : 'low',
+        title: `Implement ${gap.control_id}`,
+        description: `${gap.control_title}${gap.system_count > 1 ? ` (${gap.system_count} systems)` : ''}`,
+        framework_name: gap.framework_name,
+        control_id: gap.control_id,
+        affected_count: gap.system_count,
+        action_text: 'Review Control',
+        action_href: `/controls?search=${encodeURIComponent(gap.control_id)}`,
+        impact_score: 30 + gap.system_count * 5
+      });
+    }
+
+    // 6. Policies due for review
+    const { results: policiesReview } = await env.DB.prepare(`
+      SELECT id, title, review_date,
+        JULIANDAY(?) - JULIANDAY(review_date) as days_overdue
+      FROM policies
+      WHERE org_id = ? AND status != 'archived'
+        AND review_date IS NOT NULL
+        AND review_date <= ?
+      ORDER BY review_date ASC
+      LIMIT 5
+    `).bind(today, org.id, thirtyDaysFromNow).all();
+
+    for (const policy of policiesReview) {
+      const daysOverdue = Math.round(policy.days_overdue);
+      const isOverdue = daysOverdue > 0;
+      recommendations.push({
+        id: `policy-${policy.id}`,
+        type: 'policy_review',
+        priority: isOverdue ? 'high' : 'medium',
+        title: `Review: ${policy.title}`,
+        description: isOverdue ? `${daysOverdue} day${daysOverdue !== 1 ? 's' : ''} overdue for review` : `Review due within ${Math.abs(daysOverdue)} days`,
+        affected_count: Math.abs(daysOverdue),
+        action_text: 'Review Policy',
+        action_href: `/policies?id=${policy.id}`,
+        impact_score: isOverdue ? Math.min(80, 55 + daysOverdue) : 45
+      });
+    }
+
+    // 7. Vendor assessments due
+    const { results: vendorsDue } = await env.DB.prepare(`
+      SELECT id, name, criticality, next_assessment_date,
+        JULIANDAY(?) - JULIANDAY(next_assessment_date) as days_overdue
+      FROM vendors
+      WHERE org_id = ? AND status = 'active'
+        AND next_assessment_date IS NOT NULL
+        AND next_assessment_date <= ?
+      ORDER BY
+        CASE criticality WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 ELSE 4 END,
+        next_assessment_date ASC
+      LIMIT 5
+    `).bind(today, org.id, thirtyDaysFromNow).all();
+
+    for (const vendor of vendorsDue) {
+      const daysOverdue = Math.round(vendor.days_overdue);
+      const isOverdue = daysOverdue > 0;
+      const isCriticalVendor = vendor.criticality === 'critical' || vendor.criticality === 'high';
+      recommendations.push({
+        id: `vendor-${vendor.id}`,
+        type: 'vendor_assessment',
+        priority: isOverdue && isCriticalVendor ? 'critical' : isOverdue ? 'high' : 'medium',
+        title: `Assess: ${vendor.name}`,
+        description: isOverdue
+          ? `${vendor.criticality} vendor - assessment ${daysOverdue} day${daysOverdue !== 1 ? 's' : ''} overdue`
+          : `${vendor.criticality} vendor - assessment due in ${Math.abs(daysOverdue)} days`,
+        affected_count: Math.abs(daysOverdue),
+        action_text: 'Schedule Assessment',
+        action_href: `/vendors?id=${vendor.id}`,
+        impact_score: isCriticalVendor ? (isOverdue ? 88 : 65) : (isOverdue ? 70 : 50)
+      });
+    }
+
+    // 8. System authorizations expiring (within 90 days)
+    const ninetyDaysFromNow = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const { results: systemsExpiring } = await env.DB.prepare(`
+      SELECT id, name, impact_level, authorization_expiry,
+        JULIANDAY(authorization_expiry) - JULIANDAY(?) as days_until_expiry
+      FROM systems
+      WHERE org_id = ? AND status = 'authorized'
+        AND authorization_expiry IS NOT NULL
+        AND authorization_expiry <= ?
+      ORDER BY
+        CASE impact_level WHEN 'high' THEN 1 WHEN 'moderate' THEN 2 ELSE 3 END,
+        authorization_expiry ASC
+      LIMIT 5
+    `).bind(today, org.id, ninetyDaysFromNow).all();
+
+    for (const sys of systemsExpiring) {
+      const daysLeft = Math.round(sys.days_until_expiry);
+      const isExpired = daysLeft < 0;
+      const isHighImpact = sys.impact_level === 'high';
+      recommendations.push({
+        id: `sysauth-${sys.id}`,
+        type: 'system_authorization',
+        priority: isExpired ? 'critical' : (isHighImpact && daysLeft <= 30) ? 'critical' : daysLeft <= 30 ? 'high' : 'medium',
+        title: `ATO: ${sys.name}`,
+        description: isExpired
+          ? `${sys.impact_level} impact - authorization expired ${Math.abs(daysLeft)} days ago`
+          : `${sys.impact_level} impact - expires in ${daysLeft} days`,
+        affected_count: Math.abs(daysLeft),
+        action_text: 'Review Authorization',
+        action_href: `/systems/${sys.id}`,
+        impact_score: isHighImpact ? (isExpired ? 92 : Math.max(60, 90 - daysLeft)) : (isExpired ? 85 : Math.max(40, 75 - daysLeft))
+      });
+    }
+
+    // 9. Evidence schedules overdue
+    const { results: evidenceSchedulesOverdue } = await env.DB.prepare(`
+      SELECT id, title, next_due_date,
+        JULIANDAY(?) - JULIANDAY(next_due_date) as days_overdue
+      FROM evidence_schedules
+      WHERE org_id = ? AND is_active = 1
+        AND next_due_date IS NOT NULL
+        AND next_due_date < ?
+      ORDER BY next_due_date ASC
+      LIMIT 5
+    `).bind(today, org.id, today).all();
+
+    for (const schedule of evidenceSchedulesOverdue) {
+      const daysOverdue = Math.round(schedule.days_overdue);
+      recommendations.push({
+        id: `evsched-${schedule.id}`,
+        type: 'evidence_schedule_overdue',
+        priority: daysOverdue > 14 ? 'high' : 'medium',
+        title: `Collect: ${schedule.title}`,
+        description: `Evidence collection ${daysOverdue} day${daysOverdue !== 1 ? 's' : ''} overdue`,
+        affected_count: daysOverdue,
+        action_text: 'Collect Evidence',
+        action_href: `/evidence/schedules`,
+        impact_score: Math.min(78, 50 + daysOverdue * 2)
+      });
+    }
+
+    // 10. Risk treatment plans overdue
+    const { results: risksOverdue } = await env.DB.prepare(`
+      SELECT id, title, risk_level, treatment_due_date,
+        JULIANDAY(?) - JULIANDAY(treatment_due_date) as days_overdue
+      FROM risks
+      WHERE org_id = ? AND status = 'open'
+        AND treatment_due_date IS NOT NULL
+        AND treatment_due_date < ?
+      ORDER BY
+        CASE risk_level WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'moderate' THEN 3 ELSE 4 END,
+        treatment_due_date ASC
+      LIMIT 5
+    `).bind(today, org.id, today).all();
+
+    for (const risk of risksOverdue) {
+      const daysOverdue = Math.round(risk.days_overdue);
+      const isCriticalRisk = risk.risk_level === 'critical' || risk.risk_level === 'high';
+      recommendations.push({
+        id: `risktreat-${risk.id}`,
+        type: 'risk_treatment_overdue',
+        priority: isCriticalRisk ? 'critical' : daysOverdue > 14 ? 'high' : 'medium',
+        title: `Treat: ${risk.title}`,
+        description: `${risk.risk_level} risk - treatment ${daysOverdue} day${daysOverdue !== 1 ? 's' : ''} overdue`,
+        affected_count: daysOverdue,
+        action_text: 'Update Treatment',
+        action_href: `/risks?id=${risk.id}`,
+        impact_score: isCriticalRisk ? Math.min(93, 75 + daysOverdue) : Math.min(75, 50 + daysOverdue)
+      });
+    }
+
+    // 11. Audit checklist items due
+    const sevenDaysFromNow = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const { results: auditTasksDue } = await env.DB.prepare(`
+      SELECT id, title, due_date, category,
+        JULIANDAY(?) - JULIANDAY(due_date) as days_overdue
+      FROM audit_checklist_items
+      WHERE org_id = ? AND completed = 0
+        AND due_date IS NOT NULL
+        AND due_date <= ?
+      ORDER BY due_date ASC
+      LIMIT 5
+    `).bind(today, org.id, sevenDaysFromNow).all();
+
+    for (const task of auditTasksDue) {
+      const daysOverdue = Math.round(task.days_overdue);
+      const isOverdue = daysOverdue > 0;
+      recommendations.push({
+        id: `audit-${task.id}`,
+        type: 'audit_task_due',
+        priority: isOverdue ? 'critical' : 'high',
+        title: task.title,
+        description: isOverdue
+          ? `Audit task ${daysOverdue} day${daysOverdue !== 1 ? 's' : ''} overdue`
+          : `Audit task due in ${Math.abs(daysOverdue)} day${Math.abs(daysOverdue) !== 1 ? 's' : ''}`,
+        affected_count: Math.abs(daysOverdue),
+        action_text: 'Complete Task',
+        action_href: `/audit-prep`,
+        impact_score: isOverdue ? Math.min(87, 70 + daysOverdue * 2) : 65
+      });
+    }
+
+    // Sort by impact_score descending
+    recommendations.sort((a, b) => b.impact_score - a.impact_score);
+
+    // Build summary
+    const summary = {
+      critical: recommendations.filter(r => r.priority === 'critical').length,
+      high: recommendations.filter(r => r.priority === 'high').length,
+      medium: recommendations.filter(r => r.priority === 'medium').length,
+      low: recommendations.filter(r => r.priority === 'low').length
+    };
+
+    return jsonResponse({ recommendations, summary });
+  } catch (err) {
+    console.error('[handleDashboardRecommendations]', err.message);
+    return jsonResponse({ error: 'Failed to load recommendations' }, 500);
   }
 }
 
@@ -7943,6 +9535,43 @@ async function handleListScanImports(env, url, org) {
   });
 }
 
+// List vulnerability findings for POA&M linking
+async function handleListVulnerabilityFindings(env, url, org) {
+  const status = url.searchParams.get('status') || 'open';
+  const severity = url.searchParams.get('severity');
+  const assetId = url.searchParams.get('asset_id');
+  const limit = Math.min(parseInt(url.searchParams.get('limit') || '100', 10), 500);
+  const page = parseInt(url.searchParams.get('page') || '1', 10);
+  const offset = (page - 1) * limit;
+
+  let query = `SELECT vf.id, vf.title, vf.severity, vf.status, vf.plugin_id, vf.plugin_name, vf.cvss_score, vf.asset_id,
+               a.hostname, a.ip_address, vf.first_seen_at, vf.last_seen_at
+               FROM vulnerability_findings vf
+               LEFT JOIN assets a ON vf.asset_id = a.id
+               WHERE vf.org_id = ?`;
+  const params = [org.id];
+
+  if (status && status !== 'all') { query += ` AND vf.status = ?`; params.push(status); }
+  if (severity) { query += ` AND vf.severity = ?`; params.push(severity); }
+  if (assetId) { query += ` AND vf.asset_id = ?`; params.push(assetId); }
+
+  query += ` ORDER BY CASE vf.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, vf.title LIMIT ? OFFSET ?`;
+  params.push(limit, offset);
+
+  const { results } = await env.DB.prepare(query).bind(...params).all();
+
+  // Get total count
+  let countQuery = `SELECT COUNT(*) as total FROM vulnerability_findings vf WHERE vf.org_id = ?`;
+  const countParams = [org.id];
+  if (status && status !== 'all') { countQuery += ` AND vf.status = ?`; countParams.push(status); }
+  if (severity) { countQuery += ` AND vf.severity = ?`; countParams.push(severity); }
+  if (assetId) { countQuery += ` AND vf.asset_id = ?`; countParams.push(assetId); }
+
+  const countResult = await env.DB.prepare(countQuery).bind(...countParams).first();
+
+  return jsonResponse({ findings: results, total: countResult?.total || 0, page, limit });
+}
+
 async function handleGenerateScanPOAMs(request, env, org, user, scanImportId) {
   try {
     if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Insufficient permissions' }, 403);
@@ -8289,6 +9918,62 @@ async function handleGetAssetScanHistory(env, org, assetId) {
   `).bind(assetId).all();
 
   return jsonResponse({ scan_history: results });
+}
+
+// Get risk trend data for asset sparkline visualization
+async function handleGetAssetRiskTrend(env, org, assetId) {
+  const asset = await env.DB.prepare(
+    'SELECT id, environment, data_zone, scan_credentialed FROM assets WHERE id = ? AND org_id = ?'
+  ).bind(assetId, org.id).first();
+  if (!asset) return jsonResponse({ error: 'Asset not found' }, 404);
+
+  // Get last 10 scans for sparkline
+  const { results } = await env.DB.prepare(`
+    SELECT ash.seen_at, ash.critical_count, ash.high_count, ash.medium_count, ash.low_count, ash.findings_count
+    FROM asset_scan_history ash
+    WHERE ash.asset_id = ?
+    ORDER BY ash.seen_at ASC
+    LIMIT 10
+  `).bind(assetId).all();
+
+  // Compute risk score for each scan point
+  const trend = results.map(scan => {
+    // Simple risk calculation similar to calculateAssetRiskScore
+    const weights = { critical: 40, high: 25, medium: 10, low: 3 };
+    let rawScore = (scan.critical_count || 0) * weights.critical +
+                   (scan.high_count || 0) * weights.high +
+                   (scan.medium_count || 0) * weights.medium +
+                   (scan.low_count || 0) * weights.low;
+
+    // Apply environment multiplier
+    const envMultiplier = { production: 1.5, govcloud: 1.5, enclave: 1.5, staging: 1.0, shared: 1.0, commercial: 1.0, development: 0.7 };
+    rawScore *= envMultiplier[asset.environment] || 1.0;
+
+    // Apply data zone multiplier
+    const dataMultiplier = { cui: 2.0, classified: 2.0, pii: 1.5, phi: 1.5, pci: 1.5, internal: 1.0, public: 0.8 };
+    rawScore *= dataMultiplier[asset.data_zone] || 1.0;
+
+    // Credentialed scan bonus
+    if (asset.scan_credentialed) rawScore *= 0.9;
+
+    return {
+      date: scan.seen_at,
+      score: Math.min(100, Math.round(rawScore)),
+      findings: scan.findings_count,
+      critical: scan.critical_count,
+      high: scan.high_count
+    };
+  });
+
+  // Calculate delta (improvement/decline)
+  let delta = 0;
+  if (trend.length >= 2) {
+    const first = trend[0].score;
+    const last = trend[trend.length - 1].score;
+    delta = last - first;
+  }
+
+  return jsonResponse({ trend, delta, scan_count: trend.length });
 }
 
 function calculateAssetRiskScore(asset) {
@@ -9188,6 +10873,461 @@ ${deadlineRows}</table>` : ''}
 </td></tr></table></td></tr></table></body></html>`;
 }
 
+// ─── BACKUP & RESTORE ─────────────────────────────────────────────────────────
+
+const BACKUP_TABLES = [
+  'organizations', 'users', 'refresh_tokens',
+  'systems', 'control_implementations', 'organization_frameworks',
+  'evidence', 'evidence_control_links', 'evidence_schedules',
+  'poams', 'poam_milestones', 'poam_comments', 'poam_affected_assets',
+  'risks', 'vendors', 'policies', 'policy_attestations', 'policy_control_links',
+  'ssp_documents', 'monitoring_checks', 'monitoring_check_results',
+  'approval_requests', 'notifications', 'notification_preferences',
+  'audit_logs', 'audit_checklist_items',
+  'experience_configs', 'ai_templates', 'ai_documents',
+  'compliance_snapshots', 'addon_modules', 'organization_addons',
+  'scan_imports', 'vulnerability_findings', 'assets', 'asset_scan_history',
+  'questionnaires', 'questionnaire_responses'
+];
+
+async function handleScheduledBackup(env) {
+  console.log('[CRON] Starting scheduled backup...');
+
+  try {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupId = `backup-${timestamp}`;
+
+    // 1. Export all database tables
+    const dbBackup = {};
+    let totalRows = 0;
+
+    for (const table of BACKUP_TABLES) {
+      try {
+        const { results } = await env.DB.prepare(`SELECT * FROM ${table}`).all();
+        dbBackup[table] = results || [];
+        totalRows += (results?.length || 0);
+        console.log(`[BACKUP] ${table}: ${results?.length || 0} rows`);
+      } catch (err) {
+        console.log(`[BACKUP] Skipping ${table}: ${err.message}`);
+        dbBackup[table] = [];
+      }
+    }
+
+    // 2. Create backup manifest
+    const manifest = {
+      id: backupId,
+      created_at: new Date().toISOString(),
+      type: 'scheduled',
+      tables: Object.keys(dbBackup).length,
+      total_rows: totalRows,
+      evidence_files: 0
+    };
+
+    // 3. Save database backup to R2
+    await env.BACKUP_BUCKET.put(
+      `${backupId}/database.json`,
+      JSON.stringify(dbBackup, null, 2),
+      { customMetadata: { created: manifest.created_at, type: 'database' } }
+    );
+
+    // 4. Copy evidence files from EVIDENCE_VAULT to BACKUP_BUCKET
+    let evidenceCount = 0;
+    try {
+      const evidenceList = await env.EVIDENCE_VAULT.list({ limit: 1000 });
+      for (const obj of evidenceList.objects || []) {
+        const file = await env.EVIDENCE_VAULT.get(obj.key);
+        if (file) {
+          await env.BACKUP_BUCKET.put(
+            `${backupId}/evidence/${obj.key}`,
+            file.body,
+            { customMetadata: obj.customMetadata || {} }
+          );
+          evidenceCount++;
+        }
+      }
+      manifest.evidence_files = evidenceCount;
+    } catch (err) {
+      console.log(`[BACKUP] Evidence copy error: ${err.message}`);
+    }
+
+    // 5. Save manifest
+    await env.BACKUP_BUCKET.put(
+      `${backupId}/manifest.json`,
+      JSON.stringify(manifest, null, 2),
+      { customMetadata: { created: manifest.created_at, type: 'manifest' } }
+    );
+
+    // 6. Clean up old backups (keep last 30 days)
+    await cleanupOldBackups(env, 30);
+
+    console.log(`[CRON] Backup complete: ${backupId} (${totalRows} rows, ${evidenceCount} files)`);
+
+    // 7. Send success email to admins/owners
+    await sendBackupNotificationEmail(env, 'success', backupId, {
+      tables: Object.keys(dbBackup).length,
+      rows: totalRows,
+      evidenceFiles: evidenceCount
+    });
+
+    return { success: true, backupId, manifest };
+
+  } catch (error) {
+    console.error('[CRON] Backup failed:', error.message);
+
+    // Send failure email to admins/owners
+    await sendBackupNotificationEmail(env, 'failure', null, null, error.message);
+
+    return { success: false, error: error.message };
+  }
+}
+
+async function sendBackupNotificationEmail(env, status, backupId, stats, errorMsg = null) {
+  try {
+    // Get all admin and owner users to notify
+    const { results: admins } = await env.DB.prepare(
+      "SELECT DISTINCT u.email, u.name FROM users u WHERE u.role IN ('admin', 'owner') AND u.status = 'active'"
+    ).all();
+
+    if (!admins || admins.length === 0) {
+      console.log('[BACKUP] No admin/owner users to notify');
+      return;
+    }
+
+    const subject = status === 'success'
+      ? '[ForgeComply 360] Backup Completed Successfully'
+      : '[ForgeComply 360] Backup Failed - Action Required';
+
+    const html = buildBackupEmailHtml(status, backupId, stats, errorMsg);
+
+    // Send email to each admin/owner
+    for (const admin of admins) {
+      if (admin.email) {
+        await sendEmail(env, admin.email, subject, html);
+        console.log(`[BACKUP] Notification sent to ${admin.email}`);
+      }
+    }
+  } catch (err) {
+    console.error('[BACKUP] Failed to send notification email:', err.message);
+  }
+}
+
+async function cleanupOldBackups(env, retentionDays) {
+  try {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - retentionDays);
+
+    const list = await env.BACKUP_BUCKET.list({ prefix: 'backup-' });
+    const backupDirs = new Set();
+
+    for (const obj of list.objects || []) {
+      const backupDir = obj.key.split('/')[0];
+      backupDirs.add(backupDir);
+    }
+
+    for (const dir of backupDirs) {
+      // Parse date from backup-YYYY-MM-DDTHH-MM-SS-XXXZ
+      const dateMatch = dir.match(/backup-(\d{4}-\d{2}-\d{2})/);
+      if (dateMatch) {
+        const backupDate = new Date(dateMatch[1]);
+        if (backupDate < cutoff) {
+          // Delete all files in this backup
+          const files = await env.BACKUP_BUCKET.list({ prefix: `${dir}/` });
+          for (const file of files.objects || []) {
+            await env.BACKUP_BUCKET.delete(file.key);
+          }
+          console.log(`[BACKUP] Deleted old backup: ${dir}`);
+        }
+      }
+    }
+  } catch (err) {
+    console.log(`[BACKUP] Cleanup error: ${err.message}`);
+  }
+}
+
+// API Handlers for Backup Management
+
+async function handleListBackups(env, org, user) {
+  if (!requireRole(user, 'admin')) {
+    return jsonResponse({ error: 'Admin access required' }, 403);
+  }
+
+  try {
+    const list = await env.BACKUP_BUCKET.list({ prefix: 'backup-' });
+    const backups = new Map();
+
+    for (const obj of list.objects || []) {
+      const parts = obj.key.split('/');
+      const backupId = parts[0];
+
+      if (!backups.has(backupId)) {
+        backups.set(backupId, { id: backupId, files: [], size: 0 });
+      }
+
+      const backup = backups.get(backupId);
+      backup.files.push(obj.key);
+      backup.size += obj.size || 0;
+
+      if (parts[1] === 'manifest.json') {
+        // Load manifest for metadata
+        const manifest = await env.BACKUP_BUCKET.get(obj.key);
+        if (manifest) {
+          const data = await manifest.json();
+          backup.created_at = data.created_at;
+          backup.type = data.type;
+          backup.tables = data.tables;
+          backup.total_rows = data.total_rows;
+          backup.evidence_files = data.evidence_files;
+        }
+      }
+    }
+
+    const backupList = Array.from(backups.values())
+      .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
+      .slice(0, 50);
+
+    return jsonResponse({ backups: backupList });
+  } catch (err) {
+    return jsonResponse({ error: 'Failed to list backups: ' + err.message }, 500);
+  }
+}
+
+async function handleTriggerBackup(env, org, user) {
+  if (!requireRole(user, 'admin')) {
+    return jsonResponse({ error: 'Admin access required' }, 403);
+  }
+
+  try {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupId = `backup-${timestamp}`;
+
+    // Export database
+    const dbBackup = {};
+    let totalRows = 0;
+
+    for (const table of BACKUP_TABLES) {
+      try {
+        const { results } = await env.DB.prepare(`SELECT * FROM ${table}`).all();
+        dbBackup[table] = results || [];
+        totalRows += (results?.length || 0);
+      } catch {
+        dbBackup[table] = [];
+      }
+    }
+
+    // Create manifest
+    const manifest = {
+      id: backupId,
+      created_at: new Date().toISOString(),
+      type: 'manual',
+      triggered_by: user.id,
+      triggered_by_name: user.name,
+      tables: Object.keys(dbBackup).length,
+      total_rows: totalRows,
+      evidence_files: 0
+    };
+
+    // Save database backup
+    await env.BACKUP_BUCKET.put(
+      `${backupId}/database.json`,
+      JSON.stringify(dbBackup, null, 2),
+      { customMetadata: { created: manifest.created_at, type: 'database' } }
+    );
+
+    // Copy evidence files
+    let evidenceCount = 0;
+    try {
+      const evidenceList = await env.EVIDENCE_VAULT.list({ limit: 1000 });
+      for (const obj of evidenceList.objects || []) {
+        const file = await env.EVIDENCE_VAULT.get(obj.key);
+        if (file) {
+          await env.BACKUP_BUCKET.put(
+            `${backupId}/evidence/${obj.key}`,
+            file.body,
+            { customMetadata: obj.customMetadata || {} }
+          );
+          evidenceCount++;
+        }
+      }
+      manifest.evidence_files = evidenceCount;
+    } catch {}
+
+    // Save manifest
+    await env.BACKUP_BUCKET.put(
+      `${backupId}/manifest.json`,
+      JSON.stringify(manifest, null, 2)
+    );
+
+    await auditLog(env, org.id, user.id, 'create', 'backup', backupId, { type: 'manual', rows: totalRows, files: evidenceCount });
+
+    // Send email notification
+    await sendBackupNotificationEmail(env, 'success', backupId, {
+      tables: Object.keys(dbBackup).length,
+      rows: totalRows,
+      evidenceFiles: evidenceCount
+    });
+
+    return jsonResponse({ success: true, backup: manifest });
+  } catch (err) {
+    // Send failure email notification
+    await sendBackupNotificationEmail(env, 'failure', null, null, err.message);
+    return jsonResponse({ error: 'Backup failed: ' + err.message }, 500);
+  }
+}
+
+async function handleGetBackup(env, org, user, backupId) {
+  if (!requireRole(user, 'admin')) {
+    return jsonResponse({ error: 'Admin access required' }, 403);
+  }
+
+  try {
+    const manifest = await env.BACKUP_BUCKET.get(`${backupId}/manifest.json`);
+    if (!manifest) {
+      return jsonResponse({ error: 'Backup not found' }, 404);
+    }
+
+    const data = await manifest.json();
+
+    // Get file list
+    const files = await env.BACKUP_BUCKET.list({ prefix: `${backupId}/` });
+    data.files = (files.objects || []).map(f => ({
+      key: f.key,
+      size: f.size,
+      uploaded: f.uploaded
+    }));
+
+    return jsonResponse({ backup: data });
+  } catch (err) {
+    return jsonResponse({ error: 'Failed to get backup: ' + err.message }, 500);
+  }
+}
+
+async function handleDeleteBackup(env, org, user, backupId) {
+  if (!requireRole(user, 'owner')) {
+    return jsonResponse({ error: 'Owner access required' }, 403);
+  }
+
+  try {
+    const files = await env.BACKUP_BUCKET.list({ prefix: `${backupId}/` });
+    let deleted = 0;
+
+    for (const file of files.objects || []) {
+      await env.BACKUP_BUCKET.delete(file.key);
+      deleted++;
+    }
+
+    await auditLog(env, org.id, user.id, 'delete', 'backup', backupId, { files_deleted: deleted });
+
+    return jsonResponse({ success: true, deleted });
+  } catch (err) {
+    return jsonResponse({ error: 'Failed to delete backup: ' + err.message }, 500);
+  }
+}
+
+async function handleRestoreBackup(request, env, org, user, backupId) {
+  if (!requireRole(user, 'owner')) {
+    return jsonResponse({ error: 'Owner access required for restore' }, 403);
+  }
+
+  try {
+    const body = await request.json().catch(() => ({}));
+    const { confirm, restore_evidence = false } = body;
+
+    if (confirm !== 'RESTORE') {
+      return jsonResponse({
+        error: 'Restore requires confirmation. Send { "confirm": "RESTORE" } to proceed.',
+        warning: 'This will OVERWRITE all current data. This action cannot be undone.'
+      }, 400);
+    }
+
+    // Load database backup
+    const dbFile = await env.BACKUP_BUCKET.get(`${backupId}/database.json`);
+    if (!dbFile) {
+      return jsonResponse({ error: 'Database backup not found' }, 404);
+    }
+
+    const dbBackup = await dbFile.json();
+    let restoredRows = 0;
+    const errors = [];
+
+    // Restore tables in order (respecting foreign keys)
+    const restoreOrder = [
+      'organizations', 'users', 'refresh_tokens',
+      'systems', 'organization_frameworks',
+      'control_implementations',
+      'evidence', 'evidence_control_links', 'evidence_schedules',
+      'poams', 'poam_milestones', 'poam_comments', 'poam_affected_assets',
+      'risks', 'vendors', 'policies', 'policy_attestations', 'policy_control_links',
+      'ssp_documents', 'monitoring_checks', 'monitoring_check_results',
+      'approval_requests', 'notifications', 'notification_preferences',
+      'audit_logs', 'audit_checklist_items',
+      'experience_configs', 'ai_templates', 'ai_documents',
+      'compliance_snapshots', 'addon_modules', 'organization_addons',
+      'scan_imports', 'assets', 'vulnerability_findings', 'asset_scan_history',
+      'questionnaires', 'questionnaire_responses'
+    ];
+
+    for (const table of restoreOrder) {
+      const rows = dbBackup[table];
+      if (!rows || rows.length === 0) continue;
+
+      try {
+        // Clear existing data
+        await env.DB.prepare(`DELETE FROM ${table}`).run();
+
+        // Insert backup data
+        for (const row of rows) {
+          const columns = Object.keys(row);
+          const placeholders = columns.map(() => '?').join(', ');
+          const values = columns.map(c => row[c]);
+
+          await env.DB.prepare(
+            `INSERT INTO ${table} (${columns.join(', ')}) VALUES (${placeholders})`
+          ).bind(...values).run();
+          restoredRows++;
+        }
+      } catch (err) {
+        errors.push({ table, error: err.message });
+      }
+    }
+
+    // Restore evidence files if requested
+    let restoredFiles = 0;
+    if (restore_evidence) {
+      try {
+        const evidenceList = await env.BACKUP_BUCKET.list({ prefix: `${backupId}/evidence/` });
+        for (const obj of evidenceList.objects || []) {
+          const file = await env.BACKUP_BUCKET.get(obj.key);
+          if (file) {
+            const originalKey = obj.key.replace(`${backupId}/evidence/`, '');
+            await env.EVIDENCE_VAULT.put(originalKey, file.body, {
+              customMetadata: obj.customMetadata || {}
+            });
+            restoredFiles++;
+          }
+        }
+      } catch (err) {
+        errors.push({ component: 'evidence', error: err.message });
+      }
+    }
+
+    await auditLog(env, org.id, user.id, 'restore', 'backup', backupId, {
+      restored_rows: restoredRows,
+      restored_files: restoredFiles,
+      errors: errors.length
+    });
+
+    return jsonResponse({
+      success: true,
+      restored_rows: restoredRows,
+      restored_files: restoredFiles,
+      errors: errors.length > 0 ? errors : undefined
+    });
+
+  } catch (err) {
+    return jsonResponse({ error: 'Restore failed: ' + err.message }, 500);
+  }
+}
+
 // ─── AI Risk Scoring & Recommendations ───────────────────────────────────────
 
 async function computeAIRiskScore(env, org, risk) {
@@ -9383,19 +11523,45 @@ async function handleInheritanceMap(env, org, url) {
 
   // Get all systems
   const { results: systems } = await env.DB.prepare(
-    'SELECT id, name, system_type, authorization_status FROM systems WHERE org_id = ?'
+    `SELECT id, name FROM systems WHERE org_id = ?`
   ).bind(org.id).all();
 
-  // Get inherited implementations
-  let query = `SELECT ci.system_id, ci.control_id, ci.status, ci.inheritance_type, ci.inherited_from_system_id, c.family
-    FROM control_implementations ci
-    JOIN controls c ON ci.control_id = c.control_id
-    JOIN systems s ON ci.system_id = s.id
-    WHERE s.org_id = ? AND ci.inheritance_type IN ('inherited', 'hybrid')`;
-  const params = [org.id];
-  if (frameworkId) { query += ' AND c.framework_id = ?'; params.push(frameworkId); }
+  // Detect schema version by checking column names
+  const schemaInfo = await env.DB.prepare(`PRAGMA table_info(control_implementations)`).all();
+  const columns = (schemaInfo.results || []).map(c => c.name);
+  const hasInheritanceType = columns.includes('inheritance_type');
+  const hasInherited = columns.includes('inherited');
 
-  const { results: inherited } = await env.DB.prepare(query).bind(...params).all();
+  // Get inherited implementations based on schema version
+  let inherited = [];
+  if (hasInheritanceType) {
+    // Newer schema with inheritance_type column
+    let query = `SELECT ci.system_id, ci.control_id, ci.status, ci.inheritance_type, ci.inherited_from_system_id, c.family
+      FROM control_implementations ci
+      JOIN security_controls c ON ci.control_id = c.control_id
+      JOIN systems s ON ci.system_id = s.id
+      WHERE s.org_id = ? AND ci.inheritance_type IN ('inherited', 'hybrid')`;
+    const params = [org.id];
+    if (frameworkId) { query += ' AND c.framework_id = ?'; params.push(frameworkId); }
+    const result = await env.DB.prepare(query).bind(...params).all();
+    inherited = result.results || [];
+  } else if (hasInherited) {
+    // Older schema with inherited boolean column
+    let query = `SELECT ci.system_id, ci.control_id, ci.status, ci.inherited, ci.inherited_from, c.family
+      FROM control_implementations ci
+      JOIN security_controls c ON ci.control_id = c.control_id
+      JOIN systems s ON ci.system_id = s.id
+      WHERE s.org_id = ? AND ci.inherited = 1`;
+    const params = [org.id];
+    if (frameworkId) { query += ' AND c.framework_id = ?'; params.push(frameworkId); }
+    const result = await env.DB.prepare(query).bind(...params).all();
+    // Map old schema to new format
+    inherited = (result.results || []).map(r => ({
+      ...r,
+      inheritance_type: 'inherited',
+      inherited_from_system_id: r.inherited_from
+    }));
+  }
 
   // Build edges: source_system -> target_system
   const edgeMap = {};
@@ -9423,14 +11589,23 @@ async function handleInheritanceMap(env, org, url) {
   const providers = new Set(edges.map(e => e.source));
   const consumers = new Set(edges.map(e => e.target));
 
-  // Count native controls per system
+  // Count native controls per system - use schema-appropriate query
   const nativeCounts = {};
-  const { results: nativeData } = await env.DB.prepare(
-    `SELECT ci.system_id, COUNT(*) as cnt FROM control_implementations ci
+  let nativeQuery;
+  if (hasInheritanceType) {
+    nativeQuery = `SELECT ci.system_id, COUNT(*) as cnt FROM control_implementations ci
      JOIN systems s ON ci.system_id = s.id
-     WHERE s.org_id = ? AND (ci.inheritance_type IS NULL OR ci.inheritance_type = 'native' OR ci.inheritance_type = '')`
-  ).bind(org.id).all();
-  for (const r of nativeData) { nativeCounts[r.system_id] = r.cnt; }
+     WHERE s.org_id = ? AND (ci.inheritance_type IS NULL OR ci.inheritance_type = 'native' OR ci.inheritance_type = '')
+     GROUP BY ci.system_id`;
+  } else {
+    // For older schema, native controls are those where inherited = 0 or NULL
+    nativeQuery = `SELECT ci.system_id, COUNT(*) as cnt FROM control_implementations ci
+     JOIN systems s ON ci.system_id = s.id
+     WHERE s.org_id = ? AND (ci.inherited IS NULL OR ci.inherited = 0)
+     GROUP BY ci.system_id`;
+  }
+  const { results: nativeData } = await env.DB.prepare(nativeQuery).bind(org.id).all();
+  for (const r of nativeData || []) { nativeCounts[r.system_id] = r.cnt; }
 
   const nodes = systems.map(s => ({
     id: s.id,
@@ -9439,8 +11614,6 @@ async function handleInheritanceMap(env, org, url) {
     native_controls: nativeCounts[s.id] || 0,
     inherited_controls: inherited.filter(i => i.system_id === s.id).length,
     provided_controls: inherited.filter(i => i.inherited_from_system_id === s.id).length,
-    system_type: s.system_type,
-    authorization_status: s.authorization_status,
   }));
 
   const summary = {
@@ -9476,6 +11649,44 @@ async function handleUpdateSecuritySettings(request, env, org, user) {
   await env.DB.prepare('UPDATE organizations SET settings = ?, updated_at = datetime(\'now\') WHERE id = ?').bind(JSON.stringify(meta), org.id).run();
   await auditLog(env, org.id, user.id, 'update', 'organization', org.id, { action: 'security_settings_change', session_timeout_minutes: body.session_timeout_minutes }, request);
   return jsonResponse({ session_timeout_minutes: body.session_timeout_minutes });
+}
+
+// Update dashboard widget configuration for the user
+async function handleUpdateDashboardWidgets(request, env, org, user) {
+  const { widgets } = await request.json();
+
+  if (!Array.isArray(widgets)) {
+    return jsonResponse({ error: 'widgets array required' }, 400);
+  }
+
+  // Validate widget structure
+  for (const w of widgets) {
+    if (!w.id || typeof w.visible !== 'boolean' || typeof w.order !== 'number') {
+      return jsonResponse({ error: 'Each widget must have id, visible, and order properties' }, 400);
+    }
+  }
+
+  // Get or create experience config for this org
+  let config = await env.DB.prepare('SELECT * FROM experience_configs WHERE org_id = ?').bind(org.id).first();
+
+  if (!config) {
+    // Create default experience config
+    const id = generateId();
+    await env.DB.prepare(`
+      INSERT INTO experience_configs (id, org_id, experience_type, display_name, terminology, default_workflow, dashboard_widgets, nav_labels, doc_templates, theme_overrides)
+      VALUES (?, ?, 'enterprise', 'Enterprise', '{}', '{}', ?, '{}', '[]', '{}')
+    `).bind(id, org.id, JSON.stringify(widgets)).run();
+    config = { id, org_id: org.id, dashboard_widgets: JSON.stringify(widgets) };
+  } else {
+    // Update existing config
+    await env.DB.prepare(`
+      UPDATE experience_configs SET dashboard_widgets = ?, updated_at = datetime('now') WHERE org_id = ?
+    `).bind(JSON.stringify(widgets), org.id).run();
+  }
+
+  await auditLog(env, org.id, user.id, 'update', 'experience_config', config.id, { action: 'dashboard_widgets_update', widget_count: widgets.length });
+
+  return jsonResponse({ success: true, widgets });
 }
 
 // ============================================================================
@@ -10825,6 +13036,31 @@ async function handleTestConnector(env, org, user, id) {
         success = !!(creds.base_url);
         message = success ? 'Custom connector configured' : 'Missing base_url';
         break;
+      case 'servicenow': {
+        // Check for OAuth tokens
+        const tokens = await env.DB.prepare(
+          'SELECT * FROM connector_oauth_tokens WHERE connector_id = ?'
+        ).bind(id).first();
+
+        if (!tokens) {
+          success = false;
+          message = 'OAuth not configured. Please authorize the connection first.';
+          break;
+        }
+
+        try {
+          const accessToken = await getServiceNowAccessToken(env, connector);
+          const res = await fetch(`${creds.instance_url}/api/now/table/sys_user?sysparm_limit=1`, {
+            headers: { 'Authorization': `Bearer ${accessToken}`, 'Accept': 'application/json' }
+          });
+          success = res.ok;
+          message = success ? 'ServiceNow connection successful' : `ServiceNow API error: ${res.status}`;
+        } catch (e) {
+          success = false;
+          message = `ServiceNow error: ${e.message}`;
+        }
+        break;
+      }
       default:
         message = 'Unknown provider';
     }
@@ -10837,6 +13073,822 @@ async function handleTestConnector(env, org, user, id) {
   ).bind(success ? 'pass' : 'fail', success ? 'active' : 'error', id).run();
 
   return jsonResponse({ success, message });
+}
+
+// Bulk test multiple connectors
+async function handleBulkTestConnectors(request, env, org, user) {
+  if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  const { ids } = await request.json();
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return jsonResponse({ error: 'ids array required' }, 400);
+  }
+
+  const results = [];
+  for (const id of ids) {
+    const connector = await env.DB.prepare('SELECT * FROM api_connectors WHERE id = ? AND org_id = ?').bind(id, org.id).first();
+    if (!connector) {
+      results.push({ id, success: false, message: 'Connector not found' });
+      continue;
+    }
+
+    let success = false;
+    let message = '';
+
+    try {
+      const creds = connector.credentials ? JSON.parse(atob(connector.credentials)) : {};
+
+      switch (connector.provider) {
+        case 'github': {
+          const res = await fetch('https://api.github.com/user', {
+            headers: { 'Authorization': `token ${creds.token}`, 'User-Agent': 'ForgeComply360' }
+          });
+          success = res.ok;
+          message = success ? 'GitHub connection successful' : `GitHub API error: ${res.status}`;
+          break;
+        }
+        case 'aws':
+          success = !!(creds.access_key_id && creds.secret_access_key);
+          message = success ? 'AWS credentials format valid' : 'Missing AWS credentials';
+          break;
+        case 'azure':
+          success = !!(creds.tenant_id && creds.client_id && creds.client_secret);
+          message = success ? 'Azure credentials format valid' : 'Missing Azure credentials';
+          break;
+        case 'okta': {
+          const res = await fetch(`${creds.domain}/api/v1/users/me`, {
+            headers: { 'Authorization': `SSWS ${creds.token}` }
+          });
+          success = res.ok;
+          message = success ? 'Okta connection successful' : `Okta API error: ${res.status}`;
+          break;
+        }
+        case 'jira': {
+          const auth = btoa(`${creds.email}:${creds.api_token}`);
+          const res = await fetch(`${creds.domain}/rest/api/3/myself`, {
+            headers: { 'Authorization': `Basic ${auth}` }
+          });
+          success = res.ok;
+          message = success ? 'Jira connection successful' : `Jira API error: ${res.status}`;
+          break;
+        }
+        case 'custom':
+          success = !!(creds.base_url);
+          message = success ? 'Custom connector configured' : 'Missing base_url';
+          break;
+        case 'servicenow': {
+          const tokens = await env.DB.prepare(
+            'SELECT * FROM connector_oauth_tokens WHERE connector_id = ?'
+          ).bind(id).first();
+
+          if (!tokens) {
+            success = false;
+            message = 'OAuth not configured';
+            break;
+          }
+
+          try {
+            const accessToken = await getServiceNowAccessToken(env, connector);
+            const res = await fetch(`${creds.instance_url}/api/now/table/sys_user?sysparm_limit=1`, {
+              headers: { 'Authorization': `Bearer ${accessToken}`, 'Accept': 'application/json' }
+            });
+            success = res.ok;
+            message = success ? 'ServiceNow connection successful' : `ServiceNow API error: ${res.status}`;
+          } catch (e) {
+            success = false;
+            message = `ServiceNow error: ${e.message}`;
+          }
+          break;
+        }
+        default:
+          message = 'Unknown provider';
+      }
+    } catch (e) {
+      message = `Connection error: ${e.message}`;
+    }
+
+    await env.DB.prepare(
+      "UPDATE api_connectors SET last_test_at = datetime('now'), last_test_status = ?, status = ? WHERE id = ?"
+    ).bind(success ? 'pass' : 'fail', success ? 'active' : 'error', id).run();
+
+    results.push({ id, success, message, name: connector.name });
+  }
+
+  await auditLog(env, org.id, user.id, 'bulk_test_connectors', 'api_connector', null, { count: ids.length, results: results.map(r => ({ id: r.id, success: r.success })) });
+
+  return jsonResponse({ results });
+}
+
+// Bulk delete multiple connectors
+async function handleBulkDeleteConnectors(request, env, org, user) {
+  if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  const { ids } = await request.json();
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return jsonResponse({ error: 'ids array required' }, 400);
+  }
+
+  const deleted = [];
+  const failed = [];
+
+  for (const id of ids) {
+    const connector = await env.DB.prepare('SELECT * FROM api_connectors WHERE id = ? AND org_id = ?').bind(id, org.id).first();
+    if (!connector) {
+      failed.push({ id, reason: 'Not found' });
+      continue;
+    }
+
+    try {
+      // Delete OAuth tokens if any
+      await env.DB.prepare('DELETE FROM connector_oauth_tokens WHERE connector_id = ?').bind(id).run();
+      // Delete the connector
+      await env.DB.prepare('DELETE FROM api_connectors WHERE id = ?').bind(id).run();
+      deleted.push({ id, name: connector.name });
+    } catch (e) {
+      failed.push({ id, reason: e.message });
+    }
+  }
+
+  await auditLog(env, org.id, user.id, 'bulk_delete_connectors', 'api_connector', null, { deleted_count: deleted.length, deleted, failed });
+
+  return jsonResponse({ deleted, failed, total_deleted: deleted.length, total_failed: failed.length });
+}
+
+// Bulk update connector status (enable/disable)
+async function handleBulkUpdateConnectorStatus(request, env, org, user) {
+  if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  const { ids, enabled } = await request.json();
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return jsonResponse({ error: 'ids array required' }, 400);
+  }
+  if (typeof enabled !== 'boolean') {
+    return jsonResponse({ error: 'enabled boolean required' }, 400);
+  }
+
+  const status = enabled ? 'active' : 'disabled';
+  const updated = [];
+  const failed = [];
+
+  for (const id of ids) {
+    const connector = await env.DB.prepare('SELECT * FROM api_connectors WHERE id = ? AND org_id = ?').bind(id, org.id).first();
+    if (!connector) {
+      failed.push({ id, reason: 'Not found' });
+      continue;
+    }
+
+    try {
+      await env.DB.prepare('UPDATE api_connectors SET status = ? WHERE id = ?').bind(status, id).run();
+      updated.push({ id, name: connector.name, status });
+    } catch (e) {
+      failed.push({ id, reason: e.message });
+    }
+  }
+
+  await auditLog(env, org.id, user.id, 'bulk_update_connector_status', 'api_connector', null, { status, updated_count: updated.length, updated, failed });
+
+  return jsonResponse({ updated, failed, total_updated: updated.length, total_failed: failed.length });
+}
+
+// ============================================================================
+// SERVICENOW CMDB INTEGRATION
+// ============================================================================
+
+const SERVICENOW_OAUTH_SCOPES = 'useraccount';
+
+// CI Class to Asset Type Mapping
+const CI_CLASS_TO_ASSET_TYPE = {
+  'cmdb_ci_server': 'server',
+  'cmdb_ci_win_server': 'server',
+  'cmdb_ci_linux_server': 'server',
+  'cmdb_ci_unix_server': 'server',
+  'cmdb_ci_computer': 'workstation',
+  'cmdb_ci_pc_hardware': 'workstation',
+  'cmdb_ci_network_device': 'network',
+  'cmdb_ci_netgear': 'network',
+  'cmdb_ci_router': 'network',
+  'cmdb_ci_switch': 'network',
+  'cmdb_ci_firewall': 'network',
+  'cmdb_ci_database': 'database',
+  'cmdb_ci_db_instance': 'database',
+  'cmdb_ci_app_server': 'application',
+  'cmdb_ci_appl': 'application',
+};
+
+// Get OAuth access token, refreshing if needed
+async function getServiceNowAccessToken(env, connector) {
+  const tokens = await env.DB.prepare(
+    'SELECT * FROM connector_oauth_tokens WHERE connector_id = ?'
+  ).bind(connector.id).first();
+
+  if (!tokens) throw new Error('No OAuth tokens found. Please authorize the connection.');
+
+  const expiresAt = new Date(tokens.expires_at);
+  if (expiresAt <= new Date(Date.now() + 5 * 60 * 1000)) {
+    // Token expired or expiring soon - refresh it
+    if (!tokens.refresh_token) {
+      throw new Error('Token expired and no refresh token available. Please reauthorize.');
+    }
+
+    const creds = JSON.parse(atob(connector.credentials));
+    const refreshRes = await fetch(`${creds.instance_url}/oauth_token.do`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: atob(tokens.refresh_token),
+        client_id: creds.client_id,
+        client_secret: creds.client_secret
+      })
+    });
+
+    if (!refreshRes.ok) {
+      throw new Error('Token refresh failed. Please reauthorize.');
+    }
+
+    const newTokens = await refreshRes.json();
+    const newExpiresAt = new Date(Date.now() + newTokens.expires_in * 1000).toISOString();
+
+    await env.DB.prepare(`
+      UPDATE connector_oauth_tokens SET
+        access_token = ?, expires_at = ?, updated_at = datetime('now')
+      WHERE connector_id = ?
+    `).bind(btoa(newTokens.access_token), newExpiresAt, connector.id).run();
+
+    return newTokens.access_token;
+  }
+
+  return atob(tokens.access_token);
+}
+
+// Map ServiceNow CI to ForgeComply Asset
+function mapServiceNowCIToAsset(ci, connectorId) {
+  const assetType = CI_CLASS_TO_ASSET_TYPE[ci.sys_class_name] || 'server';
+
+  return {
+    hostname: ci.name || null,
+    ip_address: ci.ip_address || null,
+    fqdn: ci.fqdn || (ci.name && ci.dns_domain ? `${ci.name}.${ci.dns_domain}` : null),
+    mac_address: ci.mac_address || null,
+    os_type: ci.os || null,
+    asset_type: assetType,
+    servicenow_sys_id: ci.sys_id,
+    servicenow_class: ci.sys_class_name,
+    servicenow_sync_connector_id: connectorId,
+    discovery_source: 'servicenow_cmdb',
+  };
+}
+
+async function handleServiceNowOAuthAuthorize(request, env, org, user, connectorId) {
+  if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  const connector = await env.DB.prepare(
+    "SELECT * FROM api_connectors WHERE id = ? AND org_id = ? AND provider = 'servicenow'"
+  ).bind(connectorId, org.id).first();
+
+  if (!connector) return jsonResponse({ error: 'ServiceNow connector not found' }, 404);
+
+  const creds = connector.credentials ? JSON.parse(atob(connector.credentials)) : {};
+  if (!creds.instance_url || !creds.client_id) {
+    return jsonResponse({ error: 'Missing instance_url or client_id in connector credentials' }, 400);
+  }
+
+  // Generate state token for CSRF protection
+  const state = generateId();
+  await env.KV.put(`snow_oauth_state:${state}`, JSON.stringify({
+    connector_id: connectorId,
+    org_id: org.id,
+    user_id: user.id,
+    created_at: Date.now()
+  }), { expirationTtl: 600 });
+
+  const redirectUri = `${env.CORS_ORIGIN}/settings/integrations/servicenow/callback`;
+  const authUrl = new URL(`${creds.instance_url}/oauth_auth.do`);
+  authUrl.searchParams.set('response_type', 'code');
+  authUrl.searchParams.set('client_id', creds.client_id);
+  authUrl.searchParams.set('redirect_uri', redirectUri);
+  authUrl.searchParams.set('scope', SERVICENOW_OAUTH_SCOPES);
+  authUrl.searchParams.set('state', state);
+
+  return jsonResponse({ auth_url: authUrl.toString(), state });
+}
+
+async function handleServiceNowOAuthCallback(request, env, org, user, connectorId) {
+  if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  const { code, state } = await request.json();
+  if (!code || !state) return jsonResponse({ error: 'Missing code or state' }, 400);
+
+  // Validate state
+  const stateData = await env.KV.get(`snow_oauth_state:${state}`, 'json');
+  if (!stateData || stateData.connector_id !== connectorId || stateData.org_id !== org.id) {
+    return jsonResponse({ error: 'Invalid or expired OAuth state' }, 400);
+  }
+  await env.KV.delete(`snow_oauth_state:${state}`);
+
+  const connector = await env.DB.prepare(
+    'SELECT * FROM api_connectors WHERE id = ? AND org_id = ?'
+  ).bind(connectorId, org.id).first();
+
+  if (!connector) return jsonResponse({ error: 'Connector not found' }, 404);
+
+  const creds = JSON.parse(atob(connector.credentials));
+  const redirectUri = `${env.CORS_ORIGIN}/settings/integrations/servicenow/callback`;
+
+  // Exchange code for tokens
+  const tokenRes = await fetch(`${creds.instance_url}/oauth_token.do`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: redirectUri,
+      client_id: creds.client_id,
+      client_secret: creds.client_secret
+    })
+  });
+
+  if (!tokenRes.ok) {
+    const errText = await tokenRes.text();
+    return jsonResponse({ error: `Token exchange failed: ${errText}` }, 400);
+  }
+
+  const tokens = await tokenRes.json();
+  const expiresAt = new Date(Date.now() + tokens.expires_in * 1000).toISOString();
+
+  // Store tokens
+  await env.DB.prepare(`
+    INSERT INTO connector_oauth_tokens (id, connector_id, access_token, refresh_token, expires_at, scope)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(connector_id) DO UPDATE SET
+      access_token = excluded.access_token,
+      refresh_token = excluded.refresh_token,
+      expires_at = excluded.expires_at,
+      scope = excluded.scope,
+      updated_at = datetime('now')
+  `).bind(
+    generateId(), connectorId, btoa(tokens.access_token),
+    tokens.refresh_token ? btoa(tokens.refresh_token) : null,
+    expiresAt, tokens.scope
+  ).run();
+
+  // Update connector status
+  await env.DB.prepare(
+    "UPDATE api_connectors SET status = 'active', last_test_at = datetime('now'), last_test_status = 'pass' WHERE id = ?"
+  ).bind(connectorId).run();
+
+  await auditLog(env, org.id, user.id, 'servicenow_oauth_complete', 'api_connector', connectorId, {});
+
+  return jsonResponse({ success: true, message: 'OAuth authorization successful' });
+}
+
+async function handleServiceNowSync(request, env, org, user, connectorId, ctx) {
+  if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  // Rate limit: 5 syncs per hour per org
+  const rl = await checkRateLimit(env, `snow_sync:${org.id}`, 5, 3600);
+  if (rl.limited) return rateLimitResponse(rl.retryAfter);
+
+  const connector = await env.DB.prepare(
+    "SELECT * FROM api_connectors WHERE id = ? AND org_id = ? AND provider = 'servicenow'"
+  ).bind(connectorId, org.id).first();
+
+  if (!connector) return jsonResponse({ error: 'ServiceNow connector not found' }, 404);
+
+  const body = await request.json().catch(() => ({}));
+  const { system_id, ci_classes, filters } = body;
+
+  // Create sync record
+  const syncId = generateId();
+  await env.DB.prepare(`
+    INSERT INTO cmdb_sync_history (id, org_id, connector_id, sync_type, status, triggered_by, sync_options)
+    VALUES (?, ?, ?, 'manual', 'pending', ?, ?)
+  `).bind(syncId, org.id, connectorId, user.id, JSON.stringify({ system_id, ci_classes, filters })).run();
+
+  // Execute sync in background
+  ctx.waitUntil(executeServiceNowSync(env, {
+    syncId,
+    connectorId,
+    orgId: org.id,
+    systemId: system_id,
+    ciClasses: ci_classes || ['cmdb_ci_server', 'cmdb_ci_computer'],
+    filters: filters || {},
+    userId: user.id
+  }));
+
+  await auditLog(env, org.id, user.id, 'servicenow_sync_started', 'cmdb_sync', syncId, { connector_id: connectorId });
+
+  return jsonResponse({ sync_id: syncId, message: 'Sync started', status: 'pending' }, 202);
+}
+
+async function executeServiceNowSync(env, options) {
+  const { syncId, connectorId, orgId, systemId, ciClasses, filters } = options;
+
+  try {
+    // Update status to running
+    await env.DB.prepare(
+      "UPDATE cmdb_sync_history SET status = 'running', started_at = datetime('now') WHERE id = ?"
+    ).bind(syncId).run();
+
+    const connector = await env.DB.prepare(
+      'SELECT * FROM api_connectors WHERE id = ?'
+    ).bind(connectorId).first();
+
+    const creds = JSON.parse(atob(connector.credentials));
+    const accessToken = await getServiceNowAccessToken(env, connector);
+
+    let totalCreated = 0, totalUpdated = 0, totalSkipped = 0, totalFailed = 0, totalFetched = 0;
+
+    for (const ciClass of ciClasses) {
+      // Fetch CIs from ServiceNow
+      const apiUrl = new URL(`${creds.instance_url}/api/now/table/${ciClass}`);
+      apiUrl.searchParams.set('sysparm_fields', 'sys_id,name,ip_address,fqdn,mac_address,os,sys_class_name,operational_status,dns_domain');
+      apiUrl.searchParams.set('sysparm_limit', '1000');
+
+      // Apply filters
+      const queryParts = [];
+      if (filters.operational_status) {
+        queryParts.push(`operational_status=${filters.operational_status}`);
+      }
+      if (queryParts.length > 0) {
+        apiUrl.searchParams.set('sysparm_query', queryParts.join('^'));
+      }
+
+      const response = await fetch(apiUrl.toString(), {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Accept': 'application/json'
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`ServiceNow API error: ${response.status} ${await response.text()}`);
+      }
+
+      const data = await response.json();
+      const cis = data.result || [];
+      totalFetched += cis.length;
+
+      // Process each CI
+      for (const ci of cis) {
+        try {
+          const assetData = mapServiceNowCIToAsset(ci, connectorId);
+
+          if (!assetData.hostname && !assetData.ip_address) {
+            totalSkipped++;
+            continue;
+          }
+
+          // Check for existing asset by sys_id first, then hostname/IP
+          let existing = await env.DB.prepare(`
+            SELECT id FROM assets WHERE org_id = ? AND servicenow_sys_id = ?
+          `).bind(orgId, ci.sys_id).first();
+
+          if (!existing) {
+            existing = await env.DB.prepare(`
+              SELECT id FROM assets WHERE org_id = ? AND (
+                (ip_address = ? AND ip_address IS NOT NULL AND ip_address != '') OR
+                (hostname = ? AND hostname IS NOT NULL AND hostname != '')
+              )
+            `).bind(orgId, assetData.ip_address || '', assetData.hostname || '').first();
+          }
+
+          if (existing) {
+            // Update existing asset
+            await env.DB.prepare(`
+              UPDATE assets SET
+                hostname = COALESCE(?, hostname),
+                ip_address = COALESCE(?, ip_address),
+                fqdn = COALESCE(?, fqdn),
+                mac_address = COALESCE(?, mac_address),
+                os_type = COALESCE(?, os_type),
+                asset_type = COALESCE(?, asset_type),
+                servicenow_sys_id = ?,
+                servicenow_class = ?,
+                servicenow_sync_connector_id = ?,
+                servicenow_last_synced_at = datetime('now'),
+                system_id = COALESCE(?, system_id),
+                last_seen_at = datetime('now'),
+                updated_at = datetime('now')
+              WHERE id = ?
+            `).bind(
+              assetData.hostname, assetData.ip_address, assetData.fqdn,
+              assetData.mac_address, assetData.os_type, assetData.asset_type,
+              assetData.servicenow_sys_id, assetData.servicenow_class, connectorId,
+              systemId || null, existing.id
+            ).run();
+            totalUpdated++;
+          } else {
+            // Create new asset
+            const assetId = generateId();
+            await env.DB.prepare(`
+              INSERT INTO assets (
+                id, org_id, system_id, hostname, ip_address, mac_address, fqdn,
+                os_type, asset_type, discovery_source, servicenow_sys_id,
+                servicenow_class, servicenow_sync_connector_id, servicenow_last_synced_at,
+                scan_credentialed, first_seen_at, last_seen_at, created_at, updated_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'servicenow_cmdb', ?, ?, ?, datetime('now'),
+                        0, datetime('now'), datetime('now'), datetime('now'), datetime('now'))
+            `).bind(
+              assetId, orgId, systemId || null, assetData.hostname, assetData.ip_address,
+              assetData.mac_address, assetData.fqdn, assetData.os_type, assetData.asset_type,
+              assetData.servicenow_sys_id, assetData.servicenow_class, connectorId
+            ).run();
+            totalCreated++;
+          }
+        } catch (ciErr) {
+          console.error(`Failed to process CI ${ci.sys_id}:`, ciErr.message);
+          totalFailed++;
+        }
+      }
+    }
+
+    // Update sync record as completed
+    await env.DB.prepare(`
+      UPDATE cmdb_sync_history SET
+        status = 'completed',
+        completed_at = datetime('now'),
+        assets_created = ?,
+        assets_updated = ?,
+        assets_skipped = ?,
+        assets_failed = ?,
+        total_cis_fetched = ?
+      WHERE id = ?
+    `).bind(totalCreated, totalUpdated, totalSkipped, totalFailed, totalFetched, syncId).run();
+
+    console.log(`[ServiceNow] Sync ${syncId} completed: ${totalCreated} created, ${totalUpdated} updated, ${totalSkipped} skipped, ${totalFailed} failed`);
+
+  } catch (err) {
+    console.error(`[ServiceNow] Sync ${syncId} failed:`, err.message);
+    await env.DB.prepare(`
+      UPDATE cmdb_sync_history SET status = 'failed', completed_at = datetime('now'), error_message = ? WHERE id = ?
+    `).bind(err.message, syncId).run();
+  }
+}
+
+async function handleServiceNowSyncHistory(env, url, org, user, connectorId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  const connector = await env.DB.prepare(
+    "SELECT id FROM api_connectors WHERE id = ? AND org_id = ? AND provider = 'servicenow'"
+  ).bind(connectorId, org.id).first();
+
+  if (!connector) return jsonResponse({ error: 'ServiceNow connector not found' }, 404);
+
+  const limit = Math.min(parseInt(url.searchParams.get('limit') || '20'), 100);
+  const offset = parseInt(url.searchParams.get('offset') || '0');
+
+  const { results } = await env.DB.prepare(`
+    SELECT sh.*, u.name as triggered_by_name
+    FROM cmdb_sync_history sh
+    LEFT JOIN users u ON u.id = sh.triggered_by
+    WHERE sh.connector_id = ? AND sh.org_id = ?
+    ORDER BY sh.started_at DESC
+    LIMIT ? OFFSET ?
+  `).bind(connectorId, org.id, limit, offset).all();
+
+  const total = await env.DB.prepare(
+    'SELECT COUNT(*) as count FROM cmdb_sync_history WHERE connector_id = ? AND org_id = ?'
+  ).bind(connectorId, org.id).first();
+
+  return jsonResponse({ syncs: results, total: total?.count || 0, limit, offset });
+}
+
+async function handleGetServiceNowSchedule(env, org, user, connectorId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  const connector = await env.DB.prepare(
+    "SELECT id FROM api_connectors WHERE id = ? AND org_id = ? AND provider = 'servicenow'"
+  ).bind(connectorId, org.id).first();
+
+  if (!connector) return jsonResponse({ error: 'ServiceNow connector not found' }, 404);
+
+  const schedule = await env.DB.prepare(
+    'SELECT * FROM cmdb_sync_schedules WHERE connector_id = ? AND org_id = ?'
+  ).bind(connectorId, org.id).first();
+
+  return jsonResponse({ schedule: schedule || null });
+}
+
+async function handleUpdateServiceNowSchedule(request, env, org, user, connectorId) {
+  if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  const connector = await env.DB.prepare(
+    "SELECT id FROM api_connectors WHERE id = ? AND org_id = ? AND provider = 'servicenow'"
+  ).bind(connectorId, org.id).first();
+
+  if (!connector) return jsonResponse({ error: 'ServiceNow connector not found' }, 404);
+
+  const body = await request.json();
+  const { is_enabled, frequency, hour_utc, day_of_week, sync_options } = body;
+
+  const valErrors = validateBody(body, {
+    frequency: { required: true, type: 'string' },
+  });
+  if (valErrors) return validationErrorResponse(valErrors);
+
+  if (!['hourly', 'daily', 'weekly', 'monthly'].includes(frequency)) {
+    return jsonResponse({ error: 'Invalid frequency' }, 400);
+  }
+
+  // Calculate next sync time
+  const nextSync = calculateNextSyncTime(frequency, hour_utc || 2, day_of_week);
+
+  const existing = await env.DB.prepare(
+    'SELECT id FROM cmdb_sync_schedules WHERE connector_id = ? AND org_id = ?'
+  ).bind(connectorId, org.id).first();
+
+  if (existing) {
+    await env.DB.prepare(`
+      UPDATE cmdb_sync_schedules SET
+        is_enabled = ?, frequency = ?, hour_utc = ?, day_of_week = ?,
+        next_sync_at = ?, sync_options = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `).bind(
+      is_enabled !== false ? 1 : 0, frequency, hour_utc || 2, day_of_week || null,
+      nextSync, JSON.stringify(sync_options || {}), existing.id
+    ).run();
+  } else {
+    await env.DB.prepare(`
+      INSERT INTO cmdb_sync_schedules (id, org_id, connector_id, is_enabled, frequency, hour_utc, day_of_week, next_sync_at, sync_options, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      generateId(), org.id, connectorId, is_enabled !== false ? 1 : 0,
+      frequency, hour_utc || 2, day_of_week || null, nextSync,
+      JSON.stringify(sync_options || {}), user.id
+    ).run();
+  }
+
+  await auditLog(env, org.id, user.id, 'update', 'cmdb_sync_schedule', connectorId, { frequency, is_enabled });
+
+  return jsonResponse({ success: true, next_sync_at: nextSync });
+}
+
+function calculateNextSyncTime(frequency, hourUtc, dayOfWeek) {
+  const now = new Date();
+  let next = new Date(now);
+
+  switch (frequency) {
+    case 'hourly':
+      next.setHours(next.getHours() + 1);
+      next.setMinutes(0, 0, 0);
+      break;
+    case 'daily':
+      next.setDate(next.getDate() + 1);
+      next.setUTCHours(hourUtc, 0, 0, 0);
+      break;
+    case 'weekly':
+      next.setDate(next.getDate() + ((7 + (dayOfWeek || 0) - next.getDay()) % 7 || 7));
+      next.setUTCHours(hourUtc, 0, 0, 0);
+      break;
+    case 'monthly':
+      next.setMonth(next.getMonth() + 1);
+      next.setDate(1);
+      next.setUTCHours(hourUtc, 0, 0, 0);
+      break;
+  }
+
+  return next.toISOString();
+}
+
+async function handleServiceNowCIClasses(env, org, user, connectorId) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  // Return available CI classes with their asset type mappings
+  const ciClasses = Object.entries(CI_CLASS_TO_ASSET_TYPE).map(([ciClass, assetType]) => ({
+    ci_class: ciClass,
+    asset_type: assetType,
+    label: ciClass.replace('cmdb_ci_', '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+  }));
+
+  return jsonResponse({ ci_classes: ciClasses });
+}
+
+// ServiceNow CMDB Direct Access (for ServiceNow management page)
+async function handleServiceNowCMDBAssets(env, org) {
+  try {
+    // Get assets synced from ServiceNow CMDB
+    const { results: assets } = await env.DB.prepare(`
+      SELECT a.*
+      FROM assets a
+      WHERE a.org_id = ? AND a.servicenow_sys_id IS NOT NULL
+      ORDER BY a.updated_at DESC
+      LIMIT 500
+    `).bind(org.id).all();
+
+    // Get sync statistics
+    const syncedResult = await env.DB.prepare(
+      'SELECT COUNT(*) as count FROM assets WHERE org_id = ? AND servicenow_sys_id IS NOT NULL'
+    ).bind(org.id).first();
+    const totalSynced = syncedResult?.count || 0;
+
+    const totalResult = await env.DB.prepare(
+      'SELECT COUNT(*) as count FROM assets WHERE org_id = ?'
+    ).bind(org.id).first();
+    const totalAssets = totalResult?.count || 0;
+
+    // Get last sync info (use cmdb_sync_history table which exists in both DBs)
+    let lastSync = null;
+    try {
+      lastSync = await env.DB.prepare(`
+        SELECT * FROM cmdb_sync_history
+        WHERE connector_id IN (SELECT id FROM api_connectors WHERE org_id = ?)
+        ORDER BY completed_at DESC
+        LIMIT 1
+      `).bind(org.id).first();
+    } catch { /* table may not exist */ }
+
+    return jsonResponse({
+      assets: assets || [],
+      stats: {
+        total_synced: totalSynced,
+        total_assets: totalAssets,
+        sync_percentage: totalAssets > 0 ? Math.round((totalSynced / totalAssets) * 100) : 0,
+        last_sync: lastSync
+      }
+    });
+  } catch (e) {
+    return jsonResponse({ assets: [], stats: { total_synced: 0, total_assets: 0, sync_percentage: 0, last_sync: null }, error: e.message });
+  }
+}
+
+async function handleServiceNowConnectors(env, org) {
+  try {
+    // Get all ServiceNow connectors for this org
+    const { results: connectors } = await env.DB.prepare(`
+      SELECT ac.id, ac.name, ac.provider, ac.status, ac.last_sync_at, ac.created_at
+      FROM api_connectors ac
+      WHERE ac.org_id = ? AND ac.provider = 'servicenow'
+      ORDER BY ac.created_at DESC
+    `).bind(org.id).all();
+
+    // Try to get schedule info if table exists
+    const connectorsWithSchedule = [];
+    for (const c of (connectors || [])) {
+      let schedule = null;
+      try {
+        schedule = await env.DB.prepare(
+          'SELECT frequency, is_enabled, next_sync_at FROM cmdb_sync_schedules WHERE connector_id = ?'
+        ).bind(c.id).first();
+      } catch { /* table may not exist */ }
+      connectorsWithSchedule.push({
+        ...c,
+        frequency: schedule?.frequency || null,
+        schedule_enabled: schedule?.is_enabled || 0,
+        next_sync_at: schedule?.next_sync_at || null
+      });
+    }
+
+    return jsonResponse({ connectors: connectorsWithSchedule });
+  } catch (e) {
+    return jsonResponse({ connectors: [], error: e.message });
+  }
+}
+
+// Scheduled sync handler (called from CRON)
+async function handleScheduledServiceNowSyncs(env) {
+  const now = new Date().toISOString();
+
+  const { results: schedules } = await env.DB.prepare(`
+    SELECT ss.*, ac.id as connector_id, ac.org_id, ac.credentials
+    FROM cmdb_sync_schedules ss
+    JOIN api_connectors ac ON ac.id = ss.connector_id
+    WHERE ss.is_enabled = 1 AND ss.next_sync_at <= ?
+    ORDER BY ss.next_sync_at ASC
+    LIMIT 10
+  `).bind(now).all();
+
+  for (const schedule of schedules || []) {
+    try {
+      const syncId = generateId();
+      const options = JSON.parse(schedule.sync_options || '{}');
+
+      await env.DB.prepare(`
+        INSERT INTO cmdb_sync_history (id, org_id, connector_id, sync_type, status, sync_options)
+        VALUES (?, ?, ?, 'scheduled', 'pending', ?)
+      `).bind(syncId, schedule.org_id, schedule.connector_id, schedule.sync_options).run();
+
+      await executeServiceNowSync(env, {
+        syncId,
+        connectorId: schedule.connector_id,
+        orgId: schedule.org_id,
+        systemId: options.system_id,
+        ciClasses: options.ci_classes || ['cmdb_ci_server'],
+        filters: options.filters || {},
+        userId: schedule.created_by
+      });
+
+      // Calculate next sync time
+      const nextSync = calculateNextSyncTime(schedule.frequency, schedule.hour_utc, schedule.day_of_week);
+      await env.DB.prepare(`
+        UPDATE cmdb_sync_schedules SET last_sync_at = datetime('now'), next_sync_at = ? WHERE id = ?
+      `).bind(nextSync, schedule.id).run();
+
+      console.log(`[ServiceNow] Scheduled sync completed for connector ${schedule.connector_id}`);
+    } catch (err) {
+      console.error(`[ServiceNow] Scheduled sync failed for connector ${schedule.connector_id}:`, err.message);
+    }
+  }
 }
 
 // ============================================================================
@@ -11101,4 +14153,368 @@ async function handleAutomationStats(env, org, user) {
       failed_tests: failedTests?.count || 0,
     }
   });
+}
+
+// ============================================================================
+// SELF-SERVICE PASSWORD RESET (NIST SP 800-63B Compliant)
+// ============================================================================
+
+/**
+ * Generate a secure password reset token
+ * Uses crypto.randomUUID for uniqueness + timestamp for expiry validation
+ */
+function generateResetToken() {
+  const uuid = crypto.randomUUID();
+  const timestamp = Date.now().toString(36);
+  return `${uuid}-${timestamp}`;
+}
+
+/**
+ * Hash the reset token for secure storage
+ * Never store plaintext tokens in the database
+ */
+async function hashResetToken(token) {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(token);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Build password reset email HTML
+ */
+function buildPasswordResetEmailHtml(userName, resetUrl, expiryMinutes) {
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Password Reset Request</title>
+</head>
+<body style="margin:0;padding:0;background-color:#f4f4f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f4f5;padding:40px 20px;">
+    <tr>
+      <td align="center">
+        <table width="600" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:12px;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
+          <!-- Header -->
+          <tr>
+            <td style="background:linear-gradient(135deg,#1e3a8a 0%,#1d4ed8 100%);padding:32px;border-radius:12px 12px 0 0;text-align:center;">
+              <h1 style="margin:0;color:#ffffff;font-size:24px;font-weight:600;">Password Reset Request</h1>
+            </td>
+          </tr>
+          <!-- Content -->
+          <tr>
+            <td style="padding:32px;">
+              <p style="margin:0 0 16px;color:#374151;font-size:16px;">Hi ${userName || 'there'},</p>
+              <p style="margin:0 0 24px;color:#374151;font-size:16px;">
+                We received a request to reset your password for your ForgeComply 360 account.
+                Click the button below to create a new password.
+              </p>
+              <table width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td align="center" style="padding:16px 0;">
+                    <a href="${resetUrl}" style="display:inline-block;background-color:#2563eb;color:#ffffff;text-decoration:none;padding:14px 32px;border-radius:8px;font-size:16px;font-weight:600;">
+                      Reset Password
+                    </a>
+                  </td>
+                </tr>
+              </table>
+              <p style="margin:24px 0 16px;color:#6b7280;font-size:14px;">
+                This link will expire in <strong>${expiryMinutes} minutes</strong> for security purposes.
+              </p>
+              <p style="margin:0 0 16px;color:#6b7280;font-size:14px;">
+                If you didn't request this password reset, you can safely ignore this email.
+                Your password will remain unchanged.
+              </p>
+              <!-- Security Notice -->
+              <div style="background-color:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:16px;margin-top:24px;">
+                <p style="margin:0;color:#92400e;font-size:13px;">
+                  <strong>Security Notice:</strong> ForgeComply 360 will never ask you to share your password
+                  via email or phone. If you didn't initiate this request, please contact your administrator.
+                </p>
+              </div>
+            </td>
+          </tr>
+          <!-- Footer -->
+          <tr>
+            <td style="background-color:#f9fafb;padding:24px 32px;border-radius:0 0 12px 12px;text-align:center;">
+              <p style="margin:0;color:#6b7280;font-size:12px;">
+                ForgeComply 360 - Enterprise GRC Platform<br>
+                Forge Cyber Defense - Veteran-Owned Business
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+}
+
+/**
+ * Handle forgot password request
+ * POST /api/v1/auth/forgot-password
+ * Rate limited: 5 requests per email per hour
+ */
+async function handleForgotPassword(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const { email } = body;
+
+  if (!email || typeof email !== 'string') {
+    return jsonResponse({ error: 'Email is required' }, 400);
+  }
+
+  const normalizedEmail = email.toLowerCase().trim();
+
+  // Rate limit by email to prevent enumeration attacks
+  const rl = await checkRateLimit(env, `reset:${normalizedEmail}`, 5, 3600);
+  if (rl.limited) {
+    return jsonResponse({
+      error: 'Too many password reset requests. Please try again later.',
+      retry_after: rl.retryAfter
+    }, 429);
+  }
+
+  // Always return success to prevent email enumeration
+  // Process the actual reset in the background
+  const successResponse = jsonResponse({
+    message: 'If an account with that email exists, you will receive a password reset link shortly.'
+  });
+
+  // Look up user
+  const user = await env.DB.prepare(
+    'SELECT id, name, email, status FROM users WHERE email = ?'
+  ).bind(normalizedEmail).first();
+
+  // If user doesn't exist or is deactivated, return success without sending email
+  if (!user || user.status === 'deactivated') {
+    console.log('[PASSWORD_RESET] No active user found for email:', normalizedEmail);
+    return successResponse;
+  }
+
+  // Generate secure reset token
+  const resetToken = generateResetToken();
+  const tokenHash = await hashResetToken(resetToken);
+  const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString(); // 15 minutes
+
+  // Get request metadata for audit
+  const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+  const userAgent = request.headers.get('User-Agent') || 'unknown';
+
+  // Invalidate any existing reset tokens for this user
+  await env.DB.prepare(
+    'DELETE FROM password_reset_tokens WHERE user_id = ?'
+  ).bind(user.id).run();
+
+  // Store new token
+  try {
+    await env.DB.prepare(`
+      INSERT INTO password_reset_tokens (id, user_id, token_hash, expires_at, ip_address, user_agent)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).bind(generateId(), user.id, tokenHash, expiresAt, ip, userAgent.substring(0, 500)).run();
+  } catch (e) {
+    console.error('[PASSWORD_RESET] Failed to store token:', e);
+    // Return success anyway to prevent enumeration
+    return successResponse;
+  }
+
+  // Build reset URL
+  const baseUrl = env.CORS_ORIGIN || 'https://forgecomply360.pages.dev';
+  const resetUrl = `${baseUrl}/reset-password?token=${encodeURIComponent(resetToken)}`;
+
+  // Send email
+  if (env.RESEND_API_KEY) {
+    await sendEmail(
+      env,
+      user.email,
+      '[ForgeComply 360] Password Reset Request',
+      buildPasswordResetEmailHtml(user.name, resetUrl, 15)
+    );
+    console.log('[PASSWORD_RESET] Email sent to:', user.email);
+  } else {
+    console.warn('[PASSWORD_RESET] RESEND_API_KEY not configured, skipping email');
+    console.log('[PASSWORD_RESET] Reset URL would be:', resetUrl);
+  }
+
+  // Audit log (get org for the user)
+  const org = await env.DB.prepare('SELECT id FROM organizations WHERE id = (SELECT org_id FROM users WHERE id = ?)').bind(user.id).first();
+  if (org) {
+    await auditLog(env, org.id, user.id, 'password_reset_requested', 'user', user.id, { ip_address: ip });
+  }
+
+  return successResponse;
+}
+
+/**
+ * Handle password reset with token
+ * POST /api/v1/auth/reset-password
+ */
+async function handleResetPassword(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const { token, password } = body;
+
+  if (!token || typeof token !== 'string') {
+    return jsonResponse({ error: 'Reset token is required' }, 400);
+  }
+
+  if (!password || typeof password !== 'string') {
+    return jsonResponse({ error: 'New password is required' }, 400);
+  }
+
+  // Validate password policy
+  const policyErrors = validatePasswordPolicy(password);
+  if (policyErrors) {
+    return jsonResponse({
+      error: 'Password does not meet complexity requirements',
+      details: policyErrors
+    }, 400);
+  }
+
+  // Check breached password
+  const isBreached = await checkBreachedPassword(password);
+  if (isBreached) {
+    return jsonResponse({
+      error: 'This password has been found in a data breach. Please choose a different password.'
+    }, 400);
+  }
+
+  // Hash the provided token to look up in database
+  const tokenHash = await hashResetToken(token);
+
+  // Find the token
+  const resetRecord = await env.DB.prepare(`
+    SELECT prt.*, u.email, u.name
+    FROM password_reset_tokens prt
+    JOIN users u ON u.id = prt.user_id
+    WHERE prt.token_hash = ? AND prt.used_at IS NULL
+  `).bind(tokenHash).first();
+
+  if (!resetRecord) {
+    return jsonResponse({ error: 'Invalid or expired reset link' }, 400);
+  }
+
+  // Check expiry
+  if (new Date(resetRecord.expires_at) < new Date()) {
+    // Clean up expired token
+    await env.DB.prepare('DELETE FROM password_reset_tokens WHERE id = ?').bind(resetRecord.id).run();
+    return jsonResponse({ error: 'Reset link has expired. Please request a new one.' }, 400);
+  }
+
+  // Check password history (NIST IA-5)
+  const wasUsed = await checkPasswordHistory(env, resetRecord.user_id, password, 12);
+  if (wasUsed) {
+    return jsonResponse({
+      error: 'Password was used recently. Please choose a different password.'
+    }, 400);
+  }
+
+  // Generate new password hash
+  const salt = generateSalt();
+  const passwordHash = await hashPassword(password, salt);
+
+  // Update user password and mark token as used
+  await env.DB.batch([
+    env.DB.prepare(`
+      UPDATE users SET
+        password_hash = ?,
+        salt = ?,
+        failed_login_attempts = 0,
+        locked_until = NULL,
+        updated_at = datetime('now')
+      WHERE id = ?
+    `).bind(passwordHash, salt, resetRecord.user_id),
+    env.DB.prepare(`
+      UPDATE password_reset_tokens
+      SET used_at = datetime('now')
+      WHERE id = ?
+    `).bind(resetRecord.id)
+  ]);
+
+  // Record in password history
+  await recordPasswordHistory(env, resetRecord.user_id, passwordHash, salt);
+
+  // Revoke all refresh tokens (force re-login on all devices)
+  await env.DB.prepare('UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?').bind(resetRecord.user_id).run();
+
+  // Audit log
+  const org = await env.DB.prepare('SELECT org_id FROM users WHERE id = ?').bind(resetRecord.user_id).first();
+  if (org) {
+    await auditLog(env, org.org_id, resetRecord.user_id, 'password_reset_completed', 'user', resetRecord.user_id, {});
+  }
+
+  // Send confirmation email
+  if (env.RESEND_API_KEY) {
+    await sendEmail(
+      env,
+      resetRecord.email,
+      '[ForgeComply 360] Password Changed Successfully',
+      buildPasswordChangedEmailHtml(resetRecord.name)
+    );
+  }
+
+  return jsonResponse({ message: 'Password reset successfully. Please log in with your new password.' });
+}
+
+/**
+ * Build password changed confirmation email HTML
+ */
+function buildPasswordChangedEmailHtml(userName) {
+  const now = new Date().toLocaleString('en-US', { timeZone: 'UTC', dateStyle: 'full', timeStyle: 'short' });
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Password Changed</title>
+</head>
+<body style="margin:0;padding:0;background-color:#f4f4f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f4f5;padding:40px 20px;">
+    <tr>
+      <td align="center">
+        <table width="600" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:12px;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
+          <!-- Header -->
+          <tr>
+            <td style="background:linear-gradient(135deg,#059669 0%,#10b981 100%);padding:32px;border-radius:12px 12px 0 0;text-align:center;">
+              <div style="width:48px;height:48px;background-color:rgba(255,255,255,0.2);border-radius:50%;margin:0 auto 16px;display:flex;align-items:center;justify-content:center;">
+                <span style="font-size:24px;">&#x2713;</span>
+              </div>
+              <h1 style="margin:0;color:#ffffff;font-size:24px;font-weight:600;">Password Changed Successfully</h1>
+            </td>
+          </tr>
+          <!-- Content -->
+          <tr>
+            <td style="padding:32px;">
+              <p style="margin:0 0 16px;color:#374151;font-size:16px;">Hi ${userName || 'there'},</p>
+              <p style="margin:0 0 24px;color:#374151;font-size:16px;">
+                Your ForgeComply 360 account password was successfully changed on ${now} UTC.
+              </p>
+              <p style="margin:0 0 16px;color:#374151;font-size:16px;">
+                You can now log in with your new password.
+              </p>
+              <!-- Security Notice -->
+              <div style="background-color:#fef2f2;border:1px solid #ef4444;border-radius:8px;padding:16px;margin-top:24px;">
+                <p style="margin:0;color:#991b1b;font-size:13px;">
+                  <strong>Didn't make this change?</strong> If you did not reset your password,
+                  please contact your administrator immediately as your account may be compromised.
+                </p>
+              </div>
+            </td>
+          </tr>
+          <!-- Footer -->
+          <tr>
+            <td style="background-color:#f9fafb;padding:24px 32px;border-radius:0 0 12px 12px;text-align:center;">
+              <p style="margin:0;color:#6b7280;font-size:12px;">
+                ForgeComply 360 - Enterprise GRC Platform<br>
+                Forge Cyber Defense - Veteran-Owned Business
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
 }

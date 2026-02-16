@@ -28,6 +28,23 @@ CREATE INDEX IF NOT EXISTS idx_schema_migrations_applied ON schema_migrations(ap
 -- Record all previously applied migrations for tracking
 -- ============================================================================
 
+-- Seed both short ('001') and full filename ('migrate-001-poam-enhancements')
+-- versions so the migration runner can match either format.
+INSERT OR IGNORE INTO schema_migrations (version, name, description) VALUES
+  ('migrate-001-poam-enhancements', 'poam-enhancements', 'POA&M workflow, milestones, comments'),
+  ('migrate-002-ato-document-templates', 'ato-document-templates', 'ATO compliance AI templates'),
+  ('migrate-003-risk-enhancements', 'risk-enhancements', 'Risk register enhancements'),
+  ('migrate-004-evidence-schedules', 'evidence-schedules', 'Evidence collection schedules'),
+  ('migrate-005-audit-checklist', 'audit-checklist', 'Audit readiness checklists'),
+  ('migrate-006-email-notifications', 'email-notifications', 'Email notification columns'),
+  ('migrate-007-email-notifications-index', 'email-notifications-index', 'Email notification indexes'),
+  ('migrate-008-tcf-framework', 'tcf-framework', 'EU TCF framework support'),
+  ('migrate-009-poam-junction-tables', 'poam-junction-tables', 'FedRAMP POA&M asset/control/evidence linking'),
+  ('migrate-010-poam-cmmc-enhancements', 'poam-cmmc-enhancements', 'Data sensitivity, CUI, deviation tracking'),
+  ('migrate-011-asset-responsibility-model', 'asset-responsibility-model', 'Asset environment, boundaries, responsibility'),
+  ('migrate-012-oscal-vendor-linkage', 'oscal-vendor-linkage', 'OSCAL POA&M export metadata, vendor FK'),
+  ('migrate-013-schema-migrations-tracking', 'schema-migrations-tracking', 'This migration - schema version tracking');
+-- Also insert the short-form versions for backward compatibility
 INSERT OR IGNORE INTO schema_migrations (version, name, description) VALUES
   ('001', 'initial-schema', 'Core tables: orgs, users, frameworks, controls, poams, assets'),
   ('002', 'audit-logging', 'Audit log table for compliance tracking'),

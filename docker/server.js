@@ -33,6 +33,8 @@ const R2_DIR = path.join(DATA_DIR, 'evidence');
 const sqlite = new Database(DB_PATH, { verbose: process.env.DEBUG ? console.log : undefined });
 sqlite.pragma('journal_mode = WAL');
 sqlite.pragma('foreign_keys = ON');
+// Limit WAL auto-checkpoint to 1000 pages (~4 MB) to prevent unbounded growth
+sqlite.pragma('wal_autocheckpoint = 1000');
 
 // Run migrations on first start
 function initDatabase() {
@@ -378,6 +380,23 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+// ============================================================================
+// WAL CHECKPOINT — Periodic truncation to prevent WAL file growth
+// Runs every 5 minutes; TRUNCATE mode resets the WAL file to zero bytes.
+// ============================================================================
+
+const WAL_CHECKPOINT_INTERVAL = 5 * 60 * 1000; // 5 minutes
+const walCheckpointTimer = setInterval(() => {
+  try {
+    const result = sqlite.pragma('wal_checkpoint(TRUNCATE)');
+    if (process.env.DEBUG) {
+      console.log('[WAL] Checkpoint result:', result);
+    }
+  } catch (err) {
+    console.error('[WAL] Checkpoint failed:', err.message);
+  }
+}, WAL_CHECKPOINT_INTERVAL);
+
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`
 ╔══════════════════════════════════════════════════════════════╗
@@ -392,15 +411,24 @@ server.listen(PORT, '0.0.0.0', () => {
   `);
 });
 
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('[Server] SIGTERM received, shutting down...');
-  sqlite.close();
-  server.close(() => process.exit(0));
-});
+// Graceful shutdown — flush WAL, close DB, then exit
+function shutdown(signal) {
+  console.log(`[Server] ${signal} received, shutting down...`);
+  clearInterval(walCheckpointTimer);
+  try {
+    sqlite.pragma('wal_checkpoint(TRUNCATE)');
+  } catch { /* best-effort final checkpoint */ }
+  server.close(() => {
+    sqlite.close();
+    process.exit(0);
+  });
+  // Force exit after 10s if connections don't drain
+  setTimeout(() => {
+    console.error('[Server] Forced exit after timeout');
+    sqlite.close();
+    process.exit(1);
+  }, 10000);
+}
 
-process.on('SIGINT', () => {
-  console.log('[Server] SIGINT received, shutting down...');
-  sqlite.close();
-  server.close(() => process.exit(0));
-});
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

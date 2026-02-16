@@ -46,4 +46,4 @@ CREATE INDEX IF NOT EXISTS idx_security_incidents_type ON security_incidents(inc
 
 -- Track migration
 INSERT OR IGNORE INTO schema_migrations (version, name, description)
-VALUES ('016', 'audit-log-integrity', 'Audit log hash chaining, password history, security incidents table');
+VALUES ('migrate-016-audit-log-integrity', 'audit-log-integrity', 'Audit log hash chaining, password history, security incidents table');

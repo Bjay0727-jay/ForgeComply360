@@ -5,26 +5,34 @@ compatibility_flags = ["nodejs_compat"]
 
 # ============================================================================
 # LOCAL DEVELOPMENT (wrangler dev)
+# IMPORTANT: Dev resources are intentionally separate from production.
+#   Create with: wrangler d1 create forge-comply360-db-dev
+#                wrangler kv:namespace create KV_DEV
+#   Then replace the placeholder IDs below with the new resource IDs.
 # ============================================================================
 [[d1_databases]]
 binding = "DB"
-database_name = "forge-comply360-db"
-database_id = "73faffec-f001-44bc-880e-62bd932c25b1"
+database_name = "forge-comply360-db-dev"
+database_id = "local"  # Uses local SQLite in wrangler dev; replace with a real dev DB ID for remote dev
 
 [[kv_namespaces]]
 binding = "KV"
-id = "a3323bb1cfa14271a286170864082869"
+id = "local"  # Uses local emulation in wrangler dev; replace with a real dev KV ID for remote dev
 
 [[r2_buckets]]
 binding = "EVIDENCE_VAULT"
-bucket_name = "forge-evidence"
+bucket_name = "forge-evidence-dev"
+
+[[r2_buckets]]
+binding = "BACKUP_BUCKET"
+bucket_name = "forge-comply360-backups-dev"
 
 [ai]
 binding = "AI"
 
 [vars]
 ENVIRONMENT = "development"
-CORS_ORIGIN = "https://forgecomply360.pages.dev"
+CORS_ORIGIN = "http://localhost:5173"
 
 # ============================================================================
 # PRODUCTION
@@ -45,6 +53,10 @@ id = "a3323bb1cfa14271a286170864082869"
 binding = "EVIDENCE_VAULT"
 bucket_name = "forge-evidence"
 
+[[env.production.r2_buckets]]
+binding = "BACKUP_BUCKET"
+bucket_name = "forge-comply360-backups"
+
 [env.production.ai]
 binding = "AI"
 
@@ -62,10 +74,48 @@ CORS_ORIGIN = "https://forgecomply360.pages.dev"
 #   Production: wrangler secret put RESEND_API_KEY --env production
 
 # ============================================================================
-# CRON TRIGGERS - Evidence Scheduling, Reminders & Email Digests
+# CRON TRIGGERS - Evidence Scheduling, Reminders & Email Digests & Backups
 # ============================================================================
+# 0 6 * * * = Daily at 6 AM UTC (evidence checks, compliance alerts)
+# 0 8 * * 1 = Weekly Monday 8 AM UTC (weekly digest)
+# 0 2 * * 2,5 = Tuesday & Friday at 2 AM UTC (automated backup)
+# 0 * * * * = Hourly (ServiceNow CMDB scheduled syncs)
 [triggers]
-crons = ["0 6 * * *", "0 8 * * 1"]
+crons = ["0 6 * * *", "0 8 * * 1", "0 2 * * 2,5", "0 * * * *"]
 
 [env.production.triggers]
-crons = ["0 6 * * *", "0 8 * * 1"]
+crons = ["0 6 * * *", "0 8 * * 1", "0 2 * * 2,5", "0 * * * *"]
+
+# ============================================================================
+# DEMO ENVIRONMENT
+# ============================================================================
+[env.demo]
+name = "forge-comply360-api-demo"
+
+[[env.demo.d1_databases]]
+binding = "DB"
+database_name = "forge-comply360-db-demo"
+database_id = "094aa4dd-5c79-456e-a2cb-d43f08f677e5"
+
+[[env.demo.kv_namespaces]]
+binding = "KV"
+id = "b114779cb4864349b611010bc7056cd7"
+
+[[env.demo.r2_buckets]]
+binding = "EVIDENCE_VAULT"
+bucket_name = "forge-evidence-demo"
+
+[[env.demo.r2_buckets]]
+binding = "BACKUP_BUCKET"
+bucket_name = "forge-comply360-backups-demo"
+
+[env.demo.ai]
+binding = "AI"
+
+[env.demo.vars]
+ENVIRONMENT = "demo"
+CORS_ORIGIN = "https://demo.forgecomply360.pages.dev"
+
+# Demo uses reduced cron schedule (daily only)
+[env.demo.triggers]
+crons = ["0 6 * * *"]

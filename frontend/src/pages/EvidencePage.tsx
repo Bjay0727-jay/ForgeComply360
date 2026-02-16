@@ -12,6 +12,12 @@ import { exportEvidenceCSV } from '../utils/exportHelpers';
 import { TYPOGRAPHY, BADGES, STATUS_BADGE_COLORS, BUTTONS, CARDS, FORMS } from '../utils/typography';
 
 // ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+type ExpiryFilter = 'all' | 'active' | 'expiring_soon' | 'expired';
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -37,6 +43,29 @@ function getExpiryBadge(expiryDate: string | null): { class: string; label: stri
   return null;
 }
 
+function getExpiryStatus(expiryDate: string | null): 'active' | 'expiring_soon' | 'expired' | 'no_expiry' {
+  if (!expiryDate) return 'no_expiry';
+  const expiry = new Date(expiryDate);
+  const now = new Date();
+  const daysUntilExpiry = Math.ceil((expiry.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+
+  if (daysUntilExpiry < 0) return 'expired';
+  if (daysUntilExpiry <= 30) return 'expiring_soon';
+  return 'active';
+}
+
+function getRowBorderClass(expiryDate: string | null): string {
+  const status = getExpiryStatus(expiryDate);
+  switch (status) {
+    case 'expired':
+      return 'border-l-4 border-l-red-500 bg-red-50/50';
+    case 'expiring_soon':
+      return 'border-l-4 border-l-amber-500 bg-amber-50/30';
+    default:
+      return '';
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Main Component
 // ---------------------------------------------------------------------------
@@ -60,8 +89,19 @@ export function EvidencePage() {
   const [limit, setLimit] = useState(50);
   const [isDragging, setIsDragging] = useState(false);
 
+  // Bulk selection state
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkAction, setBulkAction] = useState<'archiving' | 'extending' | 'exporting' | null>(null);
+
+  // Filter state
+  const [expiryFilter, setExpiryFilter] = useState<ExpiryFilter>('all');
+
+  // Extend expiry modal state
+  const [showExtendModal, setShowExtendModal] = useState(false);
+  const [newExpiryDate, setNewExpiryDate] = useState('');
+
   const load = useCallback(() => {
-    api(`/api/v1/evidence?page=${page}&limit=${limit}`)
+    api(`/api/v1/evidence?page=${page}&limit=${limit}&expiry_status=${expiryFilter}`)
       .then((d) => {
         setEvidence(d.evidence);
         setTotal(d.total || d.evidence.length);
@@ -70,11 +110,16 @@ export function EvidencePage() {
         addToast({ type: 'error', title: 'Failed to load evidence' });
       })
       .finally(() => setLoading(false));
-  }, [page, limit, addToast]);
+  }, [page, limit, expiryFilter, addToast]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  // Reset selection when data changes
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [evidence]);
 
   const resetForm = () => {
     setTitle('');
@@ -147,6 +192,81 @@ export function EvidencePage() {
     }
   };
 
+  // Bulk selection handlers
+  const toggleSelection = (id: string) => {
+    const newSelection = new Set(selectedIds);
+    if (newSelection.has(id)) {
+      newSelection.delete(id);
+    } else {
+      newSelection.add(id);
+    }
+    setSelectedIds(newSelection);
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedIds.size === evidence.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(evidence.map((e) => e.id)));
+    }
+  };
+
+  // Bulk archive expired evidence
+  const handleBulkArchive = async () => {
+    if (selectedIds.size === 0) return;
+    setBulkAction('archiving');
+    try {
+      const res = await api('/api/v1/evidence/bulk-archive', {
+        method: 'POST',
+        body: JSON.stringify({ ids: Array.from(selectedIds) }),
+      });
+      addToast({
+        type: 'success',
+        title: 'Evidence archived',
+        message: `${res.archived?.length || 0} items archived`,
+      });
+      setSelectedIds(new Set());
+      load();
+    } catch (err: any) {
+      addToast({ type: 'error', title: 'Archive failed', message: err.message });
+    } finally {
+      setBulkAction(null);
+    }
+  };
+
+  // Bulk extend expiry
+  const handleBulkExtendExpiry = async () => {
+    if (selectedIds.size === 0 || !newExpiryDate) return;
+    setBulkAction('extending');
+    try {
+      const res = await api('/api/v1/evidence/bulk-update', {
+        method: 'PATCH',
+        body: JSON.stringify({ ids: Array.from(selectedIds), expiry_date: newExpiryDate }),
+      });
+      addToast({
+        type: 'success',
+        title: 'Expiry extended',
+        message: `${res.updated?.length || 0} items updated`,
+      });
+      setSelectedIds(new Set());
+      setShowExtendModal(false);
+      setNewExpiryDate('');
+      load();
+    } catch (err: any) {
+      addToast({ type: 'error', title: 'Update failed', message: err.message });
+    } finally {
+      setBulkAction(null);
+    }
+  };
+
+  // Export selected evidence
+  const handleBulkExport = () => {
+    const selectedEvidence = evidence.filter((e) => selectedIds.has(e.id));
+    if (selectedEvidence.length === 0) return;
+    exportEvidenceCSV(selectedEvidence);
+    addToast({ type: 'success', title: 'Export complete', message: `${selectedEvidence.length} items exported` });
+  };
+
   // Drag and drop handlers
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -167,6 +287,10 @@ export function EvidencePage() {
       if (!title) setTitle(droppedFile.name.replace(/\.[^/.]+$/, ''));
     }
   }, [title]);
+
+  // Filter counts
+  const expiredCount = evidence.filter((e) => getExpiryStatus(e.expiry_date) === 'expired').length;
+  const expiringCount = evidence.filter((e) => getExpiryStatus(e.expiry_date) === 'expiring_soon').length;
 
   if (loading) return <SkeletonTable />;
 
@@ -191,6 +315,126 @@ export function EvidencePage() {
           </button>
         )}
       </PageHeader>
+
+      {/* Expiry Filter & Bulk Actions Toolbar */}
+      <div className={`${CARDS.elevated} p-4 mb-6`}>
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          {/* Expiry Status Filter */}
+          <div className="flex items-center gap-3">
+            <label className="text-sm font-medium text-gray-700">Expiry Status:</label>
+            <select
+              value={expiryFilter}
+              onChange={(e) => {
+                setExpiryFilter(e.target.value as ExpiryFilter);
+                setPage(1);
+              }}
+              className={`${FORMS.select} min-w-[180px]`}
+            >
+              <option value="all">All Evidence</option>
+              <option value="active">Active (Valid)</option>
+              <option value="expiring_soon">Expiring Soon (30d) {expiringCount > 0 && `(${expiringCount})`}</option>
+              <option value="expired">Expired {expiredCount > 0 && `(${expiredCount})`}</option>
+            </select>
+          </div>
+
+          {/* Bulk Actions */}
+          {selectedIds.size > 0 && (
+            <div className="flex items-center gap-3 bg-blue-50 border border-blue-200 rounded-lg px-4 py-2">
+              <span className="text-sm font-medium text-blue-800">
+                {selectedIds.size} selected
+              </span>
+              <div className="h-4 w-px bg-blue-200" />
+              <button
+                onClick={() => setShowExtendModal(true)}
+                disabled={bulkAction !== null}
+                className="text-sm font-medium text-blue-700 hover:text-blue-900 flex items-center gap-1"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+                Extend Expiry
+              </button>
+              <button
+                onClick={handleBulkArchive}
+                disabled={bulkAction !== null}
+                className="text-sm font-medium text-amber-700 hover:text-amber-900 flex items-center gap-1"
+              >
+                {bulkAction === 'archiving' ? (
+                  <span className="w-4 h-4 border-2 border-amber-500 border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
+                  </svg>
+                )}
+                Archive
+              </button>
+              <button
+                onClick={handleBulkExport}
+                disabled={bulkAction !== null}
+                className="text-sm font-medium text-green-700 hover:text-green-900 flex items-center gap-1"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                </svg>
+                Export CSV
+              </button>
+              <button
+                onClick={() => setSelectedIds(new Set())}
+                className="text-sm text-gray-500 hover:text-gray-700"
+              >
+                Clear
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Extend Expiry Modal */}
+      {showExtendModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className={`${CARDS.elevated} p-6 w-full max-w-md`}>
+            <h3 className={`${TYPOGRAPHY.sectionTitle} mb-4`}>Extend Expiry Date</h3>
+            <p className="text-sm text-gray-600 mb-4">
+              Set a new expiry date for {selectedIds.size} selected item{selectedIds.size !== 1 ? 's' : ''}.
+            </p>
+            <div className="mb-4">
+              <label className={FORMS.label}>New Expiry Date</label>
+              <input
+                type="date"
+                value={newExpiryDate}
+                onChange={(e) => setNewExpiryDate(e.target.value)}
+                min={new Date().toISOString().split('T')[0]}
+                className={FORMS.input}
+              />
+            </div>
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => {
+                  setShowExtendModal(false);
+                  setNewExpiryDate('');
+                }}
+                className={BUTTONS.ghost}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleBulkExtendExpiry}
+                disabled={!newExpiryDate || bulkAction === 'extending'}
+                className={BUTTONS.primary}
+              >
+                {bulkAction === 'extending' ? (
+                  <>
+                    <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2" />
+                    Updating...
+                  </>
+                ) : (
+                  'Extend Expiry'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Upload Form */}
       {showUpload && (
@@ -348,6 +592,14 @@ export function EvidencePage() {
             <table className="w-full text-sm">
               <thead className="bg-gray-50 border-b border-gray-200">
                 <tr>
+                  <th className="px-4 py-3 text-left">
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.size === evidence.length && evidence.length > 0}
+                      onChange={toggleSelectAll}
+                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    />
+                  </th>
                   <th className={`text-left px-4 py-3 ${TYPOGRAPHY.tableHeader}`}>Title</th>
                   <th className={`text-left px-4 py-3 ${TYPOGRAPHY.tableHeader}`}>File</th>
                   <th className={`text-left px-4 py-3 ${TYPOGRAPHY.tableHeader}`}>Size</th>
@@ -362,8 +614,17 @@ export function EvidencePage() {
               <tbody className="divide-y divide-gray-100">
                 {evidence.map((ev) => {
                   const expiryBadge = getExpiryBadge(ev.expiry_date);
+                  const rowBorderClass = getRowBorderClass(ev.expiry_date);
                   return (
-                    <tr key={ev.id} className="hover:bg-gray-50">
+                    <tr key={ev.id} className={`hover:bg-gray-50 ${rowBorderClass}`}>
+                      <td className="px-4 py-3">
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.has(ev.id)}
+                          onChange={() => toggleSelection(ev.id)}
+                          className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                      </td>
                       <td className={`px-4 py-3 ${TYPOGRAPHY.tableCell} font-medium`}>{ev.title}</td>
                       <td className={`px-4 py-3 ${TYPOGRAPHY.tableCellMuted}`}>{ev.file_name}</td>
                       <td className={`px-4 py-3 ${TYPOGRAPHY.tableCellMuted}`}>{formatSize(ev.file_size)}</td>
@@ -372,13 +633,13 @@ export function EvidencePage() {
                         {new Date(ev.created_at).toLocaleDateString()}
                       </td>
                       <td className={`px-4 py-3 ${TYPOGRAPHY.tableCellSmall}`}>
-                        {ev.collection_date ? new Date(ev.collection_date + 'T00:00:00').toLocaleDateString() : '—'}
+                        {ev.collection_date ? new Date(ev.collection_date.replace(' ', 'T')).toLocaleDateString() : '—'}
                       </td>
                       <td className="px-4 py-3">
                         {ev.expiry_date ? (
                           <div className="flex items-center gap-2">
                             <span className={TYPOGRAPHY.tableCellSmall}>
-                              {new Date(ev.expiry_date + 'T00:00:00').toLocaleDateString()}
+                              {new Date(ev.expiry_date.replace(' ', 'T')).toLocaleDateString()}
                             </span>
                             {expiryBadge && (
                               <span className={`${BADGES.base} ${expiryBadge.class}`}>{expiryBadge.label}</span>
@@ -395,6 +656,8 @@ export function EvidencePage() {
                               ? STATUS_BADGE_COLORS.active
                               : ev.status === 'expired'
                               ? STATUS_BADGE_COLORS.expired
+                              : ev.status === 'archived'
+                              ? BADGES.neutral
                               : BADGES.neutral
                           }`}
                         >

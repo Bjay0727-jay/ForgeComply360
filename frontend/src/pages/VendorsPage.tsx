@@ -131,28 +131,43 @@ export function VendorsPage() {
   const [total, setTotal] = useState(0);
   const [limit, setLimit] = useState(50);
 
+  // Card filter state (which metric card is "selected")
+  const [cardFilter, setCardFilter] = useState<'all' | 'critical_high' | 'overdue' | null>(null);
+
   const loadData = () => {
     const params = new URLSearchParams();
     params.set('page', String(page));
-    params.set('limit', String(limit));
+    // Request more items when using client-side card filters to ensure we get all matching items
+    const requestLimit = (cardFilter === 'critical_high' || cardFilter === 'overdue') ? 500 : limit;
+    params.set('limit', String(requestLimit));
     if (filterCrit) params.set('criticality', filterCrit);
     if (filterStatus) params.set('status', filterStatus);
     if (filterTier) params.set('tier', filterTier);
     if (filterClass) params.set('data_classification', filterClass);
     if (search) params.set('search', search);
+
     Promise.all([
       api(`/api/v1/vendors?${params.toString()}`).catch(() => ({ vendors: [], total: 0 })),
       api('/api/v1/vendors/stats').catch(() => ({ stats: null })),
     ]).then(([vData, sData]) => {
-      setVendors(vData.vendors || []);
-      setTotal(vData.total || (vData.vendors || []).length);
+      let filteredVendors = vData.vendors || [];
+
+      // Client-side filtering for card filters
+      if (cardFilter === 'critical_high') {
+        filteredVendors = filteredVendors.filter((v: Vendor) => v.criticality === 'critical' || v.criticality === 'high');
+      } else if (cardFilter === 'overdue') {
+        filteredVendors = filteredVendors.filter(isOverdueAssessment);
+      }
+
+      setVendors(filteredVendors);
+      setTotal(cardFilter ? filteredVendors.length : (vData.total || filteredVendors.length));
       setStats(sData.stats || null);
       setLoading(false);
     });
   };
 
-  useEffect(loadData, [page, limit, filterCrit, filterStatus, filterTier, filterClass, search]);
-  useEffect(() => { setPage(1); }, [filterCrit, filterStatus, filterTier, filterClass, search]);
+  useEffect(loadData, [page, limit, filterCrit, filterStatus, filterTier, filterClass, search, cardFilter]);
+  useEffect(() => { setPage(1); }, [filterCrit, filterStatus, filterTier, filterClass, search, cardFilter]);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -204,6 +219,22 @@ export function VendorsPage() {
     } catch {}
   };
 
+  // Card filter handlers - use client-side filtering for special card filters
+  const handleCardClick = (card: 'all' | 'critical_high' | 'overdue') => {
+    if (cardFilter === card) {
+      // Toggle off if already selected
+      setCardFilter(null);
+    } else {
+      setCardFilter(card);
+      // Clear other filters when using card filters
+      setFilterCrit('');
+      setFilterStatus(card === 'all' ? 'active' : '');
+      setFilterTier('');
+      setFilterClass('');
+      setSearch('');
+    }
+  };
+
   if (loading) return <div><SkeletonMetricCards /><SkeletonListItem count={5} /></div>;
 
   const assessTotal = Object.values(assessScores).reduce((a, b) => a + b, 0);
@@ -225,7 +256,7 @@ export function VendorsPage() {
         )}
       </PageHeader>
 
-      {/* Stats Cards — Dark MetricCards */}
+      {/* Stats Cards — Dark MetricCards (Clickable for filtering) */}
       {stats && (
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
           <ChartMetricCard
@@ -233,12 +264,16 @@ export function VendorsPage() {
             value={String(stats.total)}
             subtitle={`${stats.by_status.active || 0} active`}
             accentColor={STATUS_COLORS.info}
+            onClick={() => handleCardClick('all')}
+            selected={cardFilter === 'all'}
           />
           <ChartMetricCard
             title="Critical / High"
             value={String(stats.critical_high)}
             subtitle={`${stats.by_criticality.critical || 0} critical, ${stats.by_criticality.high || 0} high`}
             accentColor={stats.critical_high > 0 ? STATUS_COLORS.danger : STATUS_COLORS.muted}
+            onClick={() => handleCardClick('critical_high')}
+            selected={cardFilter === 'critical_high'}
           />
           <ChartMetricCard
             title="Avg Risk Score"
@@ -250,7 +285,25 @@ export function VendorsPage() {
             value={String(stats.overdue_assessments)}
             subtitle={`${stats.expiring_contracts} contract${stats.expiring_contracts !== 1 ? 's' : ''} expiring`}
             accentColor={stats.overdue_assessments > 0 ? STATUS_COLORS.danger : STATUS_COLORS.success}
+            onClick={() => handleCardClick('overdue')}
+            selected={cardFilter === 'overdue'}
           />
+        </div>
+      )}
+
+      {/* Card Filter Active Indicator */}
+      {cardFilter && (
+        <div className="flex items-center gap-2 mb-4 text-sm">
+          <span className="text-gray-500">Filtering by:</span>
+          <span className={`${BADGES.base} ${BADGES.info}`}>
+            {cardFilter === 'all' ? 'Active Vendors' : cardFilter === 'critical_high' ? 'Critical/High Criticality' : 'Overdue Assessments'}
+          </span>
+          <button
+            onClick={() => { setCardFilter(null); setFilterCrit(''); setFilterStatus(''); }}
+            className="text-blue-600 hover:text-blue-800 text-xs"
+          >
+            Clear
+          </button>
         </div>
       )}
 
@@ -272,7 +325,7 @@ export function VendorsPage() {
           else if (key === 'classification') setFilterClass(v);
           else if (key === 'search') setSearch(v);
         }}
-        onClear={() => { setFilterCrit(''); setFilterStatus(''); setFilterTier(''); setFilterClass(''); setSearch(''); }}
+        onClear={() => { setFilterCrit(''); setFilterStatus(''); setFilterTier(''); setFilterClass(''); setSearch(''); setCardFilter(null); }}
         resultCount={total}
         resultLabel="vendors"
       />

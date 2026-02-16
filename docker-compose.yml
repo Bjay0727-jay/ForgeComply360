@@ -1,0 +1,287 @@
+# ============================================================================
+# FORGECOMPLY 360 - ON-PREMISES DOCKER DEPLOYMENT
+# Forge Cyber Defense - Service-Disabled Veteran-Owned Small Business (SDVOSB)
+# Version: 4.2.0
+# 
+# Supports: Air-gapped networks, classified environments, CMMC Level 3, DoD IL5
+# ============================================================================
+
+version: '3.8'
+
+services:
+  # ==========================================================================
+  # FRONTEND - React Application
+  # ==========================================================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: forgecomply-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-443}:443"
+      - "${FRONTEND_HTTP_PORT:-80}:80"
+    environment:
+      - VITE_API_URL=${API_URL:-https://localhost:8443}
+      - VITE_ENVIRONMENT=onprem
+    volumes:
+      - ./config/nginx/ssl:/etc/nginx/ssl:ro
+      - ./config/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api
+    networks:
+      - forgecomply-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ==========================================================================
+  # API - Node.js Backend
+  # ==========================================================================
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: forgecomply-api
+    restart: unless-stopped
+    ports:
+      - "${API_PORT:-8443}:8443"
+    environment:
+      - NODE_ENV=production
+      - PORT=8443
+      - DATABASE_URL=postgresql://${DB_USER:-forgecomply}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-forgecomply}
+      - REDIS_URL=redis://redis:6379
+      - MINIO_ENDPOINT=minio
+      - MINIO_PORT=9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-forgecomply}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - OLLAMA_URL=http://ollama:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b}
+      - SSL_CERT=/app/ssl/server.crt
+      - SSL_KEY=/app/ssl/server.key
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - ENVIRONMENT=onprem
+    volumes:
+      - ./config/api/ssl:/app/ssl:ro
+      - api-logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - forgecomply-net
+    healthcheck:
+      test: ["CMD", "curl", "-fk", "https://localhost:8443/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ==========================================================================
+  # POSTGRES - Primary Database
+  # ==========================================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: forgecomply-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${DB_USER:-forgecomply}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - POSTGRES_DB=${DB_NAME:-forgecomply}
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./database/init:/docker-entrypoint-initdb.d:ro
+      - ./backups/postgres:/backups
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    networks:
+      - forgecomply-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-forgecomply} -d ${DB_NAME:-forgecomply}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command: >
+      postgres
+      -c ssl=on
+      -c ssl_cert_file=/var/lib/postgresql/server.crt
+      -c ssl_key_file=/var/lib/postgresql/server.key
+      -c log_statement=all
+      -c log_connections=on
+      -c log_disconnections=on
+
+  # ==========================================================================
+  # REDIS - Session & Cache Store
+  # ==========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: forgecomply-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD}
+      --appendonly yes
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    networks:
+      - forgecomply-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================================================
+  # MINIO - S3-Compatible Object Storage (Evidence Vault)
+  # ==========================================================================
+  minio:
+    image: minio/minio:latest
+    container_name: forgecomply-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ACCESS_KEY:-forgecomply}
+      - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY}
+    volumes:
+      - minio-data:/data
+      - ./config/minio/certs:/root/.minio/certs:ro
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    networks:
+      - forgecomply-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ==========================================================================
+  # OLLAMA - Local AI/LLM (ForgeML)
+  # ==========================================================================
+  ollama:
+    image: ollama/ollama:latest
+    container_name: forgecomply-ollama
+    restart: unless-stopped
+    volumes:
+      - ollama-data:/root/.ollama
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    networks:
+      - forgecomply-net
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    # For CPU-only deployment, remove the deploy section above
+
+  # ==========================================================================
+  # BACKUP SERVICE - Automated Backups
+  # ==========================================================================
+  backup:
+    build:
+      context: ./backup
+      dockerfile: Dockerfile
+    container_name: forgecomply-backup
+    restart: unless-stopped
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_USER=${DB_USER:-forgecomply}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - POSTGRES_DB=${DB_NAME:-forgecomply}
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-forgecomply}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - BACKUP_SCHEDULE=${BACKUP_SCHEDULE:-0 2 * * *}
+      - BACKUP_RETENTION_DAYS=${BACKUP_RETENTION_DAYS:-30}
+    volumes:
+      - ./backups:/backups
+    depends_on:
+      - postgres
+      - minio
+    networks:
+      - forgecomply-net
+
+  # ==========================================================================
+  # MONITORING - Prometheus & Grafana (Optional)
+  # ==========================================================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: forgecomply-prometheus
+    restart: unless-stopped
+    profiles:
+      - monitoring
+    volumes:
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    networks:
+      - forgecomply-net
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: forgecomply-grafana
+    restart: unless-stopped
+    profiles:
+      - monitoring
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./config/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    networks:
+      - forgecomply-net
+    depends_on:
+      - prometheus
+
+# ==========================================================================
+# VOLUMES
+# ==========================================================================
+volumes:
+  postgres-data:
+    driver: local
+  redis-data:
+    driver: local
+  minio-data:
+    driver: local
+  ollama-data:
+    driver: local
+  api-logs:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+
+# ==========================================================================
+# NETWORKS
+# ==========================================================================
+networks:
+  forgecomply-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

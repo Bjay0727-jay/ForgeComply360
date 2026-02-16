@@ -49,4 +49,4 @@ UPDATE assets SET first_seen_at = created_at WHERE first_seen_at IS NULL;
 -- ============================================================================
 
 INSERT OR IGNORE INTO schema_migrations (version, name, description) VALUES
-  ('014', 'asset-enhancements', 'Asset first_seen tracking, risk scores, scan history');
+  ('migrate-014-asset-enhancements', 'asset-enhancements', 'Asset first_seen tracking, risk scores, scan history');
