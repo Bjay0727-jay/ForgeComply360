@@ -23,6 +23,9 @@ interface Org {
 interface MFAResponse {
   mfa_required?: boolean;
   mfa_token?: string;
+  mfa_setup_required?: boolean;
+  mfa_setup_token?: string;
+  message?: string;
 }
 
 interface AuthContextType {
@@ -100,6 +103,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
     if (data.mfa_required) {
       return { mfa_required: true, mfa_token: data.mfa_token };
+    }
+    if (data.mfa_setup_required) {
+      return { mfa_setup_required: true, mfa_setup_token: data.mfa_setup_token, message: data.message };
     }
     setTokens(data.access_token, data.refresh_token);
     setUser(data.user);
