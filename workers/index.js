@@ -761,6 +761,24 @@ function base64urlDecode(str) {
 }
 
 // ============================================================================
+// REFRESH TOKEN HASHING (HMAC-SHA256)
+// Uses JWT_SECRET as the HMAC key — deterministic (supports DB lookup by hash)
+// but cryptographically bound to the server secret, unlike the old static salt.
+// ============================================================================
+
+async function hmacRefreshToken(token, secret) {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(token));
+  return Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// ============================================================================
 // PASSWORD HASHING (PBKDF2)
 // ============================================================================
 
@@ -1360,9 +1378,10 @@ async function handleRegister(request, env) {
   // Record initial password in history
   await recordPasswordHistory(env, userId, passwordHash, salt);
 
-  const accessToken = await createJWT({ sub: userId, org: orgId, role: 'owner' }, requireJWTSecret(env), 60);
+  const jwtSecret = requireJWTSecret(env);
+  const accessToken = await createJWT({ sub: userId, org: orgId, role: 'owner' }, jwtSecret, 60);
   const refreshToken = generateId() + generateId();
-  const refreshHash = await hashPassword(refreshToken, 'refresh-salt');
+  const refreshHash = await hmacRefreshToken(refreshToken, jwtSecret);
   const refreshExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
   await env.DB.prepare(
@@ -1424,9 +1443,10 @@ async function handleLogin(request, env) {
     return jsonResponse({ mfa_required: true, mfa_token: mfaToken });
   }
 
-  const accessToken = await createJWT({ sub: user.id, org: user.org_id, role: user.role }, requireJWTSecret(env), 60);
+  const jwtSecret = requireJWTSecret(env);
+  const accessToken = await createJWT({ sub: user.id, org: user.org_id, role: user.role }, jwtSecret, 60);
   const refreshToken = generateId() + generateId();
-  const refreshHash = await hashPassword(refreshToken, 'refresh-salt');
+  const refreshHash = await hmacRefreshToken(refreshToken, jwtSecret);
   const refreshExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
   await env.DB.prepare(
@@ -1447,7 +1467,8 @@ async function handleRefreshToken(request, env) {
   const { refresh_token } = await request.json();
   if (!refresh_token) return jsonResponse({ error: 'Refresh token required' }, 400);
 
-  const tokenHash = await hashPassword(refresh_token, 'refresh-salt');
+  const jwtSecret = requireJWTSecret(env);
+  const tokenHash = await hmacRefreshToken(refresh_token, jwtSecret);
   const stored = await env.DB.prepare(
     'SELECT * FROM refresh_tokens WHERE token_hash = ? AND revoked = 0 AND expires_at > datetime("now")'
   ).bind(tokenHash).first();
@@ -1461,9 +1482,9 @@ async function handleRefreshToken(request, env) {
   if (!user) return jsonResponse({ error: 'User not found' }, 404);
   if (user.status === 'deactivated') return jsonResponse({ error: 'Account has been deactivated' }, 403);
 
-  const accessToken = await createJWT({ sub: user.id, org: user.org_id, role: user.role }, requireJWTSecret(env), 60);
+  const accessToken = await createJWT({ sub: user.id, org: user.org_id, role: user.role }, jwtSecret, 60);
   const newRefreshToken = generateId() + generateId();
-  const newRefreshHash = await hashPassword(newRefreshToken, 'refresh-salt');
+  const newRefreshHash = await hmacRefreshToken(newRefreshToken, jwtSecret);
   const refreshExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
   await env.DB.prepare(
@@ -1592,9 +1613,10 @@ async function handleMFAVerify(request, env) {
 
   // Issue real tokens
   const org = await env.DB.prepare('SELECT * FROM organizations WHERE id = ?').bind(user.org_id).first();
-  const accessToken = await createJWT({ sub: user.id, org: user.org_id, role: user.role }, requireJWTSecret(env), 60);
+  const jwtSecret = requireJWTSecret(env);
+  const accessToken = await createJWT({ sub: user.id, org: user.org_id, role: user.role }, jwtSecret, 60);
   const refreshToken = generateId() + generateId();
-  const refreshHash = await hashPassword(refreshToken, 'refresh-salt');
+  const refreshHash = await hmacRefreshToken(refreshToken, jwtSecret);
   const refreshExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
   await env.DB.prepare('INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)')
@@ -2663,6 +2685,40 @@ async function handleListEvidence(env, org, url) {
   return jsonResponse({ evidence: results, total, page, limit });
 }
 
+// Maximum evidence file size: 25 MB
+const EVIDENCE_MAX_FILE_SIZE = 25 * 1024 * 1024;
+
+// Allowed MIME types for evidence uploads
+const EVIDENCE_ALLOWED_TYPES = new Set([
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'text/plain',
+  'text/csv',
+  'text/xml',
+  'application/json',
+  'application/xml',
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/svg+xml',
+  'image/webp',
+  'application/zip',
+  'application/gzip',
+]);
+
+// Allowed file extensions (fallback when MIME type is generic)
+const EVIDENCE_ALLOWED_EXTENSIONS = new Set([
+  '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+  '.txt', '.csv', '.xml', '.json', '.yaml', '.yml',
+  '.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp',
+  '.zip', '.gz', '.tar.gz',
+]);
+
 async function handleUploadEvidence(request, env, org, user) {
   if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
   const formData = await request.formData();
@@ -2674,7 +2730,27 @@ async function handleUploadEvidence(request, env, org, user) {
 
   if (!file) return jsonResponse({ error: 'No file provided' }, 400);
 
+  // Validate file size before buffering (use Content-Length hint if available)
+  if (file.size && file.size > EVIDENCE_MAX_FILE_SIZE) {
+    return jsonResponse({ error: `File too large. Maximum size is ${EVIDENCE_MAX_FILE_SIZE / (1024 * 1024)} MB.` }, 413);
+  }
+
+  // Validate file type by MIME type
+  const fileType = (file.type || '').toLowerCase();
+  const fileExt = ('.' + (file.name || '').split('.').pop()).toLowerCase();
+  if (fileType && !EVIDENCE_ALLOWED_TYPES.has(fileType) && !EVIDENCE_ALLOWED_EXTENSIONS.has(fileExt)) {
+    return jsonResponse({ error: `File type not allowed. Accepted types: PDF, Office documents, images, CSV, JSON, XML, TXT, ZIP.` }, 415);
+  }
+  if (!fileType && !EVIDENCE_ALLOWED_EXTENSIONS.has(fileExt)) {
+    return jsonResponse({ error: `File type not allowed. Accepted extensions: ${[...EVIDENCE_ALLOWED_EXTENSIONS].join(', ')}` }, 415);
+  }
+
   const arrayBuffer = await file.arrayBuffer();
+
+  // Enforce size limit after buffering (in case Content-Length was missing or spoofed)
+  if (arrayBuffer.byteLength > EVIDENCE_MAX_FILE_SIZE) {
+    return jsonResponse({ error: `File too large. Maximum size is ${EVIDENCE_MAX_FILE_SIZE / (1024 * 1024)} MB.` }, 413);
+  }
   const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
   const sha256 = Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
 
@@ -5316,7 +5392,7 @@ async function handleEmergencyAccess(request, env) {
 
   // Create a new refresh token
   const refreshToken = generateId() + generateId();
-  const refreshHash = await hashPassword(refreshToken, 'refresh-salt');
+  const refreshHash = await hmacRefreshToken(refreshToken, requireJWTSecret(env));
   const refreshExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
   await env.DB.prepare(
     'INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)'

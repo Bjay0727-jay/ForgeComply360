@@ -94,35 +94,60 @@ jobs:
 
       - name: Run Migrations
         run: |
-          for f in database/migrate-*.sql; do
-            if [ -f "$f" ]; then
-              echo "Running migration: $f"
-              wrangler d1 execute forge-comply360-db --env production --remote --file="$f" || echo "⚠️  Migration $f failed (likely already applied) — continuing"
+          FAILED=0
+          for f in $(ls database/migrate-*.sql 2>/dev/null | sort); do
+            MIGRATION_NAME=$(basename "$f" .sql)
+            echo "::group::Migration: $MIGRATION_NAME"
+
+            # Check if migration was already applied via schema_migrations table
+            ALREADY_APPLIED=$(wrangler d1 execute forge-comply360-db --env production --remote \
+              --command "SELECT version FROM schema_migrations WHERE version = '${MIGRATION_NAME}'" --json 2>/dev/null \
+              | grep -c "$MIGRATION_NAME" || true)
+
+            if [ "$ALREADY_APPLIED" -gt 0 ]; then
+              echo "Skipping $MIGRATION_NAME (already applied)"
+              echo "::endgroup::"
+              continue
             fi
+
+            echo "Applying migration: $f"
+            if wrangler d1 execute forge-comply360-db --env production --remote --file="$f"; then
+              # Record successful migration
+              wrangler d1 execute forge-comply360-db --env production --remote \
+                --command "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES ('${MIGRATION_NAME}', '${MIGRATION_NAME}')" || true
+              echo "Migration $MIGRATION_NAME applied successfully"
+            else
+              echo "::error::Migration $MIGRATION_NAME FAILED"
+              FAILED=1
+            fi
+            echo "::endgroup::"
           done
+          if [ "$FAILED" -ne 0 ]; then
+            echo "::error::One or more migrations failed. Aborting deployment."
+            exit 1
+          fi
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
       # Note: Full schema.sql is only needed for fresh databases.
       # For existing production databases, use incremental migrate-*.sql files.
-      # Skipping full schema execution to avoid D1 timeout/reset errors on large files.
       - name: Verify DB Connection
         run: wrangler d1 execute forge-comply360-db --env production --remote --command "SELECT COUNT(*) FROM organizations"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
-      # Seed steps use INSERT OR IGNORE so they're safe to run multiple times
+      # Seed steps use INSERT OR IGNORE so they are idempotent and safe to re-run.
       - name: Seed DB
-        run: wrangler d1 execute forge-comply360-db --env production --remote --file=database/seed.sql || echo "⚠️  Seed failed (likely already seeded) — continuing"
+        run: wrangler d1 execute forge-comply360-db --env production --remote --file=database/seed.sql
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
       - name: Seed Expanded Controls
-        run: wrangler d1 execute forge-comply360-db --env production --remote --file=database/seed-controls-expanded.sql || echo "⚠️  Seed controls failed — continuing"
+        run: wrangler d1 execute forge-comply360-db --env production --remote --file=database/seed-controls-expanded.sql
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
       - name: Seed TCF Controls
-        run: wrangler d1 execute forge-comply360-db --env production --remote --file=database/seed-tcf-controls.sql || echo "⚠️  Seed TCF controls failed — continuing"
+        run: wrangler d1 execute forge-comply360-db --env production --remote --file=database/seed-tcf-controls.sql
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
