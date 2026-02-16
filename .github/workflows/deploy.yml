@@ -137,17 +137,40 @@ jobs:
       - name: Install Wrangler
         run: npm install -g wrangler@3
 
+      - name: Bootstrap schema_migrations table
+        run: |
+          echo "Ensuring schema_migrations table exists..."
+          wrangler d1 execute forge-comply360-db --env production --remote \
+            --command "CREATE TABLE IF NOT EXISTS schema_migrations (
+              id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+              version TEXT NOT NULL UNIQUE,
+              name TEXT NOT NULL,
+              description TEXT,
+              applied_at TEXT DEFAULT (datetime('now')),
+              applied_by TEXT,
+              checksum TEXT,
+              execution_time_ms INTEGER,
+              success INTEGER DEFAULT 1
+            );"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
       - name: Run Migrations
         run: |
           FAILED=0
           for f in $(ls database/migrate-*.sql 2>/dev/null | sort); do
             MIGRATION_NAME=$(basename "$f" .sql)
+            # Extract the 3-digit number: migrate-001-foo → 001
+            MIGRATION_NUM=$(echo "$MIGRATION_NAME" | sed 's/^migrate-\([0-9]*\)-.*/\1/')
             echo "::group::Migration: $MIGRATION_NAME"
 
-            # Check if migration was already applied via schema_migrations table
+            # Check if migration was already applied.
+            # Migration 013 seeded historical versions as short numbers ('001'),
+            # while the runner records full filenames ('migrate-001-poam-enhancements').
+            # Check for BOTH formats to handle either convention.
             ALREADY_APPLIED=$(wrangler d1 execute forge-comply360-db --env production --remote \
-              --command "SELECT version FROM schema_migrations WHERE version = '${MIGRATION_NAME}'" --json 2>/dev/null \
-              | grep -c "$MIGRATION_NAME" || true)
+              --command "SELECT version FROM schema_migrations WHERE version = '${MIGRATION_NAME}' OR version = '${MIGRATION_NUM}'" --json 2>/dev/null \
+              | grep -cE "(${MIGRATION_NAME}|\"${MIGRATION_NUM}\")" || true)
 
             if [ "$ALREADY_APPLIED" -gt 0 ]; then
               echo "Skipping $MIGRATION_NAME (already applied)"
@@ -157,7 +180,7 @@ jobs:
 
             echo "Applying migration: $f"
             if wrangler d1 execute forge-comply360-db --env production --remote --file="$f"; then
-              # Record successful migration
+              # Record successful migration using full filename as the version
               wrangler d1 execute forge-comply360-db --env production --remote \
                 --command "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES ('${MIGRATION_NAME}', '${MIGRATION_NAME}')" || true
               echo "Migration $MIGRATION_NAME applied successfully"
