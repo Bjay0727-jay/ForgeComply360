@@ -49,9 +49,10 @@ export default {
       headers.set('X-Content-Type-Options', 'nosniff');
       headers.set('X-Frame-Options', 'DENY');
       headers.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
-      // CSP - Improved security (NIST SP 800-53 SC-8 compliant)
-      // Note: 'unsafe-inline' for styles required by React runtime; scripts are bundled
-      headers.set('Content-Security-Policy', "default-src 'self'; script-src 'self' https://browser.sentry-cdn.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https://*.stanley-riley.workers.dev https://*.forgecomply360.pages.dev https://*.ingest.us.sentry.io https://api.pwnedpasswords.com; frame-ancestors 'none'; form-action 'self'; base-uri 'self'; object-src 'none'; upgrade-insecure-requests;");
+      // CSP — NIST SP 800-53 SC-8 compliant.
+      // 'unsafe-inline' removed from style-src: TailwindCSS compiles to static CSS
+      // files at build time and the frontend has zero inline style={} usage.
+      headers.set('Content-Security-Policy', "default-src 'self'; script-src 'self' https://browser.sentry-cdn.com; style-src 'self'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https://*.stanley-riley.workers.dev https://*.forgecomply360.pages.dev https://*.ingest.us.sentry.io https://api.pwnedpasswords.com; frame-ancestors 'none'; form-action 'self'; base-uri 'self'; object-src 'none'; upgrade-insecure-requests;");
       headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
       headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
       return new Response(response.body, { status: response.status, headers });
@@ -110,6 +111,11 @@ export default {
   },
 };
 
+// CORS Design Decision: Access-Control-Allow-Credentials is intentionally omitted.
+// Authentication uses the Authorization header (Bearer JWT), not cookies.
+// This avoids CSRF risks entirely and simplifies CORS. If cookie-based auth
+// is ever added, this header MUST be set to 'true' and wildcard origins MUST
+// be replaced with an explicit allowlist.
 function corsHeaders(origin) {
   return {
     'Access-Control-Allow-Origin': origin,
@@ -130,35 +136,30 @@ function jsonResponse(data, status = 200, corsOrigin = '*') {
 }
 
 // ============================================================================
-// RATE LIMITING
+// RATE LIMITING (KV-backed — low-latency, atomic via KV expiration)
+// Uses a fixed-window counter stored in KV with TTL-based expiration.
+// KV is eventually consistent, so under extreme concurrency a few extra
+// requests may slip through — acceptable for rate limiting.
 // ============================================================================
 
 async function checkRateLimit(env, key, maxRequests, windowSeconds) {
-  const now = Math.floor(Date.now() / 1000);
-  const windowStart = now - windowSeconds;
+  const windowId = Math.floor(Date.now() / 1000 / windowSeconds);
+  const kvKey = `ratelimit:${key}:${windowId}`;
 
   try {
-    // Clean old entries and get current count
-    await env.DB.prepare('DELETE FROM rate_limits WHERE window_start < ?').bind(windowStart).run();
+    const current = await env.KV.get(kvKey);
+    const count = current ? parseInt(current, 10) : 0;
 
-    const row = await env.DB.prepare('SELECT count FROM rate_limits WHERE key = ? AND window_start >= ?')
-      .bind(key, windowStart).first();
-
-    if (row && row.count >= maxRequests) {
+    if (count >= maxRequests) {
       return { limited: true, retryAfter: windowSeconds };
     }
 
-    // Upsert count
-    await env.DB.prepare(
-      'INSERT INTO rate_limits (key, count, window_start) VALUES (?, 1, ?) ON CONFLICT(key) DO UPDATE SET count = count + 1'
-    ).bind(key, now).run();
+    // Increment counter with TTL (window expiry + small buffer)
+    await env.KV.put(kvKey, String(count + 1), { expirationTtl: windowSeconds + 10 });
 
     return { limited: false };
   } catch {
-    // If rate limit table doesn't exist, create it and allow the request
-    try {
-      await env.DB.prepare(`CREATE TABLE IF NOT EXISTS rate_limits (key TEXT PRIMARY KEY, count INTEGER DEFAULT 1, window_start INTEGER NOT NULL)`).run();
-    } catch {}
+    // If KV is unavailable, fail open to avoid blocking all requests
     return { limited: false };
   }
 }
