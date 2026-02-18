@@ -317,7 +317,7 @@ export function PublicQuestionnairePage() {
       </div>
 
       <div className="text-center py-6 text-gray-400 text-sm">
-        Powered by ForgeComply 360
+        Powered by Forge Cyber Defense
       </div>
     </div>
   );

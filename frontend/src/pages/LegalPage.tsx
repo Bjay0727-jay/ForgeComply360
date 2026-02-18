@@ -7,7 +7,7 @@ export function LegalPage() {
     <div className="p-6">
       <PageHeader
         title="Legal Disclaimer"
-        subtitle="Important information about using ForgeComply 360"
+        subtitle="Important information about using Forge Cyber Defense"
       />
       <LegalDisclaimer variant="inline" />
     </div>

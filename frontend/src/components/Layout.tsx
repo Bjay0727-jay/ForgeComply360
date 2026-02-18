@@ -237,7 +237,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           <div className="p-4 border-b border-white/10 relative">
             <div className="flex items-center justify-center">
               <div className="p-2 rounded-xl border-2 border-forge-green-500 bg-forge-navy-950/50">
-                <img src="/logo.png" alt="ForgeComply 360" className="w-36 h-auto" />
+                <img src="/logo.png" alt="Forge Cyber Defense" className="w-36 h-auto" />
               </div>
             </div>
             {/* Mobile close button */}
@@ -388,8 +388,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
             </svg>
           </button>
-          <img src="/logo.png" alt="ForgeComply 360" className="w-7 h-7 rounded object-cover" />
-          <span className="font-semibold text-white">ForgeComply 360</span>
+          <img src="/logo.png" alt="Forge Cyber Defense" className="w-7 h-7 rounded object-cover" />
+          <span className="font-semibold text-white">Forge Cyber Defense</span>
         </div>
 
         <div className="p-6 lg:p-8 dark:bg-gray-900">

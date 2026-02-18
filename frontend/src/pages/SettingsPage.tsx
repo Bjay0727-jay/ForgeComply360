@@ -942,12 +942,12 @@ export function SettingsPage() {
               </div>
               <div>
                 <h2 className={TYPOGRAPHY.sectionTitle}>Legal Disclaimer</h2>
-                <p className={TYPOGRAPHY.bodySmallMuted}>Important information about using ForgeComply 360</p>
+                <p className={TYPOGRAPHY.bodySmallMuted}>Important information about using Forge Cyber Defense</p>
               </div>
             </div>
             <div className="prose prose-sm max-w-none text-gray-700">
               <p className={TYPOGRAPHY.body}>
-                ForgeComply 360 is a compliance management tool designed to help organizations track and manage
+                Forge Cyber Defense is a compliance management tool designed to help organizations track and manage
                 their compliance activities. This software does <strong>not</strong> provide legal, regulatory,
                 or professional compliance advice.
               </p>
@@ -970,7 +970,7 @@ export function SettingsPage() {
           <div className={`${CARDS.base} p-6`}>
             <h3 className={TYPOGRAPHY.sectionTitle}>Contact</h3>
             <p className={`${TYPOGRAPHY.bodyMuted} mt-2`}>
-              For questions about these terms or ForgeComply 360, please contact your organization's administrator
+              For questions about these terms or Forge Cyber Defense, please contact your organization's administrator
               or reach out to our support team.
             </p>
           </div>

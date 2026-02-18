@@ -215,7 +215,7 @@ export function PublicPortalPage() {
                 <div className="w-8 h-8 bg-gradient-to-br from-blue-600 to-indigo-600 rounded-lg flex items-center justify-center">
                   <span className="text-white font-bold text-sm">F</span>
                 </div>
-                <span className="font-semibold text-gray-900 dark:text-white">ForgeComply 360</span>
+                <span className="font-semibold text-gray-900 dark:text-white">Forge Cyber Defense</span>
               </div>
               <div className="h-6 w-px bg-gray-200 dark:bg-gray-700" />
               <div>
@@ -551,7 +551,7 @@ export function PublicPortalPage() {
       <footer className="mt-12 py-6 border-t border-gray-200 dark:border-gray-700">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <p className="text-center text-sm text-gray-400 dark:text-gray-500">
-            Powered by ForgeComply 360 - Compliance Management Platform
+            Powered by Forge Cyber Defense - Compliance Management Platform
           </p>
         </div>
       </footer>
