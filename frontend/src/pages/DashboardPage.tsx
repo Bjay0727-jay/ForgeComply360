@@ -725,7 +725,7 @@ export function DashboardPage() {
         <div className={`${CARDS_V2.primary} p-6 mb-8`}>
           <h2 className={TYPOGRAPHY_DASHBOARD.sectionHeader + ' mb-2'}>
             <svg className="w-5 h-5 text-forge-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" /></svg>
-            Welcome to ForgeComply 360
+            Welcome to Forge Cyber Defense
           </h2>
           <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">You have view-only access to your organization's compliance posture. Contact an administrator to request elevated permissions.</p>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

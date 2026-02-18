@@ -115,7 +115,7 @@ function showBrowserNotification(title: string, body: string) {
   if (Notification.permission !== 'granted') return;
 
   try {
-    new Notification('ForgeComply 360', {
+    new Notification('Forge Cyber Defense', {
       body: `${title}: ${body}`,
       icon: '/favicon.ico',
       tag: 'forge-urgent', // Prevents duplicate notifications

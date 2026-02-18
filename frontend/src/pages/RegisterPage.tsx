@@ -31,7 +31,7 @@ export function RegisterPage() {
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-blue-900 to-gray-900 flex items-center justify-center p-4">
       <div className="w-full max-w-lg">
         <div className="text-center mb-8">
-          <img src="/logo.png" alt="ForgeComply 360" className="w-20 h-20 mx-auto mb-4 drop-shadow-2xl" />
+          <img src="/logo.png" alt="Forge Cyber Defense" className="w-20 h-20 mx-auto mb-4 drop-shadow-2xl" />
           <h1 className="text-2xl font-bold text-white">Start Your Free Trial</h1>
           <p className="text-blue-200 mt-1">14 days free - no credit card required</p>
         </div>

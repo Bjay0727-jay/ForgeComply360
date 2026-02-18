@@ -54,7 +54,7 @@ export function BadgeVerifyPage() {
       <div className="max-w-md w-full">
         {/* Logo */}
         <div className="text-center mb-8">
-          <h1 className="text-2xl font-bold text-blue-700 dark:text-blue-400">ForgeComply 360</h1>
+          <h1 className="text-2xl font-bold text-blue-700 dark:text-blue-400">Forge Cyber Defense</h1>
           <p className="text-gray-500 dark:text-gray-400 text-sm">Compliance Badge Verification</p>
         </div>
 
@@ -153,7 +153,7 @@ export function BadgeVerifyPage() {
 
         {/* Footer */}
         <p className="text-center text-gray-400 text-xs mt-6">
-          Powered by ForgeComply 360 • Forge Cyber Defense, LLC
+          Powered by Forge Cyber Defense • Forge Cyber Defense, LLC
         </p>
       </div>
     </div>

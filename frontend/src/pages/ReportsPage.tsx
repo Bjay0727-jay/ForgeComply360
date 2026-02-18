@@ -312,7 +312,7 @@ export function ReportsPage() {
 
       {/* Footer info */}
       <p className={`mt-8 text-center ${TYPOGRAPHY.timestamp}`}>
-        Reports aggregate data from across ForgeComply 360 including compliance controls, risk register, vendor assessments, and monitoring checks.
+        Reports aggregate data from across Forge Cyber Defense including compliance controls, risk register, vendor assessments, and monitoring checks.
       </p>
     </div>
   );

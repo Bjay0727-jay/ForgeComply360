@@ -278,7 +278,7 @@ export function ImportPage() {
   return (
     <div className="p-6 max-w-5xl mx-auto">
       {/* Header */}
-      <PageHeader title="Compliance Imports" subtitle="Import data from CSV, OSCAL JSON, or compliance tool exports into ForgeComply 360." />
+      <PageHeader title="Compliance Imports" subtitle="Import data from CSV, OSCAL JSON, or compliance tool exports into Forge Cyber Defense." />
 
       {/* Step indicator */}
       <div className="flex items-center gap-2 mb-8 text-sm">
