@@ -231,7 +231,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       )}
 
       {/* Sidebar */}
-      <aside className={`fixed inset-y-0 left-0 z-40 w-64 ${brandBg} text-white transform transition-transform duration-200 lg:translate-x-0 lg:static ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+      <aside className={`fixed inset-y-0 left-0 z-40 w-64 ${brandBg} text-white transform transition-transform duration-200 lg:translate-x-0 lg:sticky lg:top-0 lg:h-screen ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
         <div className="flex flex-col h-full">
           {/* Logo */}
           <div className="p-4 border-b border-white/10 relative">
@@ -267,7 +267,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           </div>
 
           {/* Nav */}
-          <nav className="p-3 space-y-1 overflow-y-auto" role="navigation" aria-label="Main navigation">
+          <nav className="flex-1 min-h-0 p-3 space-y-1 overflow-y-auto" role="navigation" aria-label="Main navigation">
             {visibleGroups.map((group) => {
               const isExpanded = expandedGroups.has(group.key);
               const groupActive = isGroupActive(group);
