@@ -1467,12 +1467,11 @@ async function handleLogin(request, env) {
     return jsonResponse({ mfa_required: true, mfa_token: mfaToken });
   }
 
-  // TAC 202 / NIST IA-2(1): Enforce MFA for privileged accounts (admin, owner)
-  if (['admin', 'owner'].includes(user.role) && !user.mfa_enabled) {
-    const jwtSecret = requireJWTSecret(env);
-    const setupToken = await createJWT({ sub: user.id, org: user.org_id, role: user.role, purpose: 'mfa_setup' }, jwtSecret, 15);
-    await auditLog(env, user.org_id, user.id, 'login_mfa_setup_required', 'user', user.id, { role: user.role }, request);
-    return jsonResponse({ mfa_setup_required: true, mfa_setup_token: setupToken, message: 'MFA is required for privileged accounts. Please set up two-factor authentication.' });
+  // TAC 202 / NIST IA-2(1): Flag MFA requirement for privileged accounts (admin, owner)
+  // Allows login but signals the frontend to prompt MFA setup
+  const mfaSetupNeeded = ['admin', 'owner'].includes(user.role) && !user.mfa_enabled;
+  if (mfaSetupNeeded) {
+    await auditLog(env, user.org_id, user.id, 'login_mfa_setup_recommended', 'user', user.id, { role: user.role }, request);
   }
 
   const jwtSecret = requireJWTSecret(env);
@@ -1487,12 +1486,17 @@ async function handleLogin(request, env) {
 
   await auditLog(env, user.org_id, user.id, 'login', 'user', user.id, {}, request);
 
-  return jsonResponse({
+  const response = {
     access_token: accessToken,
     refresh_token: refreshToken,
     user: sanitizeUser(user),
     org,
-  });
+  };
+  if (mfaSetupNeeded) {
+    response.mfa_setup_recommended = true;
+    response.mfa_setup_message = 'MFA is required for privileged accounts. Please enable two-factor authentication in Security Settings.';
+  }
+  return jsonResponse(response);
 }
 
 async function handleRefreshToken(request, env) {

@@ -101,7 +101,7 @@ export function LoginPage() {
         {/* NIST AC-8 / TAC 202: System Use Notification */}
         <div className="bg-blue-950/80 border border-blue-400/30 rounded-lg p-4 mb-4 text-xs text-blue-100/80 leading-relaxed">
           <p className="font-semibold text-blue-100 mb-1 text-sm">System Use Notification</p>
-          <p>This is a U.S. Government-authorized system for authorized use only. By accessing this system, you consent to monitoring and recording of all activities. Unauthorized use is prohibited and subject to criminal and civil penalties. Use of this system constitutes consent to monitoring.</p>
+          <p>This is a Forge Cyber Defense system for authorized use only. By accessing this system, you consent to monitoring and recording of all activities. Unauthorized use is prohibited and subject to criminal and civil penalties. Use of this system constitutes consent to monitoring.</p>
         </div>
 
         {mfaSetupRequired ? (
