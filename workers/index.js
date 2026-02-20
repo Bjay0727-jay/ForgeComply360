@@ -458,7 +458,7 @@ async function handleRequest(request, env, url, ctx) {
   if (path === '/api/v1/monitoring/dashboard' && method === 'GET') return handleMonitoringDashboard(env, org);
   if (path === '/api/v1/monitoring/drift' && method === 'GET') return handleMonitoringDrift(env, org);
   if (path === '/api/v1/monitoring/bulk-run' && method === 'POST') return handleBulkRunChecks(request, env, org, user);
-  if (path === '/api/v1/monitoring/export-csv' && method === 'GET') return handleMonitoringExportCSV(env, org);
+  if (path === '/api/v1/monitoring/export-csv' && method === 'GET') return handleMonitoringExportCSV(env, org, user);
 
   // User Management
   if (path === '/api/v1/users' && method === 'GET') return handleListUsers(env, org, user);
@@ -5647,7 +5647,8 @@ async function handleBulkRunChecks(request, env, org, user) {
   return jsonResponse({ message: `Ran ${checks.length} checks`, count: checks.length }, 201);
 }
 
-async function handleMonitoringExportCSV(env, org) {
+async function handleMonitoringExportCSV(env, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
   const { results } = await env.DB.prepare(
     `SELECT mc.*, s.name as system_name, cf.name as framework_name
      FROM monitoring_checks mc
@@ -7414,6 +7415,7 @@ async function handleCreateApproval(request, env, org, user) {
 }
 
 async function handleListApprovals(env, url, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
   const status = url.searchParams.get('status');
   const requestType = url.searchParams.get('request_type');
   const page = parseInt(url.searchParams.get('page') || '1');
