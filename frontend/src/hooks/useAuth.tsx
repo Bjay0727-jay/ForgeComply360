@@ -146,6 +146,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setOrg(null);
     // Clear Sentry user context
     clearUserContext();
+    // Redirect immediately to prevent onAuthFailure from adding ?expired=1
+    window.location.href = '/login';
   };
 
   const canEdit = ['analyst', 'manager', 'admin', 'owner'].includes(user?.role || '');
