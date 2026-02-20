@@ -4,13 +4,7 @@
 -- Adds tables that the application code and seed data require but were never
 -- defined in schema.sql: assets, vulnerability_findings, scan_imports,
 -- security_alerts, alert_rules, pentest_engagements, integrations.
--- Also adds missing `status` column to users table.
 -- ============================================================================
-
--- ============================================================================
--- 1. USERS - add missing status column
--- ============================================================================
-ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'active';
 
 -- ============================================================================
 -- 2. ASSETS
@@ -213,4 +207,4 @@ CREATE INDEX IF NOT EXISTS idx_integrations_org ON integrations(org_id);
 -- 9. TRACK MIGRATION
 -- ============================================================================
 INSERT OR IGNORE INTO schema_migrations (version, name, description) VALUES
-  ('migrate-023-missing-tables', 'missing-tables', 'Create assets, vulnerability_findings, scan_imports, security_alerts, alert_rules, pentest_engagements, integrations tables; add users.status column');
+  ('migrate-023-missing-tables', 'missing-tables', 'Create assets, vulnerability_findings, scan_imports, security_alerts, alert_rules, pentest_engagements, integrations tables');
