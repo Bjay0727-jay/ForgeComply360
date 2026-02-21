@@ -8,6 +8,7 @@ const FRAMEWORKS = [
   { id: 'fedramp-high', name: 'FedRAMP High', category: 'Federal', description: 'High-impact cloud systems' },
   { id: 'cmmc-l2', name: 'CMMC Level 2', category: 'Defense', description: 'Defense contractor cybersecurity (110 controls)' },
   { id: 'cmmc-l3', name: 'CMMC Level 3', category: 'Defense', description: 'Advanced defense contractor requirements' },
+  { id: 'cnsa-2', name: 'CNSA 2.0 (NSA)', category: 'Defense', description: 'Quantum-resistant crypto standards (16 controls)' },
   { id: 'nist-800-171-r3', name: 'NIST 800-171 Rev 3', category: 'Defense', description: 'CUI protection for contractors' },
   { id: 'hipaa', name: 'HIPAA Security Rule', category: 'Healthcare', description: 'Healthcare data protection (75 safeguards)' },
   { id: 'hitrust-csf', name: 'HITRUST CSF', category: 'Healthcare', description: 'Healthcare trust framework' },

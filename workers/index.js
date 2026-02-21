@@ -720,7 +720,7 @@ function requireJWTSecret(env) {
 // ============================================================================
 
 async function createJWT(payload, secret, expiresInMinutes = 60) {
-  const header = { alg: 'HS256', typ: 'JWT' };
+  const header = { alg: 'HS384', typ: 'JWT' };
   const now = Math.floor(Date.now() / 1000);
   const claims = { ...payload, iat: now, exp: now + expiresInMinutes * 60 };
 
@@ -731,7 +731,7 @@ async function createJWT(payload, secret, expiresInMinutes = 60) {
   const key = await crypto.subtle.importKey(
     'raw',
     new TextEncoder().encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
+    { name: 'HMAC', hash: 'SHA-384' },
     false,
     ['sign']
   );
@@ -748,7 +748,7 @@ async function verifyJWT(token, secret) {
   const key = await crypto.subtle.importKey(
     'raw',
     new TextEncoder().encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
+    { name: 'HMAC', hash: 'SHA-384' },
     false,
     ['verify']
   );
@@ -779,7 +779,7 @@ function base64urlDecode(str) {
 }
 
 // ============================================================================
-// REFRESH TOKEN HASHING (HMAC-SHA256)
+// REFRESH TOKEN HASHING (HMAC-SHA384 — CNSA 2.0)
 // Uses JWT_SECRET as the HMAC key — deterministic (supports DB lookup by hash)
 // but cryptographically bound to the server secret, unlike the old static salt.
 // ============================================================================
@@ -788,7 +788,7 @@ async function hmacRefreshToken(token, secret) {
   const key = await crypto.subtle.importKey(
     'raw',
     new TextEncoder().encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
+    { name: 'HMAC', hash: 'SHA-384' },
     false,
     ['sign']
   );
@@ -797,23 +797,42 @@ async function hmacRefreshToken(token, secret) {
 }
 
 // ============================================================================
-// PASSWORD HASHING (PBKDF2)
+// PASSWORD HASHING (PBKDF2) — Versioned: v1=SHA-256, v2=SHA-384 (CNSA 2.0)
 // ============================================================================
 
-async function hashPassword(password, salt) {
+async function hashPasswordV1(password, salt) {
   const keyMaterial = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(password),
-    'PBKDF2',
-    false,
-    ['deriveBits']
+    'raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']
   );
   const bits = await crypto.subtle.deriveBits(
     { name: 'PBKDF2', salt: new TextEncoder().encode(salt), iterations: 100000, hash: 'SHA-256' },
-    keyMaterial,
-    256
+    keyMaterial, 256
   );
   return Array.from(new Uint8Array(bits)).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function hashPassword(password, salt) {
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']
+  );
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt: new TextEncoder().encode(salt), iterations: 100000, hash: 'SHA-384' },
+    keyMaterial, 384
+  );
+  return 'v2:' + Array.from(new Uint8Array(bits)).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function verifyPasswordHash(password, salt, storedHash) {
+  if (storedHash.startsWith('v2:')) {
+    const hash = await hashPassword(password, salt);
+    return hash === storedHash;
+  }
+  const hash = await hashPasswordV1(password, salt);
+  return hash === storedHash;
+}
+
+function passwordHashNeedsUpgrade(storedHash) {
+  return !storedHash.startsWith('v2:');
 }
 
 function generateId() {
@@ -851,8 +870,7 @@ async function checkPasswordHistory(env, userId, newPassword, historyCount = 12)
       'SELECT password_hash, salt FROM password_history WHERE user_id = ? ORDER BY created_at DESC LIMIT ?'
     ).bind(userId, historyCount).all();
     for (const entry of results) {
-      const hash = await hashPassword(newPassword, entry.salt);
-      if (hash === entry.password_hash) return true; // Password was previously used
+      if (await verifyPasswordHash(newPassword, entry.salt, entry.password_hash)) return true;
     }
   } catch { /* password_history table may not exist yet */ }
   return false;
@@ -900,7 +918,8 @@ function generateTempPassword() {
 // Uses the JWT_SECRET to derive a separate encryption key via HKDF.
 // ============================================================================
 
-async function deriveEncryptionKey(env) {
+// V1 key: HKDF-SHA-256 (legacy)
+async function deriveEncryptionKeyV1(env) {
   const secret = requireJWTSecret(env);
   const keyMaterial = await crypto.subtle.importKey(
     'raw', new TextEncoder().encode(secret), 'HKDF', false, ['deriveKey']
@@ -914,25 +933,43 @@ async function deriveEncryptionKey(env) {
   );
 }
 
+// V2 key: HKDF-SHA-384 (CNSA 2.0)
+async function deriveEncryptionKey(env) {
+  const secret = requireJWTSecret(env);
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw', new TextEncoder().encode(secret), 'HKDF', false, ['deriveKey']
+  );
+  return crypto.subtle.deriveKey(
+    { name: 'HKDF', hash: 'SHA-384', salt: new TextEncoder().encode('forgecomply360-field-encryption'), info: new TextEncoder().encode('aes-256-gcm-v2') },
+    keyMaterial,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+}
+
 async function encryptField(env, plaintext) {
   if (!plaintext) return null;
   const key = await deriveEncryptionKey(env);
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const encoded = new TextEncoder().encode(plaintext);
   const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, encoded);
-  // Store as: base64(iv + ciphertext)
+  // Store as: base64(iv + ciphertext) with enc2: prefix for CNSA 2.0 HKDF-SHA-384
   const combined = new Uint8Array(iv.length + ciphertext.byteLength);
   combined.set(iv);
   combined.set(new Uint8Array(ciphertext), iv.length);
-  return 'enc:' + btoa(String.fromCharCode(...combined));
+  return 'enc2:' + btoa(String.fromCharCode(...combined));
 }
 
 async function decryptField(env, stored) {
   if (!stored) return null;
   // Support unencrypted legacy values (migration path)
-  if (!stored.startsWith('enc:')) return stored;
-  const key = await deriveEncryptionKey(env);
-  const raw = Uint8Array.from(atob(stored.slice(4)), c => c.charCodeAt(0));
+  if (!stored.startsWith('enc:') && !stored.startsWith('enc2:')) return stored;
+  // Determine version: enc2: = HKDF-SHA-384 (v2), enc: = HKDF-SHA-256 (v1)
+  const isV2 = stored.startsWith('enc2:');
+  const key = isV2 ? await deriveEncryptionKey(env) : await deriveEncryptionKeyV1(env);
+  const payload = isV2 ? stored.slice(5) : stored.slice(4);
+  const raw = Uint8Array.from(atob(payload), c => c.charCodeAt(0));
   const iv = raw.slice(0, 12);
   const ciphertext = raw.slice(12);
   const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext);
@@ -1052,11 +1089,11 @@ async function auditLog(env, orgId, userId, action, resourceType, resourceId, de
       prevHash = lastLog?.integrity_hash || null;
     } catch { /* integrity_hash column may not exist yet — graceful degradation */ }
 
-    // Compute integrity hash: SHA-256(prev_hash + id + action + resource + timestamp + details)
+    // Compute integrity hash: SHA-384(prev_hash + id + action + resource + timestamp + details) — CNSA 2.0
     let integrityHash = null;
     try {
       const hashInput = `${prevHash || 'GENESIS'}|${id}|${orgId}|${userId}|${action}|${resourceType}|${resourceId}|${timestamp}|${detailsStr}`;
-      const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(hashInput));
+      const hashBuffer = await crypto.subtle.digest('SHA-384', new TextEncoder().encode(hashInput));
       integrityHash = Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
     } catch { /* hash computation is best-effort */ }
 
@@ -1445,13 +1482,22 @@ async function handleLogin(request, env) {
     return jsonResponse({ error: 'Account locked. Try again later.' }, 423);
   }
 
-  const hash = await hashPassword(password, user.salt);
-  if (hash !== user.password_hash) {
+  const passwordValid = await verifyPasswordHash(password, user.salt, user.password_hash);
+  if (!passwordValid) {
     const attempts = (user.failed_login_attempts || 0) + 1;
     const lockUntil = attempts >= 5 ? new Date(Date.now() + 15 * 60 * 1000).toISOString() : null;
     await env.DB.prepare('UPDATE users SET failed_login_attempts = ?, locked_until = ? WHERE id = ?')
       .bind(attempts, lockUntil, user.id).run();
     return jsonResponse({ error: 'Invalid credentials' }, 401);
+  }
+
+  // Transparent password hash upgrade: v1 (SHA-256) → v2 (SHA-384, CNSA 2.0)
+  if (passwordHashNeedsUpgrade(user.password_hash)) {
+    const newSalt = generateSalt();
+    const upgradedHash = await hashPassword(password, newSalt);
+    await env.DB.prepare('UPDATE users SET password_hash = ?, salt = ? WHERE id = ?')
+      .bind(upgradedHash, newSalt, user.id).run();
+    await recordPasswordHistory(env, user.id, upgradedHash, newSalt);
   }
 
   // Reset failed attempts on success
@@ -1545,8 +1591,8 @@ async function handleChangePassword(request, env, user) {
   if (policyErrors) return jsonResponse({ error: 'Password does not meet complexity requirements', details: policyErrors }, 400);
 
   const fullUser = await env.DB.prepare('SELECT password_hash, salt FROM users WHERE id = ?').bind(user.id).first();
-  const currentHash = await hashPassword(current_password, fullUser.salt);
-  if (currentHash !== fullUser.password_hash) return jsonResponse({ error: 'Current password is incorrect' }, 401);
+  const currentValid = await verifyPasswordHash(current_password, fullUser.salt, fullUser.password_hash);
+  if (!currentValid) return jsonResponse({ error: 'Current password is incorrect' }, 401);
 
   // Check password history — prevent reuse of last 12 passwords (NIST IA-5(1)(e))
   const wasUsed = await checkPasswordHistory(env, user.id, new_password, 12);
@@ -11968,7 +12014,7 @@ async function handleTestWebhook(env, org, user, webhookId) {
 
   try {
     const encoder = new TextEncoder();
-    const key = await crypto.subtle.importKey('raw', encoder.encode(webhook.secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const key = await crypto.subtle.importKey('raw', encoder.encode(webhook.secret), { name: 'HMAC', hash: 'SHA-384' }, false, ['sign']);
     const sig = await crypto.subtle.sign('HMAC', key, encoder.encode(payloadStr));
     const sigHex = Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join('');
 
@@ -11976,7 +12022,7 @@ async function handleTestWebhook(env, org, user, webhookId) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Forge-Signature': 'sha256=' + sigHex,
+        'X-Forge-Signature': 'sha384=' + sigHex,
         'X-Forge-Event': 'test.ping',
         'X-Forge-Delivery': deliveryId,
       },
@@ -12013,7 +12059,7 @@ async function fireWebhooks(env, orgId, eventType, payload) {
 
       try {
         const encoder = new TextEncoder();
-        const key = await crypto.subtle.importKey('raw', encoder.encode(webhook.secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+        const key = await crypto.subtle.importKey('raw', encoder.encode(webhook.secret), { name: 'HMAC', hash: 'SHA-384' }, false, ['sign']);
         const sig = await crypto.subtle.sign('HMAC', key, encoder.encode(payloadStr));
         const sigHex = Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join('');
 
@@ -12021,7 +12067,7 @@ async function fireWebhooks(env, orgId, eventType, payload) {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'X-Forge-Signature': 'sha256=' + sigHex,
+            'X-Forge-Signature': 'sha384=' + sigHex,
             'X-Forge-Event': eventType,
             'X-Forge-Delivery': deliveryId,
           },
