@@ -92,11 +92,12 @@ export default {
         // Hourly - ServiceNow CMDB scheduled syncs
         ctx.waitUntil(handleScheduledServiceNowSyncs(env));
       } else {
-        // Daily evidence checks and alerts - 6 AM UTC
+        // Daily evidence checks, alerts, and automated snapshots - 6 AM UTC
         ctx.waitUntil(
           handleScheduledEvidenceChecks(env)
             .then(() => handleScheduledComplianceAlerts(env))
             .then(() => handleSecurityIncidentDetection(env))
+            .then(() => handleScheduledComplianceSnapshots(env))
             .then(() => handleAuditLogRetention(env))
             .then(() => handleEmailDigest(env))
         );
@@ -499,6 +500,10 @@ async function handleRequest(request, env, url, ctx) {
   if (path === '/api/v1/compliance/scores' && method === 'GET') return handleComplianceScores(env, url, org, user);
   if (path === '/api/v1/compliance/score-config' && method === 'GET') return handleGetScoreConfig(env, org, user);
   if (path === '/api/v1/compliance/score-config' && method === 'PUT') return handleUpdateScoreConfig(request, env, org, user);
+  if (path === '/api/v1/analytics/gap-analysis' && method === 'GET') return handleAnalyticsGapAnalysis(env, url, org, user);
+  if (path === '/api/v1/analytics/forecast' && method === 'GET') return handleAnalyticsForecast(env, url, org, user);
+  if (path === '/api/v1/analytics/framework-heatmap' && method === 'GET') return handleAnalyticsFrameworkHeatmap(env, url, org, user);
+  if (path === '/api/v1/analytics/export-csv' && method === 'GET') return handleAnalyticsExportCSV(env, url, org, user);
   if (path === '/api/v1/calendar/events' && method === 'GET') return handleCalendarEvents(env, url, org, user);
 
   // Compliance Alerts
@@ -6512,6 +6517,353 @@ async function handleGetComplianceTrends(env, url, org) {
   } catch (err) {
     console.error('[handleGetComplianceTrends]', err.message);
     return jsonResponse({ error: 'Failed to load compliance trends' }, 500);
+  }
+}
+
+// ============================================================================
+// AUTOMATED DAILY COMPLIANCE SNAPSHOTS (Scheduled Task)
+// ============================================================================
+
+async function handleScheduledComplianceSnapshots(env) {
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    // Get all organizations with active frameworks
+    const orgsRes = await env.DB.prepare(
+      `SELECT DISTINCT o.id, o.settings FROM organizations o
+       JOIN organization_frameworks of2 ON of2.org_id = o.id AND of2.enabled = 1`
+    ).all();
+    let totalInserted = 0;
+    for (const org of orgsRes.results) {
+      const weights = getOrgScoringWeights(org);
+      const [implsRes, poamsRes, overdueRes, evidenceRes, risksRes, monitoringRes] = await Promise.all([
+        env.DB.prepare('SELECT system_id, framework_id, status, COUNT(*) as count FROM control_implementations WHERE org_id = ? GROUP BY system_id, framework_id, status').bind(org.id).all(),
+        env.DB.prepare('SELECT system_id, status, COUNT(*) as count FROM poams WHERE org_id = ? GROUP BY system_id, status').bind(org.id).all(),
+        env.DB.prepare(`SELECT system_id, COUNT(*) as count FROM poams WHERE org_id = ? AND status NOT IN ('completed','accepted','deferred') AND scheduled_completion < ? GROUP BY system_id`).bind(org.id, today).all(),
+        env.DB.prepare(`SELECT ci.system_id, ci.framework_id, COUNT(DISTINCT ecl.implementation_id) as covered, COUNT(DISTINCT ci.id) as applicable FROM control_implementations ci LEFT JOIN evidence_control_links ecl ON ecl.implementation_id = ci.id WHERE ci.org_id = ? AND ci.status != 'not_applicable' GROUP BY ci.system_id, ci.framework_id`).bind(org.id).all(),
+        env.DB.prepare(`SELECT system_id, risk_level, COUNT(*) as count FROM risks WHERE org_id = ? AND status != 'closed' AND system_id IS NOT NULL GROUP BY system_id, risk_level`).bind(org.id).all(),
+        env.DB.prepare('SELECT system_id, last_result, COUNT(*) as count FROM monitoring_checks WHERE org_id = ? AND is_active = 1 GROUP BY system_id, last_result').bind(org.id).all(),
+      ]);
+      const combos = {};
+      for (const row of implsRes.results) {
+        const key = `${row.system_id}|${row.framework_id}`;
+        if (!combos[key]) combos[key] = { system_id: row.system_id, framework_id: row.framework_id, total: 0, implemented: 0, partially_implemented: 0, planned: 0, not_applicable: 0, not_implemented: 0 };
+        combos[key][row.status] = (combos[key][row.status] || 0) + row.count;
+        combos[key].total += row.count;
+      }
+      const poamBySys = {};
+      for (const r of poamsRes.results) {
+        if (!poamBySys[r.system_id]) poamBySys[r.system_id] = { open: 0, in_progress: 0, completed: 0, overdue: 0 };
+        if (r.status === 'open') poamBySys[r.system_id].open += r.count;
+        else if (r.status === 'in_progress') poamBySys[r.system_id].in_progress += r.count;
+        else if (r.status === 'completed' || r.status === 'accepted') poamBySys[r.system_id].completed += r.count;
+      }
+      for (const r of overdueRes.results) {
+        if (!poamBySys[r.system_id]) poamBySys[r.system_id] = { open: 0, in_progress: 0, completed: 0, overdue: 0 };
+        poamBySys[r.system_id].overdue = r.count;
+      }
+      const evidByKey = {};
+      for (const r of evidenceRes.results) evidByKey[`${r.system_id}|${r.framework_id}`] = { covered: r.covered, applicable: r.applicable };
+      const riskBySys = {};
+      for (const r of risksRes.results) {
+        if (!riskBySys[r.system_id]) riskBySys[r.system_id] = { critical: 0, high: 0, moderate: 0, low: 0 };
+        riskBySys[r.system_id][r.risk_level] = r.count;
+      }
+      const monBySys = {};
+      for (const r of monitoringRes.results) {
+        if (!monBySys[r.system_id]) monBySys[r.system_id] = { pass: 0, total: 0 };
+        if (r.last_result === 'pass') monBySys[r.system_id].pass += r.count;
+        monBySys[r.system_id].total += r.count;
+      }
+      for (const c of Object.values(combos)) {
+        const pct = c.total > 0 ? Math.round(((c.implemented + c.not_applicable) / c.total) * 100) : 0;
+        const key = `${c.system_id}|${c.framework_id}`;
+        const poam = poamBySys[c.system_id] || { open: 0, in_progress: 0, completed: 0, overdue: 0 };
+        const evid = evidByKey[key] || { covered: 0, applicable: c.total - c.not_applicable };
+        const risk = riskBySys[c.system_id] || { critical: 0, high: 0, moderate: 0, low: 0 };
+        const mon = monBySys[c.system_id] || { pass: 0, total: 0 };
+        const scoreResult = computeComplianceScore({
+          controls: { implemented: c.implemented, partially: c.partially_implemented, planned: c.planned, na: c.not_applicable, not_impl: c.not_implemented, total: c.total },
+          poams: poam, evidence: evid, risks: risk, monitoring: mon,
+        }, weights);
+        const metadata = JSON.stringify({ score: scoreResult.score, grade: scoreResult.grade, dimensions: scoreResult.dimensions });
+        await env.DB.prepare(
+          `INSERT OR REPLACE INTO compliance_snapshots (id, org_id, system_id, framework_id, snapshot_date, total_controls, implemented, partially_implemented, planned, not_applicable, not_implemented, compliance_percentage, metadata)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).bind(generateId(), org.id, c.system_id, c.framework_id, today, c.total, c.implemented, c.partially_implemented, c.planned, c.not_applicable, c.not_implemented, pct, metadata).run();
+        totalInserted++;
+      }
+    }
+    console.log(`[Scheduled Snapshots] Created ${totalInserted} snapshots for ${orgsRes.results.length} orgs on ${today}`);
+  } catch (err) {
+    console.error('[handleScheduledComplianceSnapshots]', err.message, err.stack);
+  }
+}
+
+// ============================================================================
+// ANALYTICS ENDPOINTS
+// ============================================================================
+
+async function handleAnalyticsGapAnalysis(env, url, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  try {
+    const systemId = url.searchParams.get('system_id');
+    // Get all enabled frameworks for the org
+    const frameworksRes = await env.DB.prepare(
+      `SELECT cf.id, cf.name, cf.category, cf.control_count FROM compliance_frameworks cf
+       JOIN organization_frameworks of2 ON of2.framework_id = cf.id WHERE of2.org_id = ? AND of2.enabled = 1 ORDER BY cf.name`
+    ).bind(org.id).all();
+
+    // Get implementation status grouped by framework and family
+    let query = `SELECT ci.framework_id, sc.family, ci.status, COUNT(*) as count
+      FROM control_implementations ci
+      JOIN security_controls sc ON sc.framework_id = ci.framework_id AND sc.control_id = ci.control_id
+      WHERE ci.org_id = ?`;
+    const params = [org.id];
+    if (systemId) { query += ' AND ci.system_id = ?'; params.push(systemId); }
+    query += ' GROUP BY ci.framework_id, sc.family, ci.status ORDER BY ci.framework_id, sc.family';
+    const implRes = await env.DB.prepare(query).bind(...params).all();
+
+    // Build gap analysis per framework and family
+    const gapByFramework = {};
+    for (const row of implRes.results) {
+      if (!gapByFramework[row.framework_id]) gapByFramework[row.framework_id] = {};
+      if (!gapByFramework[row.framework_id][row.family]) {
+        gapByFramework[row.framework_id][row.family] = { family: row.family, total: 0, implemented: 0, partially_implemented: 0, planned: 0, not_implemented: 0, not_applicable: 0, gap_percentage: 0 };
+      }
+      const f = gapByFramework[row.framework_id][row.family];
+      f[row.status] = (f[row.status] || 0) + row.count;
+      f.total += row.count;
+    }
+
+    // Calculate gap percentages and build response
+    const frameworks = frameworksRes.results.map(fw => {
+      const families = Object.values(gapByFramework[fw.id] || {}).map(f => {
+        const gap = f.total > 0 ? Math.round(((f.not_implemented + f.planned) / f.total) * 100) : 0;
+        const compliance = f.total > 0 ? Math.round(((f.implemented + f.not_applicable) / f.total) * 100) : 0;
+        return { ...f, gap_percentage: gap, compliance_percentage: compliance };
+      });
+      families.sort((a, b) => b.gap_percentage - a.gap_percentage);
+      const totalControls = families.reduce((s, f) => s + f.total, 0);
+      const totalImpl = families.reduce((s, f) => s + f.implemented + f.not_applicable, 0);
+      return {
+        framework_id: fw.id, framework_name: fw.name, category: fw.category,
+        total_controls: totalControls,
+        compliance_percentage: totalControls > 0 ? Math.round((totalImpl / totalControls) * 100) : 0,
+        families,
+        top_gaps: families.filter(f => f.gap_percentage > 0).slice(0, 5),
+      };
+    });
+
+    return jsonResponse({ gap_analysis: frameworks, system_id: systemId || 'all' });
+  } catch (err) {
+    console.error('[handleAnalyticsGapAnalysis]', err.message);
+    return jsonResponse({ error: 'Failed to load gap analysis' }, 500);
+  }
+}
+
+async function handleAnalyticsForecast(env, url, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  try {
+    const days = parseInt(url.searchParams.get('days') || '90');
+    const forecastDays = parseInt(url.searchParams.get('forecast_days') || '30');
+    // Get historical snapshots aggregated by date
+    const snapRes = await env.DB.prepare(
+      `SELECT snapshot_date, AVG(compliance_percentage) as avg_compliance,
+              SUM(implemented) as total_implemented, SUM(total_controls) as total_controls,
+              COUNT(*) as snapshot_count
+       FROM compliance_snapshots WHERE org_id = ? AND snapshot_date >= date('now', ?)
+       GROUP BY snapshot_date ORDER BY snapshot_date ASC`
+    ).bind(org.id, `-${days} days`).all();
+
+    const history = snapRes.results.map(r => ({
+      date: r.snapshot_date,
+      compliance: Math.round(r.avg_compliance * 10) / 10,
+      implemented: r.total_implemented,
+      total: r.total_controls,
+    }));
+
+    // Simple linear regression for forecasting
+    let forecast = [];
+    if (history.length >= 3) {
+      const n = history.length;
+      const xMean = (n - 1) / 2;
+      const yMean = history.reduce((s, h) => s + h.compliance, 0) / n;
+      let numerator = 0, denominator = 0;
+      for (let i = 0; i < n; i++) {
+        numerator += (i - xMean) * (history[i].compliance - yMean);
+        denominator += (i - xMean) * (i - xMean);
+      }
+      const slope = denominator !== 0 ? numerator / denominator : 0;
+      const intercept = yMean - slope * xMean;
+
+      // Project forward
+      const lastDate = new Date(history[n - 1].date);
+      for (let d = 1; d <= forecastDays; d++) {
+        const futureDate = new Date(lastDate);
+        futureDate.setDate(futureDate.getDate() + d);
+        const projected = Math.min(100, Math.max(0, Math.round((slope * (n - 1 + d) + intercept) * 10) / 10));
+        forecast.push({ date: futureDate.toISOString().split('T')[0], compliance: projected, is_forecast: true });
+      }
+    }
+
+    // Calculate velocity and estimated time to targets
+    const recent7 = history.slice(-7);
+    const recent30 = history.slice(-30);
+    const weeklyVelocity = recent7.length >= 2 ? Math.round((recent7[recent7.length - 1].compliance - recent7[0].compliance) * 10) / 10 : 0;
+    const monthlyVelocity = recent30.length >= 2 ? Math.round((recent30[recent30.length - 1].compliance - recent30[0].compliance) * 10) / 10 : 0;
+    const currentCompliance = history.length > 0 ? history[history.length - 1].compliance : 0;
+
+    const estimateDaysToTarget = (target) => {
+      if (currentCompliance >= target) return 0;
+      if (monthlyVelocity <= 0) return null;
+      const dailyRate = monthlyVelocity / 30;
+      return dailyRate > 0 ? Math.ceil((target - currentCompliance) / dailyRate) : null;
+    };
+
+    return jsonResponse({
+      history,
+      forecast,
+      velocity: { weekly: weeklyVelocity, monthly: monthlyVelocity },
+      current_compliance: currentCompliance,
+      targets: {
+        to_70: estimateDaysToTarget(70),
+        to_80: estimateDaysToTarget(80),
+        to_90: estimateDaysToTarget(90),
+        to_100: estimateDaysToTarget(100),
+      },
+    });
+  } catch (err) {
+    console.error('[handleAnalyticsForecast]', err.message);
+    return jsonResponse({ error: 'Failed to generate forecast' }, 500);
+  }
+}
+
+async function handleAnalyticsFrameworkHeatmap(env, url, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+  try {
+    // Get compliance by system × framework
+    const res = await env.DB.prepare(
+      `SELECT s.id as system_id, s.name as system_name, cf.id as framework_id, cf.name as framework_name,
+              ci.status, COUNT(*) as count
+       FROM control_implementations ci
+       JOIN systems s ON s.id = ci.system_id
+       JOIN compliance_frameworks cf ON cf.id = ci.framework_id
+       WHERE ci.org_id = ?
+       GROUP BY s.id, cf.id, ci.status ORDER BY s.name, cf.name`
+    ).bind(org.id).all();
+
+    const cells = {};
+    const systems = new Map();
+    const frameworks = new Map();
+    for (const row of res.results) {
+      systems.set(row.system_id, row.system_name);
+      frameworks.set(row.framework_id, row.framework_name);
+      const key = `${row.system_id}|${row.framework_id}`;
+      if (!cells[key]) cells[key] = { system_id: row.system_id, framework_id: row.framework_id, total: 0, implemented: 0, not_applicable: 0 };
+      cells[key].total += row.count;
+      if (row.status === 'implemented') cells[key].implemented += row.count;
+      if (row.status === 'not_applicable') cells[key].not_applicable += row.count;
+    }
+
+    const heatmap = Object.values(cells).map(c => ({
+      system_id: c.system_id,
+      system_name: systems.get(c.system_id),
+      framework_id: c.framework_id,
+      framework_name: frameworks.get(c.framework_id),
+      compliance_percentage: c.total > 0 ? Math.round(((c.implemented + c.not_applicable) / c.total) * 100) : 0,
+      total_controls: c.total,
+      implemented: c.implemented,
+    }));
+
+    return jsonResponse({
+      heatmap,
+      systems: [...systems].map(([id, name]) => ({ id, name })),
+      frameworks: [...frameworks].map(([id, name]) => ({ id, name })),
+    });
+  } catch (err) {
+    console.error('[handleAnalyticsFrameworkHeatmap]', err.message);
+    return jsonResponse({ error: 'Failed to load framework heatmap' }, 500);
+  }
+}
+
+async function handleAnalyticsExportCSV(env, url, org, user) {
+  if (!requireRole(user, 'manager')) return jsonResponse({ error: 'Forbidden' }, 403);
+  try {
+    const type = url.searchParams.get('type') || 'implementations';
+
+    if (type === 'implementations') {
+      const res = await env.DB.prepare(
+        `SELECT s.name as system_name, cf.name as framework_name, ci.control_id, sc.family, sc.title as control_title,
+                ci.status, ci.implementation_description, ci.responsible_role, ci.implementation_date,
+                ci.last_assessed_date, ci.assessment_result, ci.risk_level
+         FROM control_implementations ci
+         JOIN systems s ON s.id = ci.system_id
+         JOIN compliance_frameworks cf ON cf.id = ci.framework_id
+         LEFT JOIN security_controls sc ON sc.framework_id = ci.framework_id AND sc.control_id = ci.control_id
+         WHERE ci.org_id = ? ORDER BY s.name, cf.name, ci.control_id`
+      ).bind(org.id).all();
+
+      const header = 'System,Framework,Control ID,Family,Control Title,Status,Description,Responsible Role,Implementation Date,Last Assessed,Assessment Result,Risk Level\n';
+      const rows = res.results.map(r =>
+        [r.system_name, r.framework_name, r.control_id, r.family || '', r.control_title || '', r.status,
+         `"${(r.implementation_description || '').replace(/"/g, '""')}"`, r.responsible_role || '',
+         r.implementation_date || '', r.last_assessed_date || '', r.assessment_result || '', r.risk_level || ''].join(',')
+      ).join('\n');
+
+      return new Response(header + rows, {
+        headers: { 'Content-Type': 'text/csv', 'Content-Disposition': `attachment; filename="compliance-implementations-${new Date().toISOString().split('T')[0]}.csv"` },
+      });
+    }
+
+    if (type === 'snapshots') {
+      const days = parseInt(url.searchParams.get('days') || '90');
+      const res = await env.DB.prepare(
+        `SELECT cs.snapshot_date, s.name as system_name, cf.name as framework_name,
+                cs.total_controls, cs.implemented, cs.partially_implemented, cs.planned, cs.not_applicable, cs.not_implemented,
+                cs.compliance_percentage, cs.metadata
+         FROM compliance_snapshots cs
+         JOIN systems s ON s.id = cs.system_id
+         JOIN compliance_frameworks cf ON cf.id = cs.framework_id
+         WHERE cs.org_id = ? AND cs.snapshot_date >= date('now', ?) ORDER BY cs.snapshot_date DESC, s.name`
+      ).bind(org.id, `-${days} days`).all();
+
+      const header = 'Date,System,Framework,Total Controls,Implemented,Partially Implemented,Planned,Not Applicable,Not Implemented,Compliance %,Score,Grade\n';
+      const rows = res.results.map(r => {
+        let score = '', grade = '';
+        try { const m = JSON.parse(r.metadata || '{}'); score = m.score || ''; grade = m.grade || ''; } catch {}
+        return [r.snapshot_date, r.system_name, r.framework_name, r.total_controls, r.implemented,
+                r.partially_implemented, r.planned, r.not_applicable, r.not_implemented,
+                r.compliance_percentage, score, grade].join(',');
+      }).join('\n');
+
+      return new Response(header + rows, {
+        headers: { 'Content-Type': 'text/csv', 'Content-Disposition': `attachment; filename="compliance-snapshots-${new Date().toISOString().split('T')[0]}.csv"` },
+      });
+    }
+
+    if (type === 'risks') {
+      const res = await env.DB.prepare(
+        `SELECT r.title, r.description, r.risk_level, r.likelihood, r.impact, r.risk_score,
+                r.status, r.treatment, r.category, s.name as system_name, r.created_at
+         FROM risks r LEFT JOIN systems s ON s.id = r.system_id WHERE r.org_id = ? ORDER BY r.risk_score DESC`
+      ).bind(org.id).all();
+
+      const header = 'Title,Description,Risk Level,Likelihood,Impact,Risk Score,Status,Treatment,Category,System,Created\n';
+      const rows = res.results.map(r =>
+        [`"${(r.title || '').replace(/"/g, '""')}"`, `"${(r.description || '').replace(/"/g, '""')}"`,
+         r.risk_level || '', r.likelihood || '', r.impact || '', r.risk_score || '',
+         r.status || '', r.treatment || '', r.category || '', r.system_name || '', r.created_at || ''].join(',')
+      ).join('\n');
+
+      return new Response(header + rows, {
+        headers: { 'Content-Type': 'text/csv', 'Content-Disposition': `attachment; filename="risk-register-${new Date().toISOString().split('T')[0]}.csv"` },
+      });
+    }
+
+    return jsonResponse({ error: 'Invalid export type. Use: implementations, snapshots, or risks' }, 400);
+  } catch (err) {
+    console.error('[handleAnalyticsExportCSV]', err.message);
+    return jsonResponse({ error: 'Failed to export CSV' }, 500);
   }
 }
 
