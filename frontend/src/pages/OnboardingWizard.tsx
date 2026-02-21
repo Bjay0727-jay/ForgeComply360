@@ -19,6 +19,9 @@ const FRAMEWORKS = [
   { id: 'ffiec-it', name: 'FFIEC IT Handbook', category: 'Financial', description: 'Bank examination handbook (90 controls)' },
   { id: 'csa-ccm-v4', name: 'CSA CCM v4', category: 'Cloud', description: 'Cloud security controls (197 controls)' },
   { id: 'nerc-cip', name: 'NERC CIP', category: 'Critical Infrastructure', description: 'Bulk electric system protection (47 controls)' },
+  { id: 'iso-27701', name: 'ISO 27701', category: 'Privacy', description: 'Privacy information management (49 controls)' },
+  { id: 'eu-ai-act', name: 'EU AI Act', category: 'AI', description: 'AI risk-based regulation (55 controls)' },
+  { id: 'nist-ai-rmf', name: 'NIST AI RMF', category: 'AI', description: 'AI risk management framework (54 controls)' },
 ];
 
 const STEPS = ['Welcome', 'Organization', 'Framework', 'System', 'Complete'];
@@ -60,9 +63,9 @@ export function OnboardingWizard() {
     }
   };
 
-  const categories = ['All', 'Federal', 'Defense', 'Healthcare', 'Commercial'];
+  const categories = ['All', 'Federal', 'Defense', 'Healthcare', 'Commercial', 'Privacy', 'AI'];
   const filtered = filter === 'All' ? FRAMEWORKS : FRAMEWORKS.filter((f) => f.category === filter);
-  const catColors: Record<string, string> = { Federal: 'bg-blue-100 text-blue-700', Defense: 'bg-green-100 text-green-700', Healthcare: 'bg-purple-100 text-purple-700', Commercial: 'bg-gray-100 text-gray-700' };
+  const catColors: Record<string, string> = { Federal: 'bg-blue-100 text-blue-700', Defense: 'bg-green-100 text-green-700', Healthcare: 'bg-purple-100 text-purple-700', Commercial: 'bg-gray-100 text-gray-700', Financial: 'bg-yellow-100 text-yellow-700', Cloud: 'bg-cyan-100 text-cyan-700', 'Critical Infrastructure': 'bg-orange-100 text-orange-700', Privacy: 'bg-pink-100 text-pink-700', AI: 'bg-indigo-100 text-indigo-700' };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-900 via-blue-800 to-blue-900 flex items-center justify-center p-4">
