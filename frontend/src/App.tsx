@@ -76,6 +76,7 @@ const NotificationsPage = lazy(() => import('./pages/NotificationsPage').then(m 
 const PortalActivityPage = lazy(() => import('./pages/PortalActivityPage').then(m => ({ default: m.PortalActivityPage }))); // 7K
 const CrosswalksPage = lazy(() => import('./pages/CrosswalksPage').then(m => ({ default: m.CrosswalksPage })));      // 5K
 const LegalPage = lazy(() => import('./pages/LegalPage').then(m => ({ default: m.LegalPage })));                    // 3K
+const SecurityIncidentsPage = lazy(() => import('./pages/SecurityIncidentsPage').then(m => ({ default: m.SecurityIncidentsPage }))); // 10K
 
 /** Bridge: subscribes to API errors and shows toast notifications */
 function ApiErrorBridge() {
@@ -207,6 +208,7 @@ function AppRoutes() {
           <Route path="/vendors" element={<LazyPage><VendorsPage /></LazyPage>} />
           <Route path="/scans" element={<ProtectedRoute minRole="analyst"><LazyPage><ScanImportPage /></LazyPage></ProtectedRoute>} />
           <Route path="/assets" element={<LazyPage><AssetsPage /></LazyPage>} />
+          <Route path="/security-incidents" element={<ProtectedRoute minRole="admin"><LazyPage><SecurityIncidentsPage /></LazyPage></ProtectedRoute>} />
 
           {/* Tools */}
           <Route path="/ai-writer" element={<LazyPage><AIWriterPage /></LazyPage>} />
