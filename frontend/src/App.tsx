@@ -10,6 +10,7 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { ThemeProvider } from './components/ThemeProvider';
 import { ToastProvider } from './components/Toast';
 import { ProtectedRoute } from './components/ProtectedRoute';
+import { FeatureFlagProvider } from './hooks/useFeatureFlags';
 import { useApiErrorToast } from './hooks/useApiErrorToast';
 import { PageLoader } from './components/PageLoader';
 
@@ -165,75 +166,77 @@ function AppRoutes() {
 
   return (
     <ExperienceProvider>
-      <Layout>
-        <IdleTimeoutBridge />
-        <Routes>
-          {/* Overview — all authenticated users */}
-          <Route path="/" element={<DashboardPage />} />
-          <Route path="/notifications" element={<LazyPage><NotificationsPage /></LazyPage>} />
-          <Route path="/calendar" element={<ProtectedRoute minRole="analyst"><LazyPage><CalendarPage /></LazyPage></ProtectedRoute>} />
+      <FeatureFlagProvider>
+        <Layout>
+          <IdleTimeoutBridge />
+          <Routes>
+            {/* Overview — all authenticated users */}
+            <Route path="/" element={<DashboardPage />} />
+            <Route path="/notifications" element={<LazyPage><NotificationsPage /></LazyPage>} />
+            <Route path="/calendar" element={<ProtectedRoute minRole="analyst" featureKey="calendar"><LazyPage><CalendarPage /></LazyPage></ProtectedRoute>} />
 
-          {/* Compliance */}
-          <Route path="/systems" element={<LazyPage><SystemsPage /></LazyPage>} />
-          <Route path="/controls" element={<LazyPage><ControlsPage /></LazyPage>} />
-          <Route path="/crosswalks" element={<LazyPage><CrosswalksPage /></LazyPage>} />
-          <Route path="/assessment" element={<ProtectedRoute minRole="analyst"><LazyPage><AssessmentWizardPage /></LazyPage></ProtectedRoute>} />
-          <Route path="/system-comparison" element={<ProtectedRoute minRole="analyst"><LazyPage><SystemComparisonPage /></LazyPage></ProtectedRoute>} />
-          {/* Questionnaires */}
-          <Route path="/questionnaires" element={<ProtectedRoute minRole="manager"><LazyPage><QuestionnairesPage /></LazyPage></ProtectedRoute>} />
-          <Route path="/questionnaires/new" element={<ProtectedRoute minRole="manager"><LazyPage><QuestionnaireBuilderPage /></LazyPage></ProtectedRoute>} />
-          <Route path="/questionnaires/:id/edit" element={<ProtectedRoute minRole="manager"><LazyPage><QuestionnaireBuilderPage /></LazyPage></ProtectedRoute>} />
-          <Route path="/questionnaires/:id/responses" element={<ProtectedRoute minRole="manager"><LazyPage><QuestionnaireResponsesPage /></LazyPage></ProtectedRoute>} />
+            {/* Compliance */}
+            <Route path="/systems" element={<ProtectedRoute featureKey="systems"><LazyPage><SystemsPage /></LazyPage></ProtectedRoute>} />
+            <Route path="/controls" element={<ProtectedRoute featureKey="controls"><LazyPage><ControlsPage /></LazyPage></ProtectedRoute>} />
+            <Route path="/crosswalks" element={<ProtectedRoute featureKey="crosswalks"><LazyPage><CrosswalksPage /></LazyPage></ProtectedRoute>} />
+            <Route path="/assessment" element={<ProtectedRoute minRole="analyst" featureKey="assessment"><LazyPage><AssessmentWizardPage /></LazyPage></ProtectedRoute>} />
+            <Route path="/system-comparison" element={<ProtectedRoute minRole="analyst" featureKey="systemComparison"><LazyPage><SystemComparisonPage /></LazyPage></ProtectedRoute>} />
+            {/* Questionnaires */}
+            <Route path="/questionnaires" element={<ProtectedRoute minRole="manager" featureKey="questionnaires"><LazyPage><QuestionnairesPage /></LazyPage></ProtectedRoute>} />
+            <Route path="/questionnaires/new" element={<ProtectedRoute minRole="manager" featureKey="questionnaires"><LazyPage><QuestionnaireBuilderPage /></LazyPage></ProtectedRoute>} />
+            <Route path="/questionnaires/:id/edit" element={<ProtectedRoute minRole="manager" featureKey="questionnaires"><LazyPage><QuestionnaireBuilderPage /></LazyPage></ProtectedRoute>} />
+            <Route path="/questionnaires/:id/responses" element={<ProtectedRoute minRole="manager" featureKey="questionnaires"><LazyPage><QuestionnaireResponsesPage /></LazyPage></ProtectedRoute>} />
 
-          {/* Remediation */}
-          <Route path="/poams" element={<LazyPage><PoamsPage /></LazyPage>} />
-          <Route path="/evidence" element={<LazyPage><EvidencePage /></LazyPage>} />
-          <Route path="/evidence/schedules" element={<ProtectedRoute minRole="analyst"><LazyPage><EvidenceSchedulesPage /></LazyPage></ProtectedRoute>} />
-          <Route path="/evidence/automation" element={<ProtectedRoute minRole="manager"><LazyPage><EvidenceAutomationPage /></LazyPage></ProtectedRoute>} />
-          <Route path="/evidence/tests/:id/results" element={<ProtectedRoute minRole="manager"><LazyPage><EvidenceTestResultsPage /></LazyPage></ProtectedRoute>} />
-          <Route path="/approvals" element={<ProtectedRoute minRole="analyst"><LazyPage><ApprovalsPage /></LazyPage></ProtectedRoute>} />
+            {/* Remediation */}
+            <Route path="/poams" element={<ProtectedRoute featureKey="poams"><LazyPage><PoamsPage /></LazyPage></ProtectedRoute>} />
+            <Route path="/evidence" element={<ProtectedRoute featureKey="evidence"><LazyPage><EvidencePage /></LazyPage></ProtectedRoute>} />
+            <Route path="/evidence/schedules" element={<ProtectedRoute minRole="analyst" featureKey="evidenceSchedules"><LazyPage><EvidenceSchedulesPage /></LazyPage></ProtectedRoute>} />
+            <Route path="/evidence/automation" element={<ProtectedRoute minRole="manager" featureKey="evidenceAutomation"><LazyPage><EvidenceAutomationPage /></LazyPage></ProtectedRoute>} />
+            <Route path="/evidence/tests/:id/results" element={<ProtectedRoute minRole="manager" featureKey="evidenceAutomation"><LazyPage><EvidenceTestResultsPage /></LazyPage></ProtectedRoute>} />
+            <Route path="/approvals" element={<ProtectedRoute minRole="analyst" featureKey="approvals"><LazyPage><ApprovalsPage /></LazyPage></ProtectedRoute>} />
 
-          {/* Documentation */}
-          <Route path="/ssp" element={<LazyPage><SSPPage /></LazyPage>} />
-          <Route path="/ssp/fisma/:id" element={<ProtectedRoute minRole="analyst"><LazyPage><FISMASSPBuilderPage /></LazyPage></ProtectedRoute>} />
-          <Route path="/ssp/compare" element={<ProtectedRoute minRole="analyst"><LazyPage><SSPComparisonPage /></LazyPage></ProtectedRoute>} />
-          <Route path="/policies" element={<LazyPage><PoliciesPage /></LazyPage>} />
-          <Route path="/audit-prep" element={<ProtectedRoute minRole="analyst"><LazyPage><AuditPrepPage /></LazyPage></ProtectedRoute>} />
-          <Route path="/reports" element={<ProtectedRoute minRole="manager"><LazyPage><ReportsPage /></LazyPage></ProtectedRoute>} />
-          <Route path="/analytics" element={<ProtectedRoute minRole="analyst"><LazyPage><AnalyticsPage /></LazyPage></ProtectedRoute>} />
+            {/* Documentation */}
+            <Route path="/ssp" element={<ProtectedRoute featureKey="ssp"><LazyPage><SSPPage /></LazyPage></ProtectedRoute>} />
+            <Route path="/ssp/fisma/:id" element={<ProtectedRoute minRole="analyst" featureKey="ssp"><LazyPage><FISMASSPBuilderPage /></LazyPage></ProtectedRoute>} />
+            <Route path="/ssp/compare" element={<ProtectedRoute minRole="analyst" featureKey="ssp"><LazyPage><SSPComparisonPage /></LazyPage></ProtectedRoute>} />
+            <Route path="/policies" element={<ProtectedRoute featureKey="policies"><LazyPage><PoliciesPage /></LazyPage></ProtectedRoute>} />
+            <Route path="/audit-prep" element={<ProtectedRoute minRole="analyst" featureKey="auditPrep"><LazyPage><AuditPrepPage /></LazyPage></ProtectedRoute>} />
+            <Route path="/reports" element={<ProtectedRoute minRole="manager" featureKey="reports"><LazyPage><ReportsPage /></LazyPage></ProtectedRoute>} />
+            <Route path="/analytics" element={<ProtectedRoute minRole="analyst" featureKey="analytics"><LazyPage><AnalyticsPage /></LazyPage></ProtectedRoute>} />
 
-          {/* Risk & Monitoring */}
-          <Route path="/risks" element={<LazyPage><RisksPage /></LazyPage>} />
-          <Route path="/monitoring" element={<LazyPage><MonitoringPage /></LazyPage>} />
-          <Route path="/vendors" element={<LazyPage><VendorsPage /></LazyPage>} />
-          <Route path="/scans" element={<ProtectedRoute minRole="analyst"><LazyPage><ScanImportPage /></LazyPage></ProtectedRoute>} />
-          <Route path="/assets" element={<LazyPage><AssetsPage /></LazyPage>} />
-          <Route path="/security-incidents" element={<ProtectedRoute minRole="admin"><LazyPage><SecurityIncidentsPage /></LazyPage></ProtectedRoute>} />
+            {/* Risk & Monitoring */}
+            <Route path="/risks" element={<ProtectedRoute featureKey="risks"><LazyPage><RisksPage /></LazyPage></ProtectedRoute>} />
+            <Route path="/monitoring" element={<ProtectedRoute featureKey="monitoring"><LazyPage><MonitoringPage /></LazyPage></ProtectedRoute>} />
+            <Route path="/vendors" element={<ProtectedRoute featureKey="vendors"><LazyPage><VendorsPage /></LazyPage></ProtectedRoute>} />
+            <Route path="/scans" element={<ProtectedRoute minRole="analyst" featureKey="scans"><LazyPage><ScanImportPage /></LazyPage></ProtectedRoute>} />
+            <Route path="/assets" element={<ProtectedRoute featureKey="assets"><LazyPage><AssetsPage /></LazyPage></ProtectedRoute>} />
+            <Route path="/security-incidents" element={<ProtectedRoute minRole="admin" featureKey="security-incidents"><LazyPage><SecurityIncidentsPage /></LazyPage></ProtectedRoute>} />
 
-          {/* Tools */}
-          <Route path="/ai-writer" element={<LazyPage><AIWriterPage /></LazyPage>} />
-          <Route path="/import" element={<ProtectedRoute minRole="manager"><LazyPage><ImportPage /></LazyPage></ProtectedRoute>} />
+            {/* Tools */}
+            <Route path="/ai-writer" element={<ProtectedRoute featureKey="aiWriter"><LazyPage><AIWriterPage /></LazyPage></ProtectedRoute>} />
+            <Route path="/import" element={<ProtectedRoute minRole="manager" featureKey="import"><LazyPage><ImportPage /></LazyPage></ProtectedRoute>} />
 
-          {/* Administration */}
-          <Route path="/users" element={<ProtectedRoute minRole="admin"><LazyPage><UsersPage /></LazyPage></ProtectedRoute>} />
-          <Route path="/connectors" element={<ProtectedRoute minRole="admin"><LazyPage><ConnectorsPage /></LazyPage></ProtectedRoute>} />
-          <Route path="/servicenow" element={<ProtectedRoute minRole="manager"><LazyPage><ServiceNowPage /></LazyPage></ProtectedRoute>} />
-          <Route path="/portals" element={<ProtectedRoute minRole="admin"><LazyPage><AuditorPortalsPage /></LazyPage></ProtectedRoute>} />
-          <Route path="/portals/new" element={<ProtectedRoute minRole="admin"><LazyPage><PortalBuilderPage /></LazyPage></ProtectedRoute>} />
-          <Route path="/portals/:id/edit" element={<ProtectedRoute minRole="admin"><LazyPage><PortalBuilderPage /></LazyPage></ProtectedRoute>} />
-          <Route path="/portals/:id/activity" element={<ProtectedRoute minRole="admin"><LazyPage><PortalActivityPage /></LazyPage></ProtectedRoute>} />
-          <Route path="/audit-log" element={<ProtectedRoute minRole="admin"><LazyPage><AuditLogPage /></LazyPage></ProtectedRoute>} />
-          <Route path="/settings" element={<LazyPage><SettingsPage /></LazyPage>} />
-          <Route path="/legal" element={<LazyPage><LegalPage /></LazyPage>} />
+            {/* Administration */}
+            <Route path="/users" element={<ProtectedRoute minRole="admin" featureKey="users"><LazyPage><UsersPage /></LazyPage></ProtectedRoute>} />
+            <Route path="/connectors" element={<ProtectedRoute minRole="admin" featureKey="connectors"><LazyPage><ConnectorsPage /></LazyPage></ProtectedRoute>} />
+            <Route path="/servicenow" element={<ProtectedRoute minRole="manager" featureKey="servicenow"><LazyPage><ServiceNowPage /></LazyPage></ProtectedRoute>} />
+            <Route path="/portals" element={<ProtectedRoute minRole="admin" featureKey="portals"><LazyPage><AuditorPortalsPage /></LazyPage></ProtectedRoute>} />
+            <Route path="/portals/new" element={<ProtectedRoute minRole="admin" featureKey="portals"><LazyPage><PortalBuilderPage /></LazyPage></ProtectedRoute>} />
+            <Route path="/portals/:id/edit" element={<ProtectedRoute minRole="admin" featureKey="portals"><LazyPage><PortalBuilderPage /></LazyPage></ProtectedRoute>} />
+            <Route path="/portals/:id/activity" element={<ProtectedRoute minRole="admin" featureKey="portals"><LazyPage><PortalActivityPage /></LazyPage></ProtectedRoute>} />
+            <Route path="/audit-log" element={<ProtectedRoute minRole="admin" featureKey="auditLog"><LazyPage><AuditLogPage /></LazyPage></ProtectedRoute>} />
+            <Route path="/settings" element={<LazyPage><SettingsPage /></LazyPage>} />
+            <Route path="/legal" element={<LazyPage><LegalPage /></LazyPage>} />
 
-          {/* Public routes also accessible when logged in */}
-          <Route path="/verify/:code" element={<BadgeVerifyPage />} />
-          <Route path="/q/:token" element={<LazyPage><PublicQuestionnairePage /></LazyPage>} />
-          <Route path="/portal/:token" element={<LazyPage><PublicPortalPage /></LazyPage>} />
+            {/* Public routes also accessible when logged in */}
+            <Route path="/verify/:code" element={<BadgeVerifyPage />} />
+            <Route path="/q/:token" element={<LazyPage><PublicQuestionnairePage /></LazyPage>} />
+            <Route path="/portal/:token" element={<LazyPage><PublicPortalPage /></LazyPage>} />
 
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </Layout>
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </Layout>
+      </FeatureFlagProvider>
     </ExperienceProvider>
   );
 }

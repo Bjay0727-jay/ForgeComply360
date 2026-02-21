@@ -8,12 +8,14 @@ import { SkeletonCard } from '../components/Skeleton';
 import { useToast } from '../components/Toast';
 import { PasswordStrengthMeter } from '../components/PasswordStrengthMeter';
 import { TYPOGRAPHY, FORMS, MODALS, BUTTONS, CARDS } from '../utils/typography';
+import { useFeatureFlags, FEATURE_REGISTRY, CATEGORY_LABELS } from '../hooks/useFeatureFlags';
 import { Link } from 'react-router-dom';
 
 export function SettingsPage() {
   const { user, org, refreshUser, isAdmin, canManage } = useAuth();
   const { addToast } = useToast();
   const { config, isFederal, isHealthcare, isEnterprise } = useExperience();
+  const { flags: featureFlags, refresh: refreshFeatureFlags } = useFeatureFlags();
   const [frameworks, setFrameworks] = useState<any[]>([]);
   const [enabledFrameworks, setEnabledFrameworks] = useState<any[]>([]);
   const [subscription, setSubscription] = useState<any>(null);
@@ -47,7 +49,7 @@ export function SettingsPage() {
   const [pwError, setPwError] = useState('');
 
   // Tab state
-  const [activeTab, setActiveTab] = useState<'profile' | 'notifications' | 'compliance' | 'frameworks' | 'security' | 'integrations' | 'legal'>('profile');
+  const [activeTab, setActiveTab] = useState<'profile' | 'notifications' | 'compliance' | 'frameworks' | 'security' | 'integrations' | 'features' | 'legal'>('profile');
 
   // Security settings (admin+)
   const [sessionTimeout, setSessionTimeout] = useState(30);
@@ -375,6 +377,7 @@ export function SettingsPage() {
     ...(isAdmin ? [{ key: 'security' as const, label: 'Security' }] : []),
     ...(isAdmin ? [{ key: 'compliance' as const, label: 'Compliance' }] : []),
     ...(isAdmin ? [{ key: 'integrations' as const, label: 'Integrations' }] : []),
+    ...(isAdmin ? [{ key: 'features' as const, label: 'Features' }] : []),
     { key: 'frameworks' as const, label: 'Frameworks' },
     { key: 'legal' as const, label: 'Legal' },
   ];
@@ -927,6 +930,83 @@ export function SettingsPage() {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Features Tab (Admin Only) */}
+      {activeTab === 'features' && isAdmin && (
+        <div className="space-y-6" role="tabpanel">
+          <div className={`${CARDS.elevated} p-6`}>
+            <div className="flex items-center gap-3 mb-2">
+              <div className="p-2 bg-purple-100 dark:bg-purple-900/30 rounded-lg">
+                <svg className="w-6 h-6 text-purple-600 dark:text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                </svg>
+              </div>
+              <div>
+                <h2 className={TYPOGRAPHY.sectionTitle}>Feature Management</h2>
+                <p className={TYPOGRAPHY.bodySmallMuted}>Enable or disable features for your organization. Disabled features are hidden from navigation and inaccessible.</p>
+              </div>
+            </div>
+          </div>
+
+          {Object.entries(CATEGORY_LABELS).map(([catKey, catLabel]) => {
+            const catFeatures = FEATURE_REGISTRY.filter((f) => f.category === catKey);
+            if (catFeatures.length === 0) return null;
+            return (
+              <div key={catKey} className={`${CARDS.elevated} overflow-hidden`}>
+                <div className="px-6 py-3 bg-gray-50 dark:bg-gray-800/50 border-b border-gray-200 dark:border-gray-700">
+                  <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">{catLabel}</h3>
+                </div>
+                <div className="divide-y divide-gray-100 dark:divide-gray-700">
+                  {catFeatures.map((feature) => {
+                    const isEnabled = feature.core || featureFlags[feature.key] !== false;
+                    return (
+                      <div key={feature.key} className="px-6 py-4 flex items-center justify-between gap-4">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <p className="text-sm font-medium text-gray-900 dark:text-white">{feature.label}</p>
+                            {feature.core && (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 font-medium">CORE</span>
+                            )}
+                          </div>
+                          <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{feature.description}</p>
+                        </div>
+                        <button
+                          onClick={async () => {
+                            if (feature.core) return;
+                            try {
+                              await api('/api/v1/feature-flags', {
+                                method: 'PUT',
+                                body: JSON.stringify({ flags: { [feature.key]: !isEnabled } }),
+                              });
+                              await refreshFeatureFlags();
+                              addToast({ type: 'success', title: `${feature.label} ${isEnabled ? 'disabled' : 'enabled'}` });
+                            } catch {
+                              addToast({ type: 'error', title: 'Failed to update feature' });
+                            }
+                          }}
+                          disabled={feature.core}
+                          className={`relative inline-flex h-6 w-11 flex-shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
+                            feature.core ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'
+                          } ${isEnabled ? 'bg-blue-600' : 'bg-gray-200 dark:bg-gray-600'}`}
+                          role="switch"
+                          aria-checked={isEnabled}
+                          aria-label={`Toggle ${feature.label}`}
+                        >
+                          <span
+                            className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                              isEnabled ? 'translate-x-5' : 'translate-x-0'
+                            }`}
+                          />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 

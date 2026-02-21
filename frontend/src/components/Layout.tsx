@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { useExperience } from '../hooks/useExperience';
+import { useFeatureFlags } from '../hooks/useFeatureFlags';
 import { useNotificationCount } from '../hooks/useNotificationCount';
 import { useApprovalCount } from '../hooks/useApprovalCount';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
@@ -152,6 +153,7 @@ function getBestMatchingPath(pathname: string): string | null {
 export function Layout({ children }: { children: React.ReactNode }) {
   const { user, org, logout } = useAuth();
   const { config, isFederal, isHealthcare } = useExperience();
+  const { isFeatureEnabled } = useFeatureFlags();
   const { count: unreadCount } = useNotificationCount();
   const { count: pendingApprovals } = useApprovalCount();
   const { isDark, setTheme, theme } = useTheme();
@@ -204,6 +206,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const visibleGroups = NAV_GROUPS.map(group => ({
     ...group,
     items: group.items.filter(item => {
+      // Feature flag check
+      if (!isFeatureEnabled(item.key)) return false;
+      // Role check
       if (!item.minRole) return true;
       return userRoleLevel >= (ROLE_HIERARCHY[item.minRole] ?? 99);
     }),
