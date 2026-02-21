@@ -285,6 +285,14 @@ async function handleRequest(request, env, url, ctx) {
   if (path === '/api/v1/auth/mfa/backup-codes' && method === 'POST') return handleMFARegenerateBackupCodes(request, env, user);
   if (path === '/api/v1/auth/reporter-token' && method === 'POST') return handleGenerateReporterTokenGeneric(request, env, org, user);
 
+  // Feature Flags
+  if (path === '/api/v1/feature-flags' && method === 'GET') return handleGetFeatureFlags(env, org);
+  if (path === '/api/v1/feature-flags' && method === 'PUT') return handleUpdateFeatureFlags(request, env, org, user);
+
+  // Feature flag enforcement - block API calls to disabled features
+  const featureCheck = checkFeatureFlag(path, org);
+  if (featureCheck) return jsonResponse({ error: 'Feature disabled', feature: featureCheck }, 403);
+
   // Experience Layer
   if (path === '/api/v1/experience' && method === 'GET') return handleGetExperience(env, org);
   if (path === '/api/v1/experience' && method === 'PUT') return handleUpdateExperience(request, env, org, user);
@@ -12270,6 +12278,109 @@ async function handleInheritanceMap(env, org, url) {
   };
 
   return jsonResponse({ nodes, edges, summary });
+}
+
+// ============================================================================
+// FEATURE FLAGS
+// ============================================================================
+
+const VALID_FEATURE_KEYS = [
+  'calendar', 'systems', 'controls', 'assessment', 'questionnaires', 'crosswalks', 'systemComparison',
+  'poams', 'evidence', 'evidenceSchedules', 'evidenceAutomation', 'approvals',
+  'ssp', 'policies', 'auditPrep', 'reports', 'analytics',
+  'risks', 'monitoring', 'vendors', 'scans', 'assets', 'security-incidents',
+  'aiWriter', 'import',
+  'users', 'connectors', 'servicenow', 'portals', 'auditLog',
+];
+
+const CORE_FEATURES = ['dashboard', 'settings', 'notifications'];
+
+// Map API path prefixes to feature keys for enforcement
+const FEATURE_ROUTE_MAP = {
+  '/api/v1/calendar': 'calendar',
+  '/api/v1/questionnaires': 'questionnaires',
+  '/api/v1/crosswalks': 'crosswalks',
+  '/api/v1/poams': 'poams',
+  '/api/v1/evidence/schedules': 'evidenceSchedules',
+  '/api/v1/evidence/automation': 'evidenceAutomation',
+  '/api/v1/evidence/tests': 'evidenceAutomation',
+  '/api/v1/approvals': 'approvals',
+  '/api/v1/ssp': 'ssp',
+  '/api/v1/policies': 'policies',
+  '/api/v1/reports': 'reports',
+  '/api/v1/analytics': 'analytics',
+  '/api/v1/risks': 'risks',
+  '/api/v1/monitoring': 'monitoring',
+  '/api/v1/vendors': 'vendors',
+  '/api/v1/scans': 'scans',
+  '/api/v1/assets': 'assets',
+  '/api/v1/incidents': 'security-incidents',
+  '/api/v1/ai-writer': 'aiWriter',
+  '/api/v1/import': 'import',
+  '/api/v1/users': 'users',
+  '/api/v1/connectors': 'connectors',
+  '/api/v1/servicenow': 'servicenow',
+  '/api/v1/portals': 'portals',
+  '/api/v1/audit-log': 'auditLog',
+};
+
+function getOrgFeatureFlags(org) {
+  try {
+    const meta = typeof org.settings === 'string' ? JSON.parse(org.settings) : (org.settings || {});
+    return meta.feature_flags || {};
+  } catch {
+    return {};
+  }
+}
+
+function checkFeatureFlag(path, org) {
+  const flags = getOrgFeatureFlags(org);
+  // Check longest prefix first for specificity
+  const prefixes = Object.keys(FEATURE_ROUTE_MAP).sort((a, b) => b.length - a.length);
+  for (const prefix of prefixes) {
+    if (path.startsWith(prefix)) {
+      const featureKey = FEATURE_ROUTE_MAP[prefix];
+      if (flags[featureKey] === false) return featureKey;
+      return null;
+    }
+  }
+  return null;
+}
+
+function handleGetFeatureFlags(env, org) {
+  return jsonResponse({ flags: getOrgFeatureFlags(org) });
+}
+
+async function handleUpdateFeatureFlags(request, env, org, user) {
+  if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  const body = await request.json();
+  if (!body.flags || typeof body.flags !== 'object') {
+    return jsonResponse({ error: 'flags object is required' }, 400);
+  }
+
+  // Validate keys and prevent disabling core features
+  for (const [key, value] of Object.entries(body.flags)) {
+    if (CORE_FEATURES.includes(key)) {
+      return jsonResponse({ error: `Cannot disable core feature: ${key}` }, 400);
+    }
+    if (!VALID_FEATURE_KEYS.includes(key) && !CORE_FEATURES.includes(key)) {
+      return jsonResponse({ error: `Unknown feature key: ${key}` }, 400);
+    }
+    if (typeof value !== 'boolean') {
+      return jsonResponse({ error: `Feature flag value must be boolean for: ${key}` }, 400);
+    }
+  }
+
+  const meta = typeof org.settings === 'string' ? JSON.parse(org.settings) : (org.settings || {});
+  meta.feature_flags = { ...(meta.feature_flags || {}), ...body.flags };
+
+  await env.DB.prepare('UPDATE organizations SET settings = ?, updated_at = datetime(\'now\') WHERE id = ?')
+    .bind(JSON.stringify(meta), org.id).run();
+
+  await auditLog(env, org.id, user.id, 'update_feature_flags', 'organization', org.id, { flags: body.flags });
+
+  return jsonResponse({ flags: meta.feature_flags });
 }
 
 // ============================================================================
