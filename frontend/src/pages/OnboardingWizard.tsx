@@ -16,6 +16,9 @@ const FRAMEWORKS = [
   { id: 'iso-27001', name: 'ISO 27001:2022', category: 'Commercial', description: 'Information security management (114 controls)' },
   { id: 'pci-dss-v4', name: 'PCI DSS v4.0.1', category: 'Commercial', description: 'Payment card security (264 controls)' },
   { id: 'nist-csf-2', name: 'NIST CSF 2.0', category: 'Commercial', description: 'Cybersecurity framework' },
+  { id: 'ffiec-it', name: 'FFIEC IT Handbook', category: 'Financial', description: 'Bank examination handbook (90 controls)' },
+  { id: 'csa-ccm-v4', name: 'CSA CCM v4', category: 'Cloud', description: 'Cloud security controls (197 controls)' },
+  { id: 'nerc-cip', name: 'NERC CIP', category: 'Critical Infrastructure', description: 'Bulk electric system protection (47 controls)' },
 ];
 
 const STEPS = ['Welcome', 'Organization', 'Framework', 'System', 'Complete'];
