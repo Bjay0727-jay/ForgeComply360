@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { useAuth } from '../hooks/useAuth';
 import { api } from '../utils/api';
 import { PageHeader } from '../components/PageHeader';
 import { useToast } from '../components/Toast';
@@ -77,7 +76,6 @@ const TYPE_LABELS: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 export function SecurityIncidentsPage() {
-  const { token } = useAuth();
   const { addToast } = useToast();
 
   // Data
@@ -111,7 +109,7 @@ export function SecurityIncidentsPage() {
       setIncidents(data.incidents);
       setTotal(data.total);
     } catch {
-      addToast('Failed to load incidents', 'error');
+      addToast({ title: 'Failed to load incidents', type: 'error' });
     }
   }, [page, filterStatus, filterSeverity, filterType, addToast]);
 
@@ -127,7 +125,7 @@ export function SecurityIncidentsPage() {
       const data = await api(`/api/v1/incidents/${id}`);
       setDetail(data.incident);
     } catch {
-      addToast('Failed to load incident details', 'error');
+      addToast({ title: 'Failed to load incident details', type: 'error' });
     }
   }, [addToast]);
 
@@ -144,9 +142,9 @@ export function SecurityIncidentsPage() {
       const data = await api(`/api/v1/incidents/${id}`, { method: 'PUT', body: JSON.stringify({ status: newStatus }) });
       setDetail(data.incident);
       await Promise.all([fetchIncidents(), fetchStats()]);
-      addToast(`Status updated to ${newStatus}`, 'success');
+      addToast({ title: `Status updated to ${newStatus}`, type: 'success' });
     } catch {
-      addToast('Failed to update status', 'error');
+      addToast({ title: 'Failed to update status', type: 'error' });
     } finally {
       setSubmitting(false);
     }
@@ -159,9 +157,9 @@ export function SecurityIncidentsPage() {
       await api(`/api/v1/incidents/${id}/notes`, { method: 'POST', body: JSON.stringify({ text: noteText }) });
       setNoteText('');
       await fetchDetail(id);
-      addToast('Note added', 'success');
+      addToast({ title: 'Note added', type: 'success' });
     } catch {
-      addToast('Failed to add note', 'error');
+      addToast({ title: 'Failed to add note', type: 'error' });
     } finally {
       setSubmitting(false);
     }
@@ -172,9 +170,9 @@ export function SecurityIncidentsPage() {
     try {
       await api(`/api/v1/incidents/${id}/dir-notify`, { method: 'POST' });
       await Promise.all([fetchDetail(id), fetchStats()]);
-      addToast('DIR notification recorded', 'success');
+      addToast({ title: 'DIR notification recorded', type: 'success' });
     } catch (e: any) {
-      addToast(e?.message || 'Failed to mark DIR notified', 'error');
+      addToast({ title: e?.message || 'Failed to mark DIR notified', type: 'error' });
     } finally {
       setSubmitting(false);
     }
@@ -184,7 +182,7 @@ export function SecurityIncidentsPage() {
     try {
       const data = await api('/api/v1/incidents/export');
       const rows = data.incidents as Record<string, unknown>[];
-      if (!rows.length) { addToast('No incidents to export', 'info'); return; }
+      if (!rows.length) { addToast({ title: 'No incidents to export', type: 'info' }); return; }
       const headers = Object.keys(rows[0]);
       const csv = [
         headers.join(','),
@@ -198,7 +196,7 @@ export function SecurityIncidentsPage() {
       a.click();
       URL.revokeObjectURL(url);
     } catch {
-      addToast('Failed to export incidents', 'error');
+      addToast({ title: 'Failed to export incidents', type: 'error' });
     }
   };
 
