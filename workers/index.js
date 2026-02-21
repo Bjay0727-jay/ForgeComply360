@@ -664,6 +664,7 @@ async function handleRequest(request, env, url, ctx) {
   if (path === '/api/v1/evidence/tests' && method === 'GET') return handleListEvidenceTests(env, org, user);
   if (path === '/api/v1/evidence/tests' && method === 'POST') return handleCreateEvidenceTest(request, env, org, user);
   if (path === '/api/v1/evidence/automation/stats' && method === 'GET') return handleAutomationStats(env, org, user);
+  if (path === '/api/v1/evidence/tests/bulk-run' && method === 'POST') return handleBulkRunEvidenceTests(request, env, org, user);
   if (path.match(/^\/api\/v1\/evidence\/tests\/[\w-]+$/) && method === 'GET') return handleGetEvidenceTest(env, org, user, path.split('/')[4]);
   if (path.match(/^\/api\/v1\/evidence\/tests\/[\w-]+$/) && method === 'PUT') return handleUpdateEvidenceTest(request, env, org, user, path.split('/')[4]);
   if (path.match(/^\/api\/v1\/evidence\/tests\/[\w-]+$/) && method === 'DELETE') return handleDeleteEvidenceTest(env, org, user, path.split('/')[4]);
@@ -14797,6 +14798,45 @@ async function handleAutomationStats(env, org, user) {
       failed_tests: failedTests?.count || 0,
     }
   });
+}
+
+async function handleBulkRunEvidenceTests(request, env, org, user) {
+  if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  const body = await request.json().catch(() => ({}));
+  const filter = body.filter || 'all'; // 'all', 'failed', or 'enabled'
+  const testIds = body.test_ids || null; // optional explicit list
+
+  let tests;
+  if (testIds && Array.isArray(testIds) && testIds.length > 0) {
+    const placeholders = testIds.map(() => '?').join(',');
+    tests = (await env.DB.prepare(
+      `SELECT id FROM evidence_tests WHERE org_id = ? AND enabled = 1 AND id IN (${placeholders})`
+    ).bind(org.id, ...testIds).all()).results;
+  } else if (filter === 'failed') {
+    tests = (await env.DB.prepare(
+      "SELECT id FROM evidence_tests WHERE org_id = ? AND enabled = 1 AND last_status = 'fail'"
+    ).bind(org.id).all()).results;
+  } else {
+    tests = (await env.DB.prepare(
+      'SELECT id FROM evidence_tests WHERE org_id = ? AND enabled = 1'
+    ).bind(org.id).all()).results;
+  }
+
+  const results = [];
+  for (const test of tests) {
+    try {
+      const res = await handleRunEvidenceTest(env, org, user, test.id);
+      const resBody = await res.json();
+      results.push({ test_id: test.id, status: resBody.result?.status || 'error' });
+    } catch (e) {
+      results.push({ test_id: test.id, status: 'error', error: e.message });
+    }
+  }
+
+  await auditLog(env, org.id, user.id, 'bulk_run_evidence_tests', 'evidence_tests', null, { filter, count: tests.length });
+
+  return jsonResponse({ ran: results.length, results });
 }
 
 // ============================================================================

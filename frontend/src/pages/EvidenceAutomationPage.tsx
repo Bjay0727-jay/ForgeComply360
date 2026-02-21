@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { useExperience } from '../hooks/useExperience';
 import { useAuth } from '../hooks/useAuth';
@@ -25,6 +25,27 @@ interface EvidenceTest {
 
 type TabFilter = 'all' | 'passing' | 'failing' | 'disabled';
 
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function timeAgo(dateStr: string | null): string {
+  if (!dateStr) return 'Never';
+  const seconds = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
+  if (seconds < 60) return 'just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return new Date(dateStr).toLocaleDateString();
+}
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
+
 export function EvidenceAutomationPage() {
   const { nav } = useExperience();
   const { canEdit } = useAuth();
@@ -37,10 +58,18 @@ export function EvidenceAutomationPage() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [runningTests, setRunningTests] = useState<Set<string>>(new Set());
 
+  // Search & filters
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterSchedule, setFilterSchedule] = useState('');
+  const [filterSystem, setFilterSystem] = useState('');
+
+  // Bulk run
+  const [bulkRunning, setBulkRunning] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState<{ ran: number; total: number } | null>(null);
+
   const loadData = async () => {
     try {
       const [statsData, testsData] = await Promise.all([
-        // Use validatedApi for stats to ensure pass_rate_24h always has a default value
         validatedApi('/api/v1/evidence/automation/stats', AutomationStatsSchema),
         api('/api/v1/evidence/tests'),
       ]);
@@ -55,6 +84,15 @@ export function EvidenceAutomationPage() {
 
   useEffect(() => { loadData(); }, []);
 
+  // Unique systems for filter dropdown
+  const uniqueSystems = useMemo(() => {
+    const map = new Map<string, string>();
+    tests.forEach((t) => map.set(t.system_id, t.system_name));
+    return Array.from(map.entries()).sort((a, b) => a[1].localeCompare(b[1]));
+  }, [tests]);
+
+  // ---------- Actions ----------
+
   const handleRunTest = async (testId: string) => {
     setRunningTests((prev) => new Set(prev).add(testId));
     try {
@@ -65,6 +103,35 @@ export function EvidenceAutomationPage() {
       addToast({ type: 'error', title: 'Failed to run test' });
     } finally {
       setRunningTests((prev) => { const n = new Set(prev); n.delete(testId); return n; });
+    }
+  };
+
+  const handleBulkRun = async (filter: 'all' | 'failed') => {
+    const enabledCount = tests.filter((t) => t.enabled && (filter === 'all' || t.status === 'failed')).length;
+    if (enabledCount === 0) {
+      addToast({ type: 'info', title: filter === 'failed' ? 'No failed tests to retry' : 'No enabled tests to run' });
+      return;
+    }
+    setBulkRunning(true);
+    setBulkProgress({ ran: 0, total: enabledCount });
+    try {
+      const data = await api('/api/v1/evidence/tests/bulk-run', {
+        method: 'POST',
+        body: JSON.stringify({ filter }),
+      });
+      const passed = (data.results || []).filter((r: { status: string }) => r.status === 'pass').length;
+      const failed = (data.results || []).filter((r: { status: string }) => r.status !== 'pass').length;
+      setBulkProgress({ ran: data.ran, total: enabledCount });
+      addToast({
+        type: failed > 0 ? 'warning' : 'success',
+        title: `Bulk run complete: ${passed} passed, ${failed} failed`,
+      });
+      loadData();
+    } catch {
+      addToast({ type: 'error', title: 'Bulk run failed' });
+    } finally {
+      setBulkRunning(false);
+      setTimeout(() => setBulkProgress(null), 3000);
     }
   };
 
@@ -92,12 +159,35 @@ export function EvidenceAutomationPage() {
     }
   };
 
-  const filteredTests = tests.filter((t) => {
-    if (activeTab === 'passing') return t.status === 'passed' && t.enabled;
-    if (activeTab === 'failing') return t.status === 'failed' && t.enabled;
-    if (activeTab === 'disabled') return !t.enabled;
-    return true;
-  });
+  // ---------- Filtering ----------
+
+  const filteredTests = useMemo(() => {
+    let result = tests;
+
+    // Tab filter
+    if (activeTab === 'passing') result = result.filter((t) => t.status === 'passed' && t.enabled);
+    else if (activeTab === 'failing') result = result.filter((t) => t.status === 'failed' && t.enabled);
+    else if (activeTab === 'disabled') result = result.filter((t) => !t.enabled);
+
+    // Search
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      result = result.filter((t) =>
+        t.name.toLowerCase().includes(q) ||
+        t.system_name.toLowerCase().includes(q) ||
+        t.control_id.toLowerCase().includes(q) ||
+        (t.description || '').toLowerCase().includes(q)
+      );
+    }
+
+    // Schedule filter
+    if (filterSchedule) result = result.filter((t) => t.schedule === filterSchedule);
+
+    // System filter
+    if (filterSystem) result = result.filter((t) => t.system_id === filterSystem);
+
+    return result;
+  }, [tests, activeTab, searchQuery, filterSchedule, filterSystem]);
 
   const tabs: { key: TabFilter; label: string; count: number }[] = [
     { key: 'all', label: 'All Tests', count: tests.length },
@@ -118,6 +208,9 @@ export function EvidenceAutomationPage() {
     failed: 'bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300',
     pending: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/50 dark:text-yellow-300',
   };
+
+  const hasActiveFilters = searchQuery || filterSchedule || filterSystem;
+  const failedCount = tests.filter((t) => t.status === 'failed' && t.enabled).length;
 
   if (loading) {
     return (
@@ -150,10 +243,29 @@ export function EvidenceAutomationPage() {
           <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-5">
             <p className="text-sm text-gray-500 dark:text-gray-400">Total Tests</p>
             <p className="text-2xl font-bold text-gray-900 dark:text-white mt-1">{stats.total_tests ?? 0}</p>
+            <div className="flex gap-1.5 mt-2">
+              <span className="text-xs text-green-600 dark:text-green-400">{tests.filter((t) => t.enabled).length} enabled</span>
+              <span className="text-xs text-gray-400">/</span>
+              <span className="text-xs text-gray-500">{tests.filter((t) => !t.enabled).length} disabled</span>
+            </div>
           </div>
           <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-5">
             <p className="text-sm text-gray-500 dark:text-gray-400">Pass Rate (24h)</p>
-            <p className="text-2xl font-bold text-green-600 dark:text-green-400 mt-1">{(stats.pass_rate_24h ?? 0).toFixed(1)}%</p>
+            <p className={`text-2xl font-bold mt-1 ${
+              (stats.pass_rate_24h ?? 0) >= 90 ? 'text-green-600 dark:text-green-400' :
+              (stats.pass_rate_24h ?? 0) >= 70 ? 'text-yellow-600 dark:text-yellow-400' :
+              'text-red-600 dark:text-red-400'
+            }`}>{(stats.pass_rate_24h ?? 0).toFixed(1)}%</p>
+            <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-1.5 mt-2">
+              <div
+                className={`h-1.5 rounded-full transition-all ${
+                  (stats.pass_rate_24h ?? 0) >= 90 ? 'bg-green-500' :
+                  (stats.pass_rate_24h ?? 0) >= 70 ? 'bg-yellow-500' :
+                  'bg-red-500'
+                }`}
+                style={{ width: `${Math.min(stats.pass_rate_24h ?? 0, 100)}%` }}
+              />
+            </div>
           </div>
           <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-5">
             <p className="text-sm text-gray-500 dark:text-gray-400">Tests Run Today</p>
@@ -162,25 +274,129 @@ export function EvidenceAutomationPage() {
           <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-5">
             <p className="text-sm text-gray-500 dark:text-gray-400">Failed Tests</p>
             <p className="text-2xl font-bold text-red-600 dark:text-red-400 mt-1">{stats.failed_tests ?? 0}</p>
+            {(stats.failed_tests ?? 0) > 0 && (
+              <button
+                onClick={() => handleBulkRun('failed')}
+                disabled={bulkRunning}
+                className="text-xs text-red-600 hover:text-red-800 dark:text-red-400 dark:hover:text-red-300 font-medium mt-2 disabled:opacity-50"
+              >
+                Retry all failed
+              </button>
+            )}
           </div>
         </div>
       )}
 
-      {/* Tabs */}
-      <div className="flex gap-2 mb-4 border-b border-gray-200 dark:border-gray-700">
-        {tabs.map((tab) => (
-          <button
-            key={tab.key}
-            onClick={() => setActiveTab(tab.key)}
-            className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
-              activeTab === tab.key
-                ? 'border-blue-600 text-blue-600 dark:text-blue-400'
-                : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'
-            }`}
+      {/* Bulk Run Progress */}
+      {bulkProgress && (
+        <div className="mb-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg px-4 py-3 flex items-center gap-3">
+          {bulkRunning && (
+            <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+          )}
+          <div className="flex-1">
+            <p className="text-sm font-medium text-blue-800 dark:text-blue-300">
+              {bulkRunning ? 'Running tests...' : 'Bulk run complete'}
+            </p>
+            <div className="w-full bg-blue-200 dark:bg-blue-800 rounded-full h-1.5 mt-1.5">
+              <div
+                className="h-1.5 rounded-full bg-blue-600 transition-all"
+                style={{ width: `${bulkProgress.total ? (bulkProgress.ran / bulkProgress.total) * 100 : 0}%` }}
+              />
+            </div>
+          </div>
+          <span className="text-xs text-blue-600 dark:text-blue-400 font-medium">
+            {bulkProgress.ran}/{bulkProgress.total}
+          </span>
+        </div>
+      )}
+
+      {/* Toolbar: Tabs + Search + Filters + Bulk Actions */}
+      <div className="flex flex-col gap-3 mb-4">
+        <div className="flex items-center justify-between gap-3 border-b border-gray-200 dark:border-gray-700">
+          <div className="flex gap-2">
+            {tabs.map((tab) => (
+              <button
+                key={tab.key}
+                onClick={() => setActiveTab(tab.key)}
+                className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+                  activeTab === tab.key
+                    ? 'border-blue-600 text-blue-600 dark:text-blue-400'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'
+                }`}
+              >
+                {tab.label} <span className="ml-1 text-xs bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded">{tab.count}</span>
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-2 pb-1">
+            <button
+              onClick={() => handleBulkRun('all')}
+              disabled={bulkRunning || tests.filter((t) => t.enabled).length === 0}
+              className="text-xs px-3 py-1.5 rounded-md font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5 transition-colors"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+              Run All
+            </button>
+            {failedCount > 0 && (
+              <button
+                onClick={() => handleBulkRun('failed')}
+                disabled={bulkRunning}
+                className="text-xs px-3 py-1.5 rounded-md font-medium bg-red-50 text-red-700 hover:bg-red-100 dark:bg-red-900/30 dark:text-red-300 dark:hover:bg-red-900/50 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5 transition-colors"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                Retry Failed ({failedCount})
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Search + Filters row */}
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="relative flex-1 min-w-[200px] max-w-sm">
+            <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search tests by name, system, or control..."
+              className="w-full pl-9 pr-3 py-1.5 text-sm border border-gray-200 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            />
+          </div>
+          <select
+            value={filterSchedule}
+            onChange={(e) => setFilterSchedule(e.target.value)}
+            className="text-sm border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-1.5 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300"
           >
-            {tab.label} <span className="ml-1 text-xs bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded">{tab.count}</span>
-          </button>
-        ))}
+            <option value="">All Schedules</option>
+            <option value="daily">Daily</option>
+            <option value="weekly">Weekly</option>
+            <option value="monthly">Monthly</option>
+            <option value="manual">Manual</option>
+          </select>
+          {uniqueSystems.length > 1 && (
+            <select
+              value={filterSystem}
+              onChange={(e) => setFilterSystem(e.target.value)}
+              className="text-sm border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-1.5 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300"
+            >
+              <option value="">All Systems</option>
+              {uniqueSystems.map(([id, name]) => (
+                <option key={id} value={id}>{name}</option>
+              ))}
+            </select>
+          )}
+          {hasActiveFilters && (
+            <button
+              onClick={() => { setSearchQuery(''); setFilterSchedule(''); setFilterSystem(''); }}
+              className="text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 underline"
+            >
+              Clear filters
+            </button>
+          )}
+          <span className="ml-auto text-xs text-gray-500 dark:text-gray-400">
+            {filteredTests.length} of {tests.length} test{tests.length !== 1 ? 's' : ''}
+          </span>
+        </div>
       </div>
 
       {/* Test List */}
@@ -189,7 +405,17 @@ export function EvidenceAutomationPage() {
           <svg className="w-12 h-12 mx-auto text-gray-300 dark:text-gray-600 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
           </svg>
-          <p className="text-gray-500 dark:text-gray-400">No tests found in this category</p>
+          <p className="text-gray-500 dark:text-gray-400">
+            {hasActiveFilters ? 'No tests match your filters' : 'No tests found in this category'}
+          </p>
+          {hasActiveFilters && (
+            <button
+              onClick={() => { setSearchQuery(''); setFilterSchedule(''); setFilterSystem(''); }}
+              className="mt-2 text-sm text-blue-600 hover:text-blue-800 dark:text-blue-400"
+            >
+              Clear all filters
+            </button>
+          )}
         </div>
       ) : (
         <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
@@ -221,8 +447,8 @@ export function EvidenceAutomationPage() {
                       {test.schedule}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-gray-500 dark:text-gray-400 text-xs">
-                    {test.last_run ? new Date(test.last_run).toLocaleString() : 'Never'}
+                  <td className="px-4 py-3 text-gray-500 dark:text-gray-400 text-xs" title={test.last_run ? new Date(test.last_run).toLocaleString() : undefined}>
+                    {timeAgo(test.last_run)}
                   </td>
                   <td className="px-4 py-3">
                     <span className={`text-xs px-2 py-0.5 rounded font-medium capitalize ${statusColors[test.status]}`}>
@@ -243,9 +469,12 @@ export function EvidenceAutomationPage() {
                         Edit
                       </button>
                       <span className="text-gray-300 dark:text-gray-600">|</span>
-                      <button className="text-xs text-gray-600 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-300">
+                      <Link
+                        to={`/evidence/tests/${test.id}/results`}
+                        className="text-xs text-gray-600 hover:text-blue-600 dark:text-gray-400 dark:hover:text-blue-400"
+                      >
                         Results
-                      </button>
+                      </Link>
                       <span className="text-gray-300 dark:text-gray-600">|</span>
                       <button
                         onClick={() => handleToggleEnabled(test)}
