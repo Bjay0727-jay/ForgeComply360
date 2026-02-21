@@ -63,6 +63,7 @@ const AuditPrepPage = lazy(() => import('./pages/AuditPrepPage').then(m => ({ de
 const ApprovalsPage = lazy(() => import('./pages/ApprovalsPage').then(m => ({ default: m.ApprovalsPage })));        // 15K
 const PublicQuestionnairePage = lazy(() => import('./pages/PublicQuestionnairePage').then(m => ({ default: m.PublicQuestionnairePage }))); // 14K
 const ReportsPage = lazy(() => import('./pages/ReportsPage').then(m => ({ default: m.ReportsPage })));            // 13K
+const AnalyticsPage = lazy(() => import('./pages/AnalyticsPage').then(m => ({ default: m.AnalyticsPage })));      // 15K
 const AuditorPortalsPage = lazy(() => import('./pages/AuditorPortalsPage').then(m => ({ default: m.AuditorPortalsPage }))); // 13K
 const SystemsPage = lazy(() => import('./pages/SystemsPage').then(m => ({ default: m.SystemsPage })));            // 12K
 const EvidenceTestResultsPage = lazy(() => import('./pages/EvidenceTestResultsPage').then(m => ({ default: m.EvidenceTestResultsPage }))); // 12K
@@ -198,6 +199,7 @@ function AppRoutes() {
           <Route path="/policies" element={<LazyPage><PoliciesPage /></LazyPage>} />
           <Route path="/audit-prep" element={<ProtectedRoute minRole="analyst"><LazyPage><AuditPrepPage /></LazyPage></ProtectedRoute>} />
           <Route path="/reports" element={<ProtectedRoute minRole="manager"><LazyPage><ReportsPage /></LazyPage></ProtectedRoute>} />
+          <Route path="/analytics" element={<ProtectedRoute minRole="analyst"><LazyPage><AnalyticsPage /></LazyPage></ProtectedRoute>} />
 
           {/* Risk & Monitoring */}
           <Route path="/risks" element={<LazyPage><RisksPage /></LazyPage>} />
