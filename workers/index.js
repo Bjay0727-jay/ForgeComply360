@@ -511,6 +511,15 @@ async function handleRequest(request, env, url, ctx) {
   if (path === '/api/v1/alert-settings' && method === 'GET') return handleGetAlertSettings(env, org, user);
   if (path === '/api/v1/alert-settings' && method === 'PUT') return handleUpdateAlertSettings(request, env, org, user);
 
+  // Security Incidents
+  if (path === '/api/v1/incidents' && method === 'GET') return handleListIncidents(env, url, org, user);
+  if (path === '/api/v1/incidents/stats' && method === 'GET') return handleIncidentStats(env, org, user);
+  if (path === '/api/v1/incidents/export' && method === 'GET') return handleExportIncidents(env, org, user);
+  if (path.match(/^\/api\/v1\/incidents\/[\w]+\/notes$/) && method === 'POST') return handleAddIncidentNote(request, env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/incidents\/[\w]+\/dir-notify$/) && method === 'POST') return handleMarkDIRNotified(env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/incidents\/[\w]+$/) && method === 'GET') return handleGetIncident(env, org, user, path.split('/').pop());
+  if (path.match(/^\/api\/v1\/incidents\/[\w]+$/) && method === 'PUT') return handleUpdateIncident(request, env, org, user, path.split('/').pop());
+
   // Policies
   if (path === '/api/v1/policies' && method === 'GET') return handleListPolicies(env, url, org);
   if (path === '/api/v1/policies' && method === 'POST') return handleCreatePolicy(request, env, org, user);
@@ -8399,6 +8408,185 @@ async function handleAlertSummary(env, url, org, user) {
     console.error('[handleAlertSummary]', err.message);
     return jsonResponse({ error: 'Failed to load alert summary' }, 500);
   }
+}
+
+// ============================================================================
+// SECURITY INCIDENTS API (TAC-006 / NIST IR)
+// View, manage, and respond to automatically detected security incidents.
+// ============================================================================
+
+async function handleListIncidents(env, url, org, user) {
+  if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  const status = url.searchParams.get('status');
+  const severity = url.searchParams.get('severity');
+  const type = url.searchParams.get('type');
+  const page = parseInt(url.searchParams.get('page') || '1');
+  const limit = Math.min(parseInt(url.searchParams.get('limit') || '25'), 100);
+  const offset = (page - 1) * limit;
+
+  let where = 'WHERE si.org_id = ?';
+  const params = [org.id];
+  if (status) { where += ' AND si.status = ?'; params.push(status); }
+  if (severity) { where += ' AND si.severity = ?'; params.push(severity); }
+  if (type) { where += ' AND si.incident_type = ?'; params.push(type); }
+
+  const [countResult, { results }] = await Promise.all([
+    env.DB.prepare(`SELECT COUNT(*) as total FROM security_incidents si ${where}`).bind(...params).first(),
+    env.DB.prepare(
+      `SELECT si.*, u.name as affected_user_name, u.email as affected_user_email
+       FROM security_incidents si LEFT JOIN users u ON u.id = si.affected_user_id
+       ${where} ORDER BY si.detected_at DESC LIMIT ? OFFSET ?`
+    ).bind(...params, limit, offset).all(),
+  ]);
+
+  return jsonResponse({ incidents: results, total: countResult.total, page, limit });
+}
+
+async function handleIncidentStats(env, org, user) {
+  if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  const now = new Date().toISOString();
+  const [openCount, bySeverity, byType, dirPending, avgResolution] = await Promise.all([
+    env.DB.prepare("SELECT COUNT(*) as cnt FROM security_incidents WHERE org_id = ? AND status NOT IN ('resolved', 'closed')").bind(org.id).first(),
+    env.DB.prepare("SELECT severity, COUNT(*) as cnt FROM security_incidents WHERE org_id = ? AND status NOT IN ('resolved', 'closed') GROUP BY severity").bind(org.id).all(),
+    env.DB.prepare("SELECT incident_type, COUNT(*) as cnt FROM security_incidents WHERE org_id = ? AND status NOT IN ('resolved', 'closed') GROUP BY incident_type").bind(org.id).all(),
+    env.DB.prepare("SELECT COUNT(*) as cnt FROM security_incidents WHERE org_id = ? AND dir_notified = 0 AND dir_notification_deadline IS NOT NULL AND dir_notification_deadline > ? AND status NOT IN ('resolved', 'closed')").bind(org.id, now).first(),
+    env.DB.prepare("SELECT AVG(ROUND((julianday(resolved_at) - julianday(detected_at)) * 24, 1)) as avg_hours FROM security_incidents WHERE org_id = ? AND resolved_at IS NOT NULL").bind(org.id).first(),
+  ]);
+
+  const severityMap = {};
+  for (const r of bySeverity.results) severityMap[r.severity] = r.cnt;
+  const typeMap = {};
+  for (const r of byType.results) typeMap[r.incident_type] = r.cnt;
+
+  return jsonResponse({
+    stats: {
+      open: openCount.cnt,
+      by_severity: severityMap,
+      by_type: typeMap,
+      dir_pending: dirPending.cnt,
+      avg_resolution_hours: avgResolution.avg_hours || null,
+    },
+  });
+}
+
+async function handleExportIncidents(env, org, user) {
+  if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  const { results } = await env.DB.prepare(
+    `SELECT si.id, si.incident_type, si.severity, si.title, si.description, si.status,
+            si.detected_at, si.resolved_at, si.dir_notified, si.dir_notification_deadline,
+            si.source_ip, u.name as affected_user_name, u.email as affected_user_email
+     FROM security_incidents si LEFT JOIN users u ON u.id = si.affected_user_id
+     WHERE si.org_id = ? ORDER BY si.detected_at DESC`
+  ).bind(org.id).all();
+
+  return jsonResponse({ incidents: results });
+}
+
+async function handleGetIncident(env, org, user, id) {
+  if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  const incident = await env.DB.prepare(
+    `SELECT si.*, u.name as affected_user_name, u.email as affected_user_email
+     FROM security_incidents si LEFT JOIN users u ON u.id = si.affected_user_id
+     WHERE si.id = ? AND si.org_id = ?`
+  ).bind(id, org.id).first();
+  if (!incident) return jsonResponse({ error: 'Incident not found' }, 404);
+
+  try { incident.details = JSON.parse(incident.details || '{}'); } catch { incident.details = {}; }
+  return jsonResponse({ incident });
+}
+
+async function handleUpdateIncident(request, env, org, user, id) {
+  if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  const incident = await env.DB.prepare('SELECT * FROM security_incidents WHERE id = ? AND org_id = ?').bind(id, org.id).first();
+  if (!incident) return jsonResponse({ error: 'Incident not found' }, 404);
+
+  const { status, severity, description } = await request.json();
+  const validStatuses = ['open', 'investigating', 'contained', 'resolved', 'closed'];
+  const validSeverities = ['low', 'medium', 'high', 'critical'];
+
+  const updates = [];
+  const params = [];
+
+  if (status && validStatuses.includes(status)) {
+    updates.push('status = ?');
+    params.push(status);
+    if (status === 'resolved' && !incident.resolved_at) {
+      updates.push('resolved_at = ?');
+      params.push(new Date().toISOString());
+    }
+  }
+  if (severity && validSeverities.includes(severity)) {
+    updates.push('severity = ?');
+    params.push(severity);
+  }
+  if (description !== undefined) {
+    updates.push('description = ?');
+    params.push(description);
+  }
+
+  if (updates.length === 0) return jsonResponse({ error: 'No valid fields to update' }, 400);
+
+  updates.push("updated_at = datetime('now')");
+  await env.DB.prepare(`UPDATE security_incidents SET ${updates.join(', ')} WHERE id = ? AND org_id = ?`).bind(...params, id, org.id).run();
+  await auditLog(env, org.id, user.id, 'update', 'security_incident', id, { status, severity }, request);
+
+  const updated = await env.DB.prepare(
+    `SELECT si.*, u.name as affected_user_name, u.email as affected_user_email
+     FROM security_incidents si LEFT JOIN users u ON u.id = si.affected_user_id
+     WHERE si.id = ? AND si.org_id = ?`
+  ).bind(id, org.id).first();
+  try { updated.details = JSON.parse(updated.details || '{}'); } catch { updated.details = {}; }
+  return jsonResponse({ incident: updated });
+}
+
+async function handleAddIncidentNote(request, env, org, user, id) {
+  if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  const incident = await env.DB.prepare('SELECT * FROM security_incidents WHERE id = ? AND org_id = ?').bind(id, org.id).first();
+  if (!incident) return jsonResponse({ error: 'Incident not found' }, 404);
+
+  const { text } = await request.json();
+  if (!text || !text.trim()) return jsonResponse({ error: 'Note text is required' }, 400);
+
+  let details;
+  try { details = JSON.parse(incident.details || '{}'); } catch { details = {}; }
+  if (!Array.isArray(details.notes)) details.notes = [];
+
+  details.notes.push({
+    author: user.name || user.email,
+    author_id: user.id,
+    text: text.trim(),
+    timestamp: new Date().toISOString(),
+  });
+
+  await env.DB.prepare("UPDATE security_incidents SET details = ?, updated_at = datetime('now') WHERE id = ? AND org_id = ?")
+    .bind(JSON.stringify(details), id, org.id).run();
+
+  return jsonResponse({ notes: details.notes }, 201);
+}
+
+async function handleMarkDIRNotified(env, org, user, id) {
+  if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
+
+  const incident = await env.DB.prepare('SELECT * FROM security_incidents WHERE id = ? AND org_id = ?').bind(id, org.id).first();
+  if (!incident) return jsonResponse({ error: 'Incident not found' }, 404);
+  if (incident.dir_notified) return jsonResponse({ error: 'Already notified' }, 409);
+
+  let details;
+  try { details = JSON.parse(incident.details || '{}'); } catch { details = {}; }
+  details.dir_notified_at = new Date().toISOString();
+  details.dir_notified_by = user.id;
+
+  await env.DB.prepare("UPDATE security_incidents SET dir_notified = 1, details = ?, updated_at = datetime('now') WHERE id = ? AND org_id = ?")
+    .bind(JSON.stringify(details), id, org.id).run();
+  await auditLog(env, org.id, user.id, 'update', 'security_incident', id, { action: 'dir_notification_sent' });
+
+  return jsonResponse({ success: true });
 }
 
 // ============================================================================
