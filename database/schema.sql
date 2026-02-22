@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS users (
   salt TEXT NOT NULL,
   name TEXT NOT NULL,
   role TEXT DEFAULT 'analyst' CHECK (role IN ('viewer', 'analyst', 'manager', 'admin', 'owner')),
+  status TEXT DEFAULT 'active' CHECK (status IN ('active', 'deactivated')),
   mfa_enabled INTEGER DEFAULT 0,
   mfa_secret TEXT,
   mfa_backup_codes TEXT,
