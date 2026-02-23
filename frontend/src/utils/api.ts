@@ -143,12 +143,18 @@ export async function api<T = any>(path: string, options: RequestInit = {}): Pro
     ...(options.headers as Record<string, string> || {}),
   };
 
+  // Skip token logic for auth endpoints that don't need an existing session
+  const isAuthEndpoint = path.startsWith('/api/v1/auth/login') ||
+    path.startsWith('/api/v1/auth/register') ||
+    path.startsWith('/api/v1/auth/forgot-password') ||
+    path.startsWith('/api/v1/auth/reset-password');
+
   // Proactively refresh token if expiring soon (before making the request)
-  if (accessToken && refreshToken) {
+  if (!isAuthEndpoint && accessToken && refreshToken) {
     await ensureValidToken();
   }
 
-  if (accessToken) {
+  if (!isAuthEndpoint && accessToken) {
     headers['Authorization'] = `Bearer ${accessToken}`;
   }
 
@@ -159,25 +165,28 @@ export async function api<T = any>(path: string, options: RequestInit = {}): Pro
 
   let res = await fetch(`${API_BASE}${path}`, { ...options, headers });
 
-  // Try refresh on 401 (fallback if proactive refresh didn't happen)
-  if (res.status === 401 && refreshToken) {
-    const refreshed = await refreshAccessToken();
-    if (refreshed) {
-      headers['Authorization'] = `Bearer ${accessToken}`;
-      res = await fetch(`${API_BASE}${path}`, { ...options, headers });
-    } else {
-      // Refresh failed - session is completely expired
+  // For auth endpoints, don't intercept 401 — let the caller handle it as invalid credentials
+  if (!isAuthEndpoint) {
+    // Try refresh on 401 (fallback if proactive refresh didn't happen)
+    if (res.status === 401 && refreshToken) {
+      const refreshed = await refreshAccessToken();
+      if (refreshed) {
+        headers['Authorization'] = `Bearer ${accessToken}`;
+        res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+      } else {
+        // Refresh failed - session is completely expired
+        clearTokens();
+        if (authFailureListener) authFailureListener();
+        throw new Error('Session expired');
+      }
+    }
+
+    // Handle 401 when no refresh token exists
+    if (res.status === 401 && !refreshToken) {
       clearTokens();
       if (authFailureListener) authFailureListener();
       throw new Error('Session expired');
     }
-  }
-
-  // Handle 401 when no refresh token exists
-  if (res.status === 401 && !refreshToken) {
-    clearTokens();
-    if (authFailureListener) authFailureListener();
-    throw new Error('Session expired');
   }
 
   if (!res.ok) {
