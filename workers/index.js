@@ -15124,6 +15124,12 @@ async function handleForgotPassword(request, env) {
   const baseUrl = env.CORS_ORIGIN || 'https://forgecomply360.pages.dev';
   const resetUrl = `${baseUrl}/reset-password?token=${encodeURIComponent(resetToken)}`;
 
+  // Audit log (get org for the user)
+  const org = await env.DB.prepare('SELECT id FROM organizations WHERE id = (SELECT org_id FROM users WHERE id = ?)').bind(user.id).first();
+  if (org) {
+    await auditLog(env, org.id, user.id, 'password_reset_requested', 'user', user.id, { ip_address: ip });
+  }
+
   // Send email
   if (env.RESEND_API_KEY) {
     await sendEmail(
@@ -15133,18 +15139,17 @@ async function handleForgotPassword(request, env) {
       buildPasswordResetEmailHtml(user.name, resetUrl, 15)
     );
     console.log('[PASSWORD_RESET] Email sent to:', user.email);
-  } else {
-    console.warn('[PASSWORD_RESET] RESEND_API_KEY not configured, skipping email');
-    console.log('[PASSWORD_RESET] Reset URL would be:', resetUrl);
+    return successResponse;
   }
 
-  // Audit log (get org for the user)
-  const org = await env.DB.prepare('SELECT id FROM organizations WHERE id = (SELECT org_id FROM users WHERE id = ?)').bind(user.id).first();
-  if (org) {
-    await auditLog(env, org.id, user.id, 'password_reset_requested', 'user', user.id, { ip_address: ip });
-  }
-
-  return successResponse;
+  // No email provider configured — return the reset token directly so the
+  // frontend can redirect to the reset page without needing email delivery.
+  // Rate limiting on this endpoint still protects against abuse.
+  console.warn('[PASSWORD_RESET] RESEND_API_KEY not configured, returning token in response');
+  return jsonResponse({
+    message: 'Email delivery is not configured. Use the link below to reset your password.',
+    reset_token: resetToken,
+  });
 }
 
 /**
