@@ -65,7 +65,7 @@ export function ResetPasswordPage() {
 
     setLoading(true);
     try {
-      await api('/auth/reset-password', {
+      await api('/api/v1/auth/reset-password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token, password }),
