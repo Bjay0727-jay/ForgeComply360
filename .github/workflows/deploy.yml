@@ -189,6 +189,10 @@ jobs:
               INSERT OR IGNORE INTO schema_migrations (version, name, description)
               SELECT 'migrate-020-fisma-ssp-tables', 'fisma-ssp-tables', 'Reconciled: columns already present'
               WHERE EXISTS (SELECT 1 FROM pragma_table_info('ssp_documents') WHERE name = 'ssp_type');
+
+              INSERT OR IGNORE INTO schema_migrations (version, name, description)
+              SELECT 'migrate-023b-add-user-status-column', 'add-user-status-column', 'Reconciled: column already present'
+              WHERE EXISTS (SELECT 1 FROM pragma_table_info('users') WHERE name = 'status');
             " || echo "Reconciliation step completed (some checks may have been skipped)"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -198,8 +202,8 @@ jobs:
           FAILED=0
           for f in $(ls database/migrate-*.sql 2>/dev/null | sort); do
             MIGRATION_NAME=$(basename "$f" .sql)
-            # Extract the 3-digit number: migrate-001-foo → 001
-            MIGRATION_NUM=$(echo "$MIGRATION_NAME" | sed 's/^migrate-\([0-9]*\)-.*/\1/')
+            # Extract the version prefix: migrate-001-foo → 001, migrate-023b-foo → 023b
+            MIGRATION_NUM=$(echo "$MIGRATION_NAME" | sed 's/^migrate-\([0-9a-z]*\)-.*/\1/')
             echo "::group::Migration: $MIGRATION_NAME"
 
             # Check if migration was already applied.
