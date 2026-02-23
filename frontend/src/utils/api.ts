@@ -190,10 +190,13 @@ export async function api<T = any>(path: string, options: RequestInit = {}): Pro
   }
 
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: 'Request failed' }));
-    const errorMessage = err.error || `HTTP ${res.status}`;
+    const body = await res.json().catch(() => ({ error: 'Request failed' }));
+    const errorMessage = body.error || `HTTP ${res.status}`;
     emitApiError(errorMessage, res.status, path);
-    throw new Error(errorMessage);
+    const err: any = new Error(errorMessage);
+    err.status = res.status;
+    if (body.retry_after != null) err.retry_after = body.retry_after;
+    throw err;
   }
 
   return res.json();
