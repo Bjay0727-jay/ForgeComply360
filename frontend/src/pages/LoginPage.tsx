@@ -92,11 +92,16 @@ export function LoginPage() {
     setForgotError('');
     setForgotLoading(true);
     try {
-      await api('/api/v1/auth/forgot-password', {
+      const data = await api('/api/v1/auth/forgot-password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: forgotEmail }),
       });
+      // If email delivery is not configured, API returns the token directly
+      if (data.reset_token) {
+        window.location.href = `/reset-password?token=${encodeURIComponent(data.reset_token)}`;
+        return;
+      }
       setForgotSuccess(true);
     } catch (err: any) {
       setForgotError(err.message || 'Failed to send reset email');
