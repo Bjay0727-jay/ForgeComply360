@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { api } from '../utils/api';
 
@@ -8,7 +8,26 @@ export function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [lockoutSeconds, setLockoutSeconds] = useState(0);
+  const lockoutTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const sessionExpired = new URLSearchParams(window.location.search).get('expired') === '1';
+
+  // Countdown timer for account lockout
+  useEffect(() => {
+    if (lockoutSeconds > 0) {
+      lockoutTimer.current = setInterval(() => {
+        setLockoutSeconds((prev) => {
+          if (prev <= 1) {
+            if (lockoutTimer.current) clearInterval(lockoutTimer.current);
+            setError('');
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    }
+    return () => { if (lockoutTimer.current) clearInterval(lockoutTimer.current); };
+  }, [lockoutSeconds > 0]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // MFA state
   const [mfaRequired, setMfaRequired] = useState(false);
@@ -27,6 +46,8 @@ export function LoginPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setLockoutSeconds(0);
+    if (lockoutTimer.current) clearInterval(lockoutTimer.current);
     setLoading(true);
     try {
       const result = await login(email, password);
@@ -38,7 +59,16 @@ export function LoginPage() {
         setMfaSetupMessage(result.message || 'MFA is required for privileged accounts.');
       }
     } catch (err: any) {
-      setError(err.message || 'Login failed');
+      const msg = err.message || 'Login failed';
+      setError(msg);
+      // Extract retry_after from error if it's a lockout response
+      if (err.retry_after && typeof err.retry_after === 'number') {
+        setLockoutSeconds(err.retry_after);
+      } else if (msg.toLowerCase().includes('locked')) {
+        // Fallback: extract minutes from message like "Try again in 15 minutes"
+        const match = msg.match(/(\d+)\s*minute/);
+        if (match) setLockoutSeconds(parseInt(match[1], 10) * 60);
+      }
     } finally {
       setLoading(false);
     }
@@ -257,8 +287,13 @@ export function LoginPage() {
             )}
 
             {error && (
-              <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4 text-sm">
-                {error}
+              <div className={`${lockoutSeconds > 0 ? 'bg-amber-50 border-amber-200 text-amber-800' : 'bg-red-50 border-red-200 text-red-700'} border px-4 py-3 rounded-lg mb-4 text-sm`}>
+                <p>{lockoutSeconds > 0 ? 'Account temporarily locked due to too many failed attempts.' : error}</p>
+                {lockoutSeconds > 0 && (
+                  <p className="mt-1 font-medium">
+                    You can try again in {Math.floor(lockoutSeconds / 60)}:{String(lockoutSeconds % 60).padStart(2, '0')}
+                  </p>
+                )}
               </div>
             )}
 
@@ -299,10 +334,10 @@ export function LoginPage() {
 
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || lockoutSeconds > 0}
               className="w-full mt-4 py-2.5 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
             >
-              {loading ? 'Signing in...' : 'Sign In'}
+              {loading ? 'Signing in...' : lockoutSeconds > 0 ? `Locked (${Math.floor(lockoutSeconds / 60)}:${String(lockoutSeconds % 60).padStart(2, '0')})` : 'Sign In'}
             </button>
 
             <p className="mt-4 text-center text-sm text-gray-500">

@@ -1502,7 +1502,12 @@ async function handleLogin(request, env) {
 
   // Account lockout check
   if (user.locked_until && new Date(user.locked_until) > new Date()) {
-    return jsonResponse({ error: 'Account locked. Try again later.' }, 423);
+    const retryAfterSec = Math.ceil((new Date(user.locked_until) - new Date()) / 1000);
+    const retryMinutes = Math.ceil(retryAfterSec / 60);
+    return jsonResponse({
+      error: `Account locked. Try again in ${retryMinutes} minute${retryMinutes !== 1 ? 's' : ''}.`,
+      retry_after: retryAfterSec,
+    }, 423);
   }
 
   const passwordValid = await verifyPasswordHash(password, user.salt, user.password_hash);
