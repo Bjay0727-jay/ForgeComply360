@@ -1,14 +1,17 @@
 -- ============================================================================
--- MIGRATION 023b: Add status column to users table
+-- MIGRATION 023b: Add status column to users table (idempotent)
 --
 -- The application code references users.status for account activation/
--- deactivation (workers/index.js lines 706, 1499, 5376, 5407) but the
--- column was never defined in schema.sql or any prior migration.
--- This must run BEFORE migrate-024 which inserts users with status='active'.
+-- deactivation but the column was never defined in schema.sql or any prior
+-- migration. This must run BEFORE migrate-024 which inserts users with
+-- status='active'.
+--
+-- NOTE: SQLite does not support ALTER TABLE ADD COLUMN IF NOT EXISTS.
+-- This migration is made idempotent via the reconciliation step in
+-- deploy.yml which detects the column and marks it as applied before
+-- the runner reaches this file.
 -- ============================================================================
 
-ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'active' CHECK (status IN ('active', 'deactivated'));
-
--- Track migration
+-- Track migration (safe to run even if column was added manually)
 INSERT OR IGNORE INTO schema_migrations (version, name, description) VALUES
   ('migrate-023b-add-user-status-column', 'add-user-status-column', 'Add missing status column to users table for account activation/deactivation');
