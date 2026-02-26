@@ -1,7 +1,7 @@
 # Forge Cyber Defense — Full Platform Hybrid Deployment Guide
 # Cloudflare + Hetzner + Xiid SealedTunnel
 
-**Version:** 5.0.0
+**Version:** 6.0.0
 **Date:** 2026-02-26
 **Author:** Forge Cyber Defense (SDVOSB)
 
@@ -13,19 +13,24 @@
 2. [Why Cloudflare + Hetzner](#why-cloudflare--hetzner)
 3. [Architecture Overview](#architecture-overview)
 4. [Xiid SealedTunnel Integration](#xiid-sealedtunnel-integration)
-5. [Component Placement](#component-placement)
-6. [Hetzner Server Setup](#hetzner-server-setup)
-7. [Full-Platform Docker Compose](#full-platform-docker-compose)
-8. [Cloudflare Configuration](#cloudflare-configuration)
-9. [Networking & Security](#networking--security)
-10. [Forge-Reporter Integration](#forge-reporter-integration)
-11. [Forge-Scan Integration](#forge-scan-integration)
-12. [ForgeAI Govern Integration](#forgeai-govern-integration)
-13. [CI/CD Pipeline](#cicd-pipeline)
-14. [Monitoring & Observability](#monitoring--observability)
-15. [Backup & Disaster Recovery](#backup--disaster-recovery)
-16. [Cost Estimates](#cost-estimates)
-17. [Migration Path from Pure Cloudflare](#migration-path-from-pure-cloudflare)
+5. [Cross-Domain Classification & Air-Gap Deployment](#cross-domain-classification--air-gap-deployment)
+6. [Component Placement](#component-placement)
+7. [Hetzner Server Setup](#hetzner-server-setup)
+8. [Full-Platform Docker Compose](#full-platform-docker-compose)
+9. [Cloudflare Configuration](#cloudflare-configuration)
+10. [Networking & Security](#networking--security)
+11. [Forge-Reporter Integration](#forge-reporter-integration)
+12. [Forge-Scan Integration](#forge-scan-integration)
+13. [ForgeAI Govern Integration](#forgeai-govern-integration)
+14. [CI/CD Pipeline](#cicd-pipeline)
+15. [NIST 800-53 Control Mapping](#nist-800-53-control-mapping)
+16. [Certification Roadmap & Competitive Differentiation](#certification-roadmap--competitive-differentiation)
+17. [Implementation Sprint Plan](#implementation-sprint-plan)
+18. [Schema & API Changes](#schema--api-changes)
+19. [Monitoring & Observability](#monitoring--observability)
+20. [Backup & Disaster Recovery](#backup--disaster-recovery)
+21. [Cost Estimates](#cost-estimates)
+22. [Migration Path from Pure Cloudflare](#migration-path-from-pure-cloudflare)
 
 ---
 
@@ -217,21 +222,175 @@ A **hybrid Cloudflare + Hetzner** deployment combines the strengths of both:
 
 ## Xiid SealedTunnel Integration
 
+Xiid's Terniion architecture, anchored by SealedTunnel technology, eliminates attack surfaces rather than merely defending against them. By wrapping every AI inference call, agent communication channel, evidence repository, and CI/CD pipeline in outbound-only, triple-encrypted, quantum-resistant tunnels, Xiid transforms ForgeComply 360's most vulnerable components into network-invisible resources.
+
 ### Why Xiid Instead of (or Alongside) Cloudflare Tunnel
 
 | Feature | Cloudflare Tunnel | Xiid SealedTunnel |
 |---------|------------------|-------------------|
-| **Encryption** | QUIC/HTTP2 tunnel encryption | Triple-layer, quantum-resistant encryption |
+| **Encryption** | QUIC/HTTP2 tunnel encryption | Triple-layer quantum-resistant (Kyber KEX + Dilithium signatures) |
 | **Trust model** | Zero Trust (Cloudflare sees plaintext) | **Zero Knowledge** (even Xiid cannot see traffic) |
 | **Port requirements** | Outbound 443 | Outbound 443 only |
 | **DoD ATO** | No | **Yes** — DISA-validated, AFRL-tested |
-| **FIPS compliance** | Partial | Designed for FIPS environments |
+| **FIPS compliance** | Partial | FIPS 203 (Kyber) + FIPS 204 (Dilithium) aligned |
 | **Collector compromise** | N/A | Attacker still cannot access private resources |
 | **Moving Target Defense** | No | Yes — servers can move without IP reconfiguration |
+| **Authentication** | OAuth/SAML/MFA | ZKP SSO — no credentials ever stored or transmitted |
+| **AI inference sealing** | No | Process-isolated SealedTunnel per inference endpoint |
+| **Agent isolation** | No | Per-agent dedicated SealedTunnel channels |
 | **Cost** | Free (basic) / $7/user (Access) | Enterprise licensing (contact Xiid) |
 | **Best for** | Commercial SaaS deployments | Federal/DoD, CMMC L3, IL4/IL5, financial |
 
-### Deployment Option 1: Xiid Replaces Cloudflare Tunnel
+### Key Differentiators Enabled by Integration
+
+| Capability | Before Xiid | After Xiid Integration |
+|-----------|-------------|----------------------|
+| AI Inference Security | Claude API: standard TLS only | SealedTunnel wraps all inference calls; endpoints invisible to scanning |
+| ForgeRedOps Agent Isolation | 24 agents share network infrastructure | Each agent: dedicated process-isolated SealedTunnel channel |
+| RAG Knowledge Base | Vector DB accessible via network | Control mapping embeddings: closed inbound ports, poisoning prevented |
+| Air-Gap Deployment | Claimed — no cryptographic enforcement | Provable: Ollama/Llama 3 inference with zero inbound ports; gateway via SealedTunnel |
+| CI/CD Pipeline | GitHub Actions runners: standard auth | Runners: all inbound closed; no credential exposure; lateral movement blocked |
+| Evidence Vault | SHA-256 integrity only | SealedTunnel delivery + SHA-256; tamper-proof chain of custody |
+| Authentication | JWT + PBKDF2 only | Xiid Zero-Knowledge Proof SSO; no credentials ever stored or transmitted |
+| Multi-Cloud Connectivity | Standard VPC peering | Cross-domain auth via Xiid SDN; Unclassified/Secret/TS isolation |
+| Nessus Import Pipeline | HTTPS file upload | .nessus file transfer via SealedTunnel; Tenable SC connectivity sealed |
+| SIEM / SOC Integration | Standard syslog/API | Agent audit trail: cryptographic non-repudiation; anomaly baseline |
+
+### 6-Layer Integration Architecture
+
+The Xiid integration operates across six distinct layers of the ForgeComply 360 architecture. Each layer addresses a specific threat vector, with SealedTunnel protection applied at the **process level** rather than the network perimeter level.
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                LAYER 1: Xiid Terniion Control Plane                          │
+│  ┌────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────────────┐ │
+│  │ Xiid SSO / │ │ SealedTunnel │ │ Multi-Cloud  │ │  Agent Audit / SIEM  │ │
+│  │ ZKP Auth   │ │ Broker       │ │ Orchestration│ │  Non-repudiation     │ │
+│  └─────┬──────┘ └──────┬───────┘ └──────┬───────┘ └──────────┬───────────┘ │
+├────────┼───────────────┼────────────────┼────────────────────┼─────────────┤
+│        │    LAYER 2: Cloudflare Edge (ForgeComply 360 Core)  │             │
+│  ┌─────▼──────────────────┐  ┌────────────────┐  ┌──────────▼──────────┐  │
+│  │ API Workers (forge-api) │  │ Evidence Vault │  │ ComplianceFoundry / │  │
+│  │ Scanner auth → Xiid SSO │  │ R2 + sealed   │  │ ControlPulse drift  │  │
+│  └─────┬──────────────────┘  └───────┬────────┘  └──────────┬──────────┘  │
+├────────┼─────────────────────────────┼───────────────────────┼─────────────┤
+│        │    LAYER 3: AI / ForgeML Inference Engine            │             │
+│  ┌─────▼──────────┐  ┌──────────────▼───────┐  ┌────────────▼──────────┐  │
+│  │ Claude API      │  │ Ollama/Llama 3       │  │ RAG Vector DB         │  │
+│  │ (cloud SaaS)    │  │ (on-prem air-gap)    │  │ 1,189 control         │  │
+│  │ Kyber+Dilithium │  │ Zero inbound ports   │  │ embeddings sealed     │  │
+│  └────────────────┘  └──────────────────────┘  └────────────────────────┘  │
+├────────────────────────────────────────────────────────────────────────────┤
+│             LAYER 4: ForgeScan 360 Engine                                  │
+│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────────────┐ │
+│  │ Scanner Agent     │  │ Nessus Import    │  │ Cloud Connectors         │ │
+│  │ Comms (STLink)    │  │ Pipeline sealed  │  │ AWS/Azure/GCP sealed     │ │
+│  │ X-Scanner-Key →   │  │ .nessus via ST   │  │ Outbound-only SDK calls  │ │
+│  │ Xiid SSO identity │  │ SHA-256 + sealed │  │                          │ │
+│  └──────────────────┘  └──────────────────┘  └──────────────────────────┘ │
+├────────────────────────────────────────────────────────────────────────────┤
+│             LAYER 5: ForgeRedOps & ForgeSOC (Agent Isolation)              │
+│  ┌──────────────────────────────────────┐  ┌──────────────────────────┐   │
+│  │ ForgeRedOps: 24 Autonomous Agents     │  │ ForgeSOC SIEM Feeds      │   │
+│  │ • Per-agent dedicated SealedTunnel    │  │ • Splunk/Sentinel/QRadar │   │
+│  │ • Memory store isolation              │  │ • Cryptographic proof    │   │
+│  │ • Closed inbound ports per agent      │  │ • Anomaly baseline       │   │
+│  │ • Agent-to-agent comms sealed         │  │ • ControlPulse alerts    │   │
+│  └──────────────────────────────────────┘  └──────────────────────────┘   │
+├────────────────────────────────────────────────────────────────────────────┤
+│             LAYER 6: CI/CD Pipeline (ForgeOps)                             │
+│  ┌───────────────┐ ┌────────────────┐ ┌─────────────┐ ┌────────────────┐ │
+│  │ GitHub Actions │ │ GHCR Container │ │ OPA/Rego    │ │ SBOM + NVD     │ │
+│  │ Runners sealed│ │ Registry sealed│ │ Policy gates│ │ via SealedTunnel│ │
+│  └───────────────┘ └────────────────┘ └─────────────┘ └────────────────┘ │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Layer 1 — Xiid Terniion Control Plane
+
+The Terniion control plane is the security orchestration layer above all ForgeComply 360 components. It manages the SealedTunnel broker, Zero-Knowledge authentication, multi-cloud orchestration, and the audit/SIEM integration for non-repudiable agent accountability.
+
+| Control Plane Component | Function | ForgeComply 360 Protection Scope |
+|------------------------|----------|----------------------------------|
+| **Xiid SSO / ZKP Auth** | Passwordless identity via Zero Knowledge Proofs | All user sessions; service-to-service auth; eliminates stored credentials |
+| **SealedTunnel Broker** | Outbound-only tunnel management; Kyber KEX; Dilithium signatures | Every component-to-component communication channel |
+| **Multi-Cloud Orchestration** | Cross-domain software-defined networking | AWS GovCloud → Azure Gov → Cloudflare → On-prem; classification boundaries |
+| **MLOps / AI Protection** | AI inference endpoint sealing; RAG protection | Claude API calls; Ollama/Llama 3 on-prem; vector DB; model registries |
+| **Agentic AI Isolation** | Per-agent dedicated tunnel channels; memory isolation | All 24 ForgeRedOps autonomous agents; ForgeSOC agent workflows |
+| **Agent Audit / SIEM** | Cryptographic proof of connection authenticity; correlation | Non-repudiable ForgeRedOps activity log; ForgeSOC anomaly baseline |
+
+#### Layer 2 — Cloudflare Edge (ForgeComply 360 Core)
+
+**API Workers (forge-api):** The Cloudflare Workers API is the central hub. The existing `X-Scanner-Key` header authentication is replaced with SealedTunnel-backed service identity — scanners authenticate through Xiid SSO rather than static API keys, eliminating the key rotation problem and preventing indefinite impersonation from compromised scanner binaries.
+
+- **Connection model:** All scanner heartbeat, task retrieval, and result submission endpoints wrapped in SealedTunnel
+- **Database access:** Service-to-service mTLS between Workers and D1/R2/KV sealed via Xiid rather than relying solely on Cloudflare's internal network trust
+- **Artifact delivery:** Compliance artifact delivery (OSCAL JSON, SSP PDFs) to auditors and 3PAO assessors via SealedTunnel with sealed auditor read-only portal access
+
+**Evidence Vault (R2 Storage):** The R2-based Evidence Vault stores SSPs, SARs, SAPs, and POA&M artifacts with SHA-256 integrity hashes. SealedTunnel adds a cryptographically enforced delivery layer — evidence cannot be tampered with in transit, and access is restricted to authenticated, process-isolated client applications.
+
+**ComplianceFoundry and ControlPulse:** OSCAL artifact generation and continuous controls monitoring (2,847 automated tests/day) produce sensitive compliance data requiring secure delivery. ControlPulse drift detection alerts are delivered via SealedTunnel to SIEM integrations (Splunk, Sentinel, QRadar), preventing alert injection or suppression.
+
+#### Layer 3 — AI / ForgeML Inference Engine
+
+**Cloud Deployment (Claude API):** Every API call is wrapped in SealedTunnel, implementing the inference endpoint protection pattern from Xiid's AI security architecture:
+
+| Protection Layer | Mechanism | NIST 800-53 Control |
+|-----------------|-----------|---------------------|
+| Endpoint invisibility | All inbound ports closed on Claude API client; outbound-only | SC-7 Boundary Protection |
+| Process-to-process access | Only ForgeML process reaches Claude API — not the host or adjacent services | AC-3 Access Enforcement |
+| Quantum-secure encryption | Kyber KEX + Dilithium signatures on every inference session | SC-8, SC-13 Transmission Confidentiality |
+| Data leakage prevention | End-to-end encryption; query data never exposed in plaintext at endpoint | SC-28 Protection at Rest |
+| Model IP protection | Model weights inaccessible; extraction attacks blocked by closed inbound ports | AC-4 Information Flow |
+| Adversarial input blocking | Process isolation prevents injection from compromised adjacent services | SI-10 Information Input Validation |
+
+**On-Premises / Air-Gap Deployment (Ollama / Llama 3):** For DoD IL4/IL5 and CMMC Level 3 customers, local inference infrastructure operates with zero public IP addresses, zero inbound ports, and process-isolated SealedTunnel for inter-service communication. GPU clusters are microsegmented at the process level — a compromised training process cannot laterally reach the inference endpoint.
+
+**RAG Control Mapping Knowledge Base:** The vector database powering ForgeComply 360's 94% accuracy control mapping (1,189 NIST 800-53 control embeddings, FedRAMP baselines, CMMC practices) is secured through process-isolated SealedTunnel connections with inbound ports closed. Embedding update operations require authenticated SealedTunnel connections with Xiid ZKP identity verification.
+
+#### Layer 4 — ForgeScan 360 Engine
+
+The ForgeScan Rust-based scanner binary communicates with the Cloudflare API via the existing STLink architecture (outbound-only on port 443 via loopback 127.0.0.5 through a Caddy exitpoint proxy). Xiid formalizes and cryptographically enforces this pattern:
+
+| Communication Path | Current State | With SealedTunnel |
+|-------------------|---------------|-------------------|
+| Scanner → CF API heartbeat | X-Scanner-Key HTTPS | Xiid SSO identity; SealedTunnel outbound-only |
+| Scanner → CF API results | POST /api/v1/scanner/tasks/:id/results | Process-to-process; no host-level network exposure |
+| CF → Scanner (task pull) | Poll-based; scanner initiates outbound | Maintained outbound model; scanner never accepts inbound |
+| Cloud connectors (AWS/Azure/GCP) | Standard cloud SDK auth | All cloud SDKs: outbound-only SealedTunnel; no cloud provider inbound access |
+| Nessus → CF API (.nessus upload) | HTTPS multipart/form-data upload | SealedTunnel wraps file transfer; Tenable SC connectivity sealed |
+| Tenable SC / Nessus Manager | Direct API integration | SealedTunnel; SHA-256 file hash deduplication + sealed delivery |
+
+**Nessus Integration Pipeline Security:** The Nessus integration processes .nessus XML files containing vulnerability findings that feed into NIST 800-53 control mappings and POA&M generation. Upload endpoint (`POST /api/v1/scans/import`) operates via SealedTunnel — the 100MB .nessus file is never exposed on a standard HTTPS endpoint. SHA-256 file hash deduplication combined with SealedTunnel delivery provides end-to-end integrity. The `scan_imports` audit table preserves complete provenance with Xiid ZKP-verified identity for cryptographic non-repudiation.
+
+#### Layer 5 — ForgeRedOps & ForgeSOC (Agent Isolation)
+
+ForgeRedOps operates 24 autonomous AI penetration testing agents that test web applications, APIs, cloud configurations, and network infrastructure. These agents interact with hostile or untrusted targets. The Xiid agentic AI isolation pattern maps directly:
+
+- **Per-agent channels:** Each of the 24 agents is assigned a dedicated, process-isolated SealedTunnel channel for communication with the ForgeComply 360 API and ForgeSOC
+- **Memory isolation:** Agent memory stores (conversation history, testing state, target context) accessible only through process-isolated connections — cross-agent memory contamination blocked
+- **Lateral movement prevention:** All agents operate with closed inbound ports — a compromised agent cannot directly attack other agents or the compliance platform
+- **Agent coordination:** Agent-to-agent communication for coordinated testing wrapped in dedicated SealedTunnel connections; unauthorized agents cannot eavesdrop or inject content
+
+**ForgeSOC Integration:** SIEM feeds (Splunk, Sentinel, QRadar) delivered via SealedTunnel. Xiid logging provides cryptographic non-repudiation of agent activities — SOC analysts can definitively attribute actions to specific agents, critical for FedRAMP continuous monitoring compliance documentation.
+
+#### Layer 6 — CI/CD Pipeline (ForgeOps)
+
+The GitHub Actions CI/CD pipeline for all Forge repositories builds Rust scanner binaries, Docker container images (GHCR), and OSCAL report generation toolchain:
+
+| Pipeline Component | Repository | Xiid Protection |
+|-------------------|-----------|-----------------|
+| GitHub Actions runners | Forge-Scan, Forge-Reporter, AI-Governance | All inbound ports closed; no lateral movement between runners |
+| GHCR container registry | ghcr.io/bjay0727-jay/forgescan-scanner | Registry: zero inbound access; model artifacts via SealedTunnel only |
+| GitHub Releases (binaries) | linux-amd64/arm64/windows (cross-rs) | Deployment to scanners: SealedTunnel; no credential exposure |
+| Forge-Reporter OSCAL gen | SSP, SAR, SAP, POA&M artifacts | Report delivery pipeline sealed; auditor access via ZKP auth |
+| OPA/Rego compliance gates | Policy-as-code enforcement | Policy engine: process-isolated; gate pass/fail via sealed channels |
+| SBOM generation | Dependency vulnerability scanning | NVD API calls: SealedTunnel; SBOM artifacts sealed in registry |
+| AI-Governance platform | ForgeAI Govern / NIST AI RMF | AI asset registry and incident management: SealedTunnel access |
+
+### Deployment Options
+
+#### Option 1: Xiid Replaces Cloudflare Tunnel
 
 Use this when you need the highest security posture (federal/DoD environments):
 
@@ -246,7 +405,7 @@ In this mode:
 - All API traffic flows through Xiid SealedTunnel instead of Cloudflare Tunnel
 - Cloudflare WAF is NOT in the path (Xiid handles security at the network layer)
 
-### Deployment Option 2: Xiid + Cloudflare (Defense in Depth)
+#### Option 2: Xiid + Cloudflare (Defense in Depth)
 
 Use this for maximum layered security:
 
@@ -260,7 +419,7 @@ In this mode:
 - Double encryption: Cloudflare TLS + Xiid triple-layer quantum encryption
 - Even if Cloudflare is compromised, Xiid's zero-knowledge model protects the origin
 
-### Deployment Option 3: Xiid for Inter-Service Communication
+#### Option 3: Xiid for Inter-Service Communication
 
 Use Xiid to secure communication between Forge platform services across servers:
 
@@ -319,12 +478,29 @@ services:
     local_address: 127.0.0.1:3000
     public_hostname: monitoring.forgecomply360.com
 
+  # ForgeRedOps per-agent channels (24 agents)
+  - name: redops-agent-pool
+    local_address: 127.0.0.1:8500-8523
+    isolation: per-process
+    channel_count: 24
+
 authentication:
   # Xiid Aclave credentialless auth (FIDO2-compliant)
   method: aclave
   # Or use certificate-based auth for automated deployments
   # method: certificate
   # cert_path: /etc/xiid/certs/agent.pem
+
+siem:
+  # ForgeSOC SIEM feed configuration
+  feeds:
+    - type: splunk
+      endpoint: sealed  # Delivered via SealedTunnel
+    - type: sentinel
+      endpoint: sealed
+  audit:
+    cryptographic_proof: true
+    non_repudiation: true
 EOF
 
 # 3. Register the agent with Xiid Commander
@@ -388,6 +564,110 @@ When using Xiid, replace the `cloudflared` service with:
 | Data sovereignty | Depends | **Yes** (zero knowledge) |
 | Quantum-resistance requirement | No | **Yes** |
 | Budget-sensitive | Yes (free) | Enterprise licensing |
+
+---
+
+## Cross-Domain Classification & Air-Gap Deployment
+
+ForgeComply 360's deployment model spans cloud SaaS (Cloudflare global edge), dedicated GovCloud (AWS GovCloud / Azure Government), and on-premises air-gapped environments. Xiid's multi-cloud orchestration capability directly enables the classification-boundary separation required for DoD IL4/IL5 and CMMC Level 3 deployments.
+
+### Cross-Domain Classification Isolation
+
+Xiid's multi-cloud orchestration enables unidirectional connections between Unclassified, Secret, and Top Secret network domains, maintaining separate boundaries while providing authorized cross-domain access:
+
+| Domain | Components | Xiid Isolation Model |
+|--------|-----------|---------------------|
+| **Unclassified (CUI)** | Cloud SaaS; FedRAMP Moderate workloads; standard commercial customers | Xiid SSO + SealedTunnel for all access; standard outbound-only model |
+| **Secret (DoD SRG IL4)** | Dedicated GovCloud deployment; CMMC Level 2/3 contractors; sensitive CUI | Trust relationship via Xiid SSO; unidirectional SealedTunnel; no Secret→Unclass inbound |
+| **High Side (DoD IL5)** | Air-gapped on-prem; classified systems; CMMC Level 3 + DoD SRG IL5 | Air-gap gateway (edge device); SealedTunnel outbound-only; Ollama local inference; zero external deps |
+| **Top Secret (future)** | Potential TS/SCI customer expansion | Xiid cross-domain auth via Trust Relationships; dedicated SealedTunnel per domain |
+
+```
+┌─────────────────────┐   Trust    ┌─────────────────────┐   Trust    ┌─────────────────────┐
+│   UNCLASSIFIED       │  Xiid SSO  │   SECRET (IL4)       │  Xiid SSO  │   HIGH SIDE (IL5)    │
+│                      │───────────▶│                      │───────────▶│                      │
+│  Cloud SaaS          │            │  GovCloud Deploy     │            │  Air-Gapped On-Prem  │
+│  FedRAMP Moderate    │   ╳ No     │  CMMC L2/L3          │   ╳ No     │  CMMC L3 + IL5       │
+│  Cloudflare + Xiid   │◀──return── │  Xiid unidirectional │◀──return── │  Ollama local only   │
+│                      │            │                      │            │  Zero external deps  │
+└─────────────────────┘            └─────────────────────┘            └─────────────────────┘
+  Standard commercial                Sensitive CUI                       Classified systems
+  customers                          defense contractors                 DoD environments
+```
+
+### Air-Gap Gateway Architecture
+
+The on-premises ForgeScan scanner communicates via the STLink pattern that already exists in the architecture. Xiid formalizes this as a provable air-gap boundary:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                  CLASSIFIED NETWORK PERIMETER                 │
+│                                                               │
+│  ┌────────────────┐  ┌────────────────┐  ┌───────────────┐  │
+│  │ ForgeScan       │  │ ForgeComply    │  │ Ollama /      │  │
+│  │ Scanner Agents  │  │ 360 API        │  │ Llama 3       │  │
+│  │ (Rust binary)   │  │ (local mode)   │  │ (local GPU)   │  │
+│  └───────┬─────────┘  └───────┬────────┘  └───────────────┘  │
+│          │                    │                                │
+│          └────────┬───────────┘                                │
+│                   │                                            │
+│          ┌────────▼────────────────────────────────────┐      │
+│          │          AIR-GAP GATEWAY                      │      │
+│          │   Edge device (RPi / edge server / appliance)│      │
+│          │   • Aggregates multiple on-prem scanner data │      │
+│          │   • Single outbound-only SealedTunnel uplink │      │
+│          │   • Zero inbound connections accepted         │      │
+│          │   • Loopback 127.0.0.5:443 → Caddy exitpoint│      │
+│          └────────┬────────────────────────────────────┘      │
+│                   │ Outbound-only SealedTunnel                 │
+│                   │ (only path crossing air-gap boundary)      │
+└───────────────────┼────────────────────────────────────────────┘
+                    │
+           ┌────────▼────────────────────────┐
+           │  ForgeComply 360 Cloudflare API   │
+           │  (receives sealed scan results)   │
+           └───────────────────────────────────┘
+```
+
+**Key properties:**
+- **Gateway aggregation:** Edge device deployed inside the classified network perimeter aggregates data from multiple on-premises scanner agents
+- **Single uplink:** Gateway establishes one outbound-only SealedTunnel to the ForgeComply 360 Cloudflare API — the only network path crossing the air-gap boundary
+- **Zero inbound exposure:** The gateway never accepts inbound connections — the classified network's internal resources are invisible to external networks
+- **Local AI execution:** Ollama/Llama 3 inference operates completely within the classified boundary — no AI inference calls cross the air-gap; ForgeML runs on local GPU resources
+- **Evidence transport:** Evidence Vault artifacts (SSPs, SARs, POA&Ms) are encrypted locally and transferred via SealedTunnel — never exposed in transit on unclassified networks
+
+### Air-Gap Docker Compose Override
+
+For air-gapped deployments, use an overlay that disables all external dependencies:
+
+```yaml
+# docker-compose.airgap.yml — overlay for air-gapped deployment
+services:
+  forgecomply-api:
+    environment:
+      - DEPLOYMENT_MODE=airgap
+      - OLLAMA_URL=http://ollama:11434      # Local inference only
+      - EXTERNAL_AI_ENABLED=false            # No Claude API calls
+      - EVIDENCE_TRANSPORT=sealedtunnel      # Evidence via ST only
+
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # Air-gap gateway (runs on edge device, not in main cluster)
+  # airgap-gateway:
+  #   image: xiid/sealedtunnel-gateway:latest
+  #   network_mode: host
+  #   environment:
+  #     - XIID_MODE=gateway
+  #     - UPLINK_TARGET=api.forgecomply360.com
+  #     - GATEWAY_LOOPBACK=127.0.0.5:443
+```
 
 ---
 
@@ -1163,6 +1443,58 @@ Forge-Scan is the vulnerability management backbone with four sub-products:
 4. **Continuous monitoring**: ForgeSOC feeds ControlPulse continuous monitoring checks
 5. **Shared database**: All products share PostgreSQL (separate databases) and Redis
 
+### Scan-to-Comply Pipeline with Xiid Sealing
+
+When Xiid SealedTunnel is enabled, the entire scan-to-comply pipeline is cryptographically sealed:
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│                 SEALED SCAN → COMPLY PIPELINE                             │
+│                                                                          │
+│  ┌────────────────┐   SealedTunnel    ┌────────────────┐                │
+│  │ ForgeScan       │ ──────────────── ▶│ ForgeComply    │                │
+│  │ Engine (Rust)   │   sealed gRPC     │ 360 API        │                │
+│  │ Per-agent ST    │   findings        │ :8443          │                │
+│  └────────────────┘                   │                │                │
+│                                        │ Auto-creates:  │                │
+│  ┌────────────────┐   SealedTunnel    │ • POA&Ms       │                │
+│  │ Nessus Import   │ ──────────────── ▶│ • Risks        │                │
+│  │ .nessus XML     │   sealed upload   │ • Assets       │                │
+│  │ SHA-256 + ST    │   100MB max       │ • Alerts       │                │
+│  └────────────────┘                   └────────────────┘                │
+│                                                                          │
+│  ┌────────────────┐   SealedTunnel    ┌────────────────┐                │
+│  │ ForgeRedOps     │ ──────────────── ▶│ ForgeSOC       │                │
+│  │ 24 AI Agents    │   per-agent       │ SIEM feeds     │                │
+│  │ Dedicated ST    │   isolated        │ Splunk/Sentinel│                │
+│  │ per agent       │   channels        │ Crypto proof   │                │
+│  └────────────────┘                   └────────────────┘                │
+└──────────────────────────────────────────────────────────────────────────┘
+  All connections: outbound-only, Kyber/Dilithium encrypted, zero inbound ports
+```
+
+### Nessus Import Pipeline (Xiid-Sealed)
+
+The Nessus integration processes `.nessus` XML vulnerability files through a sealed pipeline:
+
+1. **Upload:** `POST /api/v1/scans/import` operates via SealedTunnel — .nessus files (up to 100MB) never exposed on standard HTTPS
+2. **Tenable SC integration:** Tenable Security Center or Nessus Manager connectivity via outbound-only SealedTunnel push
+3. **Integrity chain:** SHA-256 file hash deduplication (`UNIQUE` on `organization_id + file_hash`) + SealedTunnel delivery = end-to-end integrity
+4. **Audit chain:** `scan_imports` audit table preserves provenance — `imported_by` user authenticated via Xiid ZKP; cryptographic non-repudiation
+
+### ForgeRedOps 24-Agent Isolation
+
+Each ForgeRedOps autonomous penetration testing agent receives a dedicated SealedTunnel channel:
+
+| Agent Property | Without Xiid | With Xiid SealedTunnel |
+|---------------|-------------|----------------------|
+| Network access | Shared infrastructure | Dedicated process-isolated channel |
+| Memory stores | Network-accessible | SealedTunnel-only access |
+| Inbound ports | Open for coordination | All closed per agent |
+| Agent-to-agent comms | Shared message bus | Dedicated sealed connections |
+| Audit attribution | Log-based | Cryptographic non-repudiation |
+| Compromised agent blast radius | Entire agent infrastructure | Single isolated channel |
+
 ---
 
 ## ForgeAI Govern Integration
@@ -1196,17 +1528,40 @@ ForgeAI Govern manages AI system governance and maps to regulatory frameworks:
 └─────────────────────┘        └─────────────────────┘
 ```
 
+### ForgeAI + ForgeML Protection (Xiid-Sealed)
+
+When Xiid is enabled, all ForgeAI Govern communications and AI inference calls are sealed:
+
+- **AI asset registry:** AI system inventory and risk assessment data accessed only via SealedTunnel
+- **Incident management:** AI incident tracking and response workflows sealed end-to-end
+- **Claude API calls:** All ForgeML inference (cloud mode) wrapped in SealedTunnel with Kyber/Dilithium encryption
+- **Ollama inference:** On-premises AI inference operates with zero inbound ports; GPU cluster microsegmented
+- **Vendor assessments:** Third-party AI vendor evaluation data transmitted via SealedTunnel
+- **NIST AI RMF compliance:** AI-specific control evidence delivered with cryptographic chain of custody
+
 ### Cross-Platform SSO
 
-All four products share the same JWT authentication:
+All four products share authentication. With Xiid, JWT is supplemented by Zero-Knowledge Proof SSO:
 
 ```
-User logs in → ForgeComply 360 → JWT token
+                           ┌───────────────────────────┐
+                           │   Xiid ZKP SSO (Terniion)  │
+                           │   No credentials stored     │
+                           │   No credentials transmitted │
+                           │   NIST 800-63-3 AAL3        │
+                           └─────────┬─────────────────┘
+                                     │ ZKP identity token
+                    ┌───────────────┼───────────────┐
+                    ▼               ▼               ▼
+User logs in → ForgeComply 360 → Xiid token + JWT
                                     │
                     ┌───────────────┼───────────────┐
                     ▼               ▼               ▼
               Forge-Reporter  Forge-Scan API   ForgeAI Govern
               (URL params)    (Bearer token)   (Bearer token)
+
+Without Xiid: standard JWT + PBKDF2 authentication
+With Xiid:    ZKP SSO + JWT; biometric + device binding + continuous verification
 ```
 
 ---
@@ -1310,6 +1665,200 @@ jobs:
 | `CLOUDFLARE_API_TOKEN` | Cloudflare API token (Pages + DNS) |
 | `HETZNER_HOST` | Hetzner server IP or hostname |
 | `HETZNER_SSH_KEY` | SSH private key for deployment user |
+
+---
+
+## NIST 800-53 Control Mapping
+
+The Xiid integration directly satisfies or substantially contributes to 15 NIST 800-53 Rev 5 controls that must be documented in ForgeComply 360's own FedRAMP SSP and that customers can inherit from the platform's authorization boundary.
+
+| Control Family | Control ID | Control Title | Xiid Implementation |
+|---------------|-----------|---------------|---------------------|
+| Access Control | **AC-2** | Account Management | Xiid ZKP SSO eliminates credential-based accounts for service-to-service auth; no stored passwords for inter-component communication |
+| Access Control | **AC-3** | Access Enforcement | Process-to-process SealedTunnel enforces access at cryptographic level; even network-adjacent processes cannot reach components without authenticated tunnel |
+| Access Control | **AC-4** | Information Flow Enforcement | Outbound-only SealedTunnel enforces unidirectional flow at architecture level for air-gapped deployments; classification boundary separation |
+| Access Control | **AC-17** | Remote Access | All remote access via SealedTunnel; VPN-less architecture; no open inbound ports for remote administrator access |
+| Identification & Auth | **IA-2** | ID and Auth (Org Users) | Xiid ZKP authentication; NIST 800-63-3 AAL3 capable; biometric + device binding + continuous verification |
+| Identification & Auth | **IA-5** | Authenticator Management | No credentials stored by identity provider; ZKP-based — credential theft architecturally eliminated |
+| System & Comms | **SC-7** | Boundary Protection | All inbound ports closed on all platform components; attack surface elimination rather than perimeter defense |
+| System & Comms | **SC-8** | Transmission Confidentiality | Triple-layer Kyber/Dilithium quantum-resistant encryption on all inter-component communications |
+| System & Comms | **SC-13** | Cryptographic Protection | FIPS-compatible + post-quantum crypto (Kyber KEX per FIPS 203, Dilithium signatures per FIPS 204); addresses NIST PQC mandate timeline |
+| System & Comms | **SC-17** | PKI Certificates | SealedTunnel cryptographic device attestation; no traditional PKI certificate management required for inter-component comms |
+| System & Comms | **SC-28** | Protection at Rest | Combined with AES-256-GCM: Xiid ensures data never exposed in transit before reaching encrypted storage |
+| System Info Integrity | **SI-2** | Flaw Remediation | CI/CD pipeline (runners sealed) ensures patching pipeline cannot be compromised; SBOM + NVD via SealedTunnel |
+| System Info Integrity | **SI-10** | Information Input Validation | Process isolation prevents adversarial inputs from compromised adjacent services reaching AI inference endpoints |
+| Audit & Accountability | **AU-2** | Event Logging | Cryptographic proof of connection authenticity; non-repudiable agent audit trail for ForgeRedOps and ForgeSOC |
+| Audit & Accountability | **AU-10** | Non-Repudiation | Xiid maintains cryptographic proof that logged activities are definitively attributed to specific agents; cannot be repudiated |
+
+### Control Implementation Detail — AI-Specific Protections
+
+The following controls are specifically enhanced by Xiid's AI/ML protections beyond standard implementations:
+
+| Control | Standard Implementation | Xiid-Enhanced Implementation |
+|---------|----------------------|----------------------------|
+| **SC-7** (Boundary Protection) | Network firewalls, DMZ | All inbound ports closed on Claude API client; Ollama inference invisible to network scanning |
+| **AC-3** (Access Enforcement) | RBAC, API keys | Only ForgeML process reaches Claude API — not the host or adjacent services; process-level isolation |
+| **SC-8** (Transmission Confidentiality) | TLS 1.3 | Kyber KEX + Dilithium signatures on every inference session; quantum-resistant |
+| **AC-4** (Information Flow) | Firewall rules | Model weights inaccessible; extraction attacks blocked by architectural isolation |
+| **SI-10** (Input Validation) | Input sanitization | Process isolation prevents adversarial injection from compromised adjacent services |
+| **AU-10** (Non-Repudiation) | Signed logs | Each ForgeRedOps agent action carries Xiid cryptographic proof of connection authenticity |
+
+### 3PAO Assessment Readiness
+
+Xiid provides cryptographic evidence artifacts that 3PAO assessors can independently verify — not just system owner assertions:
+
+- **SealedTunnel audit logs:** Independently verifiable cryptographic session records for all SC/IA/AC control implementations
+- **ZKP proof records:** Zero-Knowledge Proof authentication records that prove identity verification without exposing credentials
+- **Chain of custody:** Cryptographic proof that Evidence Vault items were delivered via SealedTunnel — tamper-proof evidence chain
+- **Agent attribution:** Non-repudiable ForgeRedOps activity logs with per-agent cryptographic proof — definitively attributable actions
+
+---
+
+## Certification Roadmap & Competitive Differentiation
+
+### Certification Roadmap
+
+| Certification / Phase | Timeline | Xiid Impact |
+|----------------------|----------|-------------|
+| **SOC 2 Type II** | Phase 1 (Month 1-6) | SealedTunnel satisfies multiple SOC 2 CC6 (Logical Access) and CC7 (System Operations) criteria with cryptographic evidence |
+| **GSA Schedule 70** | Phase 1 (Month 3-6) | Xiid integration strengthens technical evaluation factors; AI security narrative differentiates from incumbent GRC vendors |
+| **TX-RAMP Level 2** | Phase 2 (by June 2026) | Sealed evidence delivery + ZKP auth addresses Texas DIR data security requirements; positions platform for 1,950+ entity opportunity |
+| **FedRAMP Ready** | Phase 2 (Month 6-12) | Xiid control implementations directly populate SC, IA, AC families in SSP; 3PAO assessment accelerated by cryptographic audit evidence |
+| **FedRAMP Moderate** | Phase 3 (Month 12-24) | Xiid authorization inheritance (if FedRAMP authorized) reduces assessment burden; PQC encryption addresses emerging NIST PQC mandate |
+
+**TX-RAMP June 2026 deadline:** 1,950+ Texas entities need compliant platforms. The Xiid ZKP authentication and sealed evidence delivery directly address state AI legislation requirements (Colorado SB 21-169, California AB-2013) emerging alongside TX-RAMP.
+
+### Competitive Differentiation
+
+The Xiid integration creates competitive advantages that are architectural and auditable — not marketing claims. These are most powerful in federal procurement contexts where technical differentiation must be demonstrated to contracting officers and 3PAO assessors.
+
+| Factor | Drata / Vanta | RegScale | Xacta (Telos) | ForgeComply 360 + Xiid |
+|--------|-------------|----------|---------------|----------------------|
+| **Deployment** | Cloud only | Cloud only | Cloud + limited on-prem | Cloud + GovCloud + Air-gap (cryptographically enforced) |
+| **AI inference security** | No AI inference sealing | No AI inference sealing | Limited AI capabilities | Claude API + Ollama both sealed via SealedTunnel |
+| **Agent isolation** | No autonomous agents | No autonomous agents | No autonomous agents | 24 ForgeRedOps agents: per-agent dedicated SealedTunnel |
+| **PQC encryption** | Standard TLS only | Standard TLS only | Standard TLS only | Kyber KEX + Dilithium; Harvest-Now-Decrypt-Later protection |
+| **Authentication** | OAuth/SAML/MFA | OAuth/SAML/MFA | PKI + CAC/PIV | Xiid ZKP SSO; no credentials stored or transmitted; AAL3 |
+| **Multi-cloud isolation** | Logical isolation only | Logical isolation only | Network segmentation | Xiid SDN; classification-boundary separation; cross-domain Trust Relationships |
+| **CMMC Level 3 / IL5** | Not applicable | Limited support | Partial support | Air-gap gateway; local Ollama; zero external runtime deps; Xiid provable boundary |
+| **CI/CD security** | Standard GitHub security | Standard pipeline security | Standard pipeline security | Runners: zero inbound; no credential exposure; lateral movement blocked |
+| **3PAO audit evidence** | Standard logs | Standard logs | DoD-oriented logging | Xiid cryptographic non-repudiation; ZKP proof records in audit trail |
+
+**Federal Procurement Impact:** The Xiid integration provides the technical depth that elevates ForgeComply 360 from "another GRC tool" to "the only platform with provably secure AI inference in air-gapped environments." Competitors cannot answer "how do you protect AI inference in a classified environment" — ForgeComply 360 + Xiid has a concrete, auditable technical answer embeddable directly into FedRAMP SSPs and CMMC assessments.
+
+---
+
+## Implementation Sprint Plan
+
+The Xiid integration is structured as a 5-week sprint, mirroring the Nessus integration sprint model. Each phase delivers independently testable, production-ready capabilities. The standard Xiid 90-minute deployment claim is extended to 2-3 weeks to account for ForgeComply 360's complexity and FedRAMP documentation requirements.
+
+### Sprint Schedule
+
+| Phase | Duration | Deliverables | Integration Points |
+|-------|----------|-------------|-------------------|
+| **Phase 1: Foundation** | Week 1 | Xiid commercial terms finalized; Terniion tenant provisioned; Cloudflare Workers API wrapped in SealedTunnel; X-Scanner-Key → Xiid SSO migration | forge-api Workers; API auth layer; wrangler.toml secrets migration |
+| **Phase 2: AI Inference** | Week 2 | Claude API calls wrapped in SealedTunnel; on-prem Ollama configured with zero inbound ports; RAG vector DB access sealed; ForgeML process isolation | ForgeML engine; Claude API integration; vector DB; Ollama Docker config |
+| **Phase 3: Agent Isolation** | Week 3 | ForgeRedOps 24-agent per-agent SealedTunnel channels; agent memory store isolation; ForgeSOC SIEM integration via SealedTunnel; audit trail cryptographic proof | ForgeRedOps agent code; ForgeSOC SIEM connectors; Splunk/Sentinel integration |
+| **Phase 4: Pipeline & Nessus** | Week 4 | GitHub Actions runners sealed; GHCR model registry protected; Nessus import pipeline SealedTunnel; Tenable SC integration; Evidence Vault delivery sealed | Forge-Scan CI/CD; Forge-Reporter; Nessus API; R2 Evidence Vault |
+| **Phase 5: Air-Gap & Docs** | Week 5 | On-prem air-gap gateway configuration; DoD IL4/IL5 deployment guide; FedRAMP SSP SC/IA/AC control narrative updates; 3PAO assessment readiness review | On-prem Kubernetes; Air-gap gateway; FedRAMP SSP; OSCAL artifacts |
+
+### Immediate Actions (Week 1)
+
+1. Initiate contact with Xiid (xiid.com) — reference MLOps and AI Governance whitepapers as integration context
+2. Request FedRAMP authorization status documentation and FIPS 203/204 (Kyber/Dilithium) compliance confirmation
+3. Provision Terniion tenant; establish development SealedTunnel connecting local dev environment to forge-api Worker
+4. Begin Sprint Phase 1: Migrate X-Scanner-Key auth to Xiid SSO in staging environment
+
+### Short-Term (Weeks 2-5)
+
+5. Execute Sprint Phases 2-5 per schedule above
+6. Update FedRAMP SSP control narratives for SC-7, SC-8, SC-13, IA-2, IA-5, AC-3, AC-4 to reflect Xiid implementation
+7. Generate OSCAL control implementation records for all Xiid-satisfied controls
+8. Prepare 3PAO assessment evidence package: SealedTunnel audit logs, ZKP proof records, cryptographic chain of custody
+
+### Medium-Term (Month 2-3)
+
+9. Complete SOC 2 Type II control mapping updates reflecting Xiid implementation
+10. Develop sales collateral: "Provably Secure AI Compliance" narrative using Xiid integration as core differentiator
+11. Negotiate channel partner arrangement with Xiid for bundled federal proposals
+12. Publish air-gapped deployment guide for DoD IL5 customers — ForgeComply 360 + Xiid + on-prem Ollama
+
+### Success Metrics
+
+| Metric | Target | Measurement Method |
+|--------|--------|-------------------|
+| SealedTunnel coverage | 100% of inter-component comms | Network scan: zero open inbound ports on any ForgeComply 360 component |
+| Authentication modernization | Zero stored credentials for service accounts | Security audit: no API keys in env vars, config files, or secret stores |
+| ForgeRedOps isolation | 24/24 agents on dedicated SealedTunnel channels | Xiid console: per-agent tunnel assignment verification |
+| Claude API sealing | 100% of inference calls via SealedTunnel | ForgeML logging: all calls routed through Xiid proxy; zero direct API calls |
+| CI/CD runner security | Zero inbound ports on all GitHub Actions runners | GitHub Actions audit: runner network configuration verified |
+| FedRAMP SSP completeness | 15 NIST 800-53 controls with Xiid implementation narratives | SSP control implementation status: Implemented (Xiid-satisfied) |
+| 3PAO evidence package | Cryptographic proof records for all SC/IA/AC controls | Audit evidence vault: ZKP proof records, SealedTunnel session logs |
+
+---
+
+## Schema & API Changes
+
+### Database Schema Changes
+
+The Xiid integration adds columns to existing authentication and audit tables to support Xiid session tokens, ZKP proof records, and SealedTunnel session identifiers for complete audit chain coverage. No new tables are required.
+
+| Table | New Column | Type | Purpose |
+|-------|-----------|------|---------|
+| `users` | `xiid_identity_id` | `TEXT UNIQUE` | Xiid ZKP identity binding; replaces password-based credential |
+| `users` | `xiid_device_attestation` | `TEXT` | Cryptographic device binding for NIST 800-63-3 AAL3 |
+| `scan_imports` | `sealed_tunnel_session_id` | `TEXT` | SealedTunnel session ID for Nessus file transfer audit |
+| `scan_imports` | `xiid_imported_by` | `TEXT` | ZKP-verified identity of importing user (non-repudiable) |
+| `audit_logs` | `xiid_proof_hash` | `TEXT` | Xiid cryptographic proof of connection authenticity |
+| `audit_logs` | `sealed_session_ref` | `TEXT` | Reference to SealedTunnel session for full correlation |
+| `evidence_items` | `sealed_delivery_proof` | `TEXT` | Cryptographic proof item was delivered via SealedTunnel |
+
+### Migration SQL
+
+```sql
+-- Xiid integration schema additions
+-- Run after Sprint Phase 1 completion
+
+-- User identity binding
+ALTER TABLE users ADD COLUMN xiid_identity_id TEXT UNIQUE;
+ALTER TABLE users ADD COLUMN xiid_device_attestation TEXT;
+
+-- Scan import audit chain
+ALTER TABLE scan_imports ADD COLUMN sealed_tunnel_session_id TEXT;
+ALTER TABLE scan_imports ADD COLUMN xiid_imported_by TEXT;
+
+-- Audit log cryptographic proof
+ALTER TABLE audit_logs ADD COLUMN xiid_proof_hash TEXT;
+ALTER TABLE audit_logs ADD COLUMN sealed_session_ref TEXT;
+
+-- Evidence vault delivery proof
+ALTER TABLE evidence_items ADD COLUMN sealed_delivery_proof TEXT;
+
+-- Index for audit correlation queries
+CREATE INDEX idx_audit_logs_sealed_session ON audit_logs(sealed_session_ref);
+CREATE INDEX idx_audit_logs_xiid_proof ON audit_logs(xiid_proof_hash);
+CREATE INDEX idx_scan_imports_sealed ON scan_imports(sealed_tunnel_session_id);
+```
+
+### API Endpoint Changes
+
+The Xiid integration modifies the authentication layer for all existing API endpoints rather than introducing new endpoints. The primary change is replacing `X-Scanner-Key` header authentication with Xiid token validation and adding SealedTunnel session verification as middleware.
+
+| Endpoint Group | Change Type | Description |
+|---------------|------------|-------------|
+| `POST /api/v1/auth/*` | Replacement | Xiid ZKP SSO replaces JWT issuance for UI users; service accounts use SealedTunnel identity |
+| `POST /api/v1/scanner/*` | Middleware addition | SealedTunnel session verification middleware added before X-Scanner-Key validation; both validated |
+| `POST /api/v1/scans/import` | SealedTunnel required | Nessus .nessus file upload requires active SealedTunnel session; `sealed_tunnel_session_id` recorded |
+| `GET /api/v1/oscal/*` | Delivery sealing | OSCAL artifact exports delivered via SealedTunnel to auditor portal; standard HTTPS fallback with warning |
+| `ALL /api/v1/*` | Audit enhancement | `xiid_proof_hash` added to all audit log entries; non-repudiable activity attribution |
+
+### Xiid Commercial Terms (Pre-Sprint)
+
+Before committing to deep integration, resolve with Xiid:
+
+- **FedRAMP status:** Confirm Xiid's own FedRAMP authorization status and whether ForgeComply 360 can inherit controls from Xiid's authorization boundary
+- **IL5 compatibility:** Confirm Terniion compatibility with DoD IL5 accreditation requirements — specifically Kyber/Dilithium alignment with NIST PQC standards (FIPS 203, 204)
+- **SLA requirements:** Contract SLA for SealedTunnel availability — ForgeComply 360's continuous authorization (24/7 ControlPulse) depends on SealedTunnel uptime; requires 99.99% SLA
 
 ---
 
@@ -1488,11 +2037,16 @@ curl https://ai-api.forgecomply360.com/health    # ForgeAI Govern
 
 ## References
 
+### External
 - [Xiid SealedTunnel Technical Overview](https://docs.xiid.com/history/3.0.0/src/technical_overview.html)
 - [Xiid Products — Terniion Platform](https://www.xiid.com/products)
 - [Xiid + Cytex Strategic Partnership (Feb 2026)](https://www.xiid.com/other-resources/press-release/xiid-partners-with-cytex)
 - [Xiid Zero Knowledge Networking for Financial Institutions](https://www.xiid.com/blog/strengthening-cybersecurity-in-financial-institutions-with-xiids-zero-knowledge-networking)
 - [Xiid Ventura Capital Funding Announcement](https://www.businesswire.com/news/home/20250904616035/en/Xiid-Announces-Strategic-Funding-from-Ventura-Capital-to-Advance-Zero-Knowledge-Networking)
+
+### Internal
+- ForgeComply 360 Xiid Integration Design Document v1.0 (Feb 2026) — `docs/ForgeComply360_Xiid_Integration_Design (1).docx`
+- ForgeComply 360 Xiid Architecture Diagram — `docs/xiid-forgecomply-architecture.svg`
 
 ---
 
