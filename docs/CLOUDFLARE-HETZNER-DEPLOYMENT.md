@@ -1,7 +1,7 @@
 # Forge Cyber Defense — Full Platform Hybrid Deployment Guide
 # Cloudflare + Hetzner + Xiid SealedTunnel
 
-**Version:** 6.1.0
+**Version:** 6.2.0
 **Date:** 2026-02-26
 **Author:** Forge Cyber Defense (SDVOSB)
 
@@ -11,26 +11,27 @@
 
 1. [Platform Overview](#platform-overview)
 2. [Why Cloudflare + Hetzner](#why-cloudflare--hetzner)
-3. [Architecture Overview](#architecture-overview)
-4. [Xiid SealedTunnel Integration](#xiid-sealedtunnel-integration)
-5. [Cross-Domain Classification & Air-Gap Deployment](#cross-domain-classification--air-gap-deployment)
-6. [Component Placement](#component-placement)
-7. [Hetzner Server Setup](#hetzner-server-setup)
-8. [Full-Platform Docker Compose](#full-platform-docker-compose)
-9. [Cloudflare Configuration](#cloudflare-configuration)
-10. [Networking & Security](#networking--security)
-11. [Forge-Reporter Integration](#forge-reporter-integration)
-12. [Forge-Scan Integration](#forge-scan-integration)
-13. [ForgeAI Govern Integration](#forgeai-govern-integration)
-14. [CI/CD Pipeline](#cicd-pipeline)
-15. [NIST 800-53 Control Mapping](#nist-800-53-control-mapping)
-16. [Certification Roadmap & Competitive Differentiation](#certification-roadmap--competitive-differentiation)
-17. [Implementation Sprint Plan](#implementation-sprint-plan)
-18. [Schema & API Changes](#schema--api-changes)
-19. [Monitoring & Observability](#monitoring--observability)
-20. [Backup & Disaster Recovery](#backup--disaster-recovery)
-21. [Cost Estimates](#cost-estimates)
-22. [Migration Path from Pure Cloudflare](#migration-path-from-pure-cloudflare)
+3. [Recommended Configuration](#recommended-configuration)
+4. [Architecture Overview](#architecture-overview)
+5. [Xiid SealedTunnel Integration](#xiid-sealedtunnel-integration)
+6. [Cross-Domain Classification & Air-Gap Deployment](#cross-domain-classification--air-gap-deployment)
+7. [Component Placement](#component-placement)
+8. [Hetzner Server Setup](#hetzner-server-setup)
+9. [Full-Platform Docker Compose](#full-platform-docker-compose)
+10. [Cloudflare Configuration](#cloudflare-configuration)
+11. [Networking & Security](#networking--security)
+12. [Forge-Reporter Integration](#forge-reporter-integration)
+13. [Forge-Scan Integration](#forge-scan-integration)
+14. [ForgeAI Govern Integration](#forgeai-govern-integration)
+15. [CI/CD Pipeline](#cicd-pipeline)
+16. [NIST 800-53 Control Mapping](#nist-800-53-control-mapping)
+17. [Certification Roadmap & Competitive Differentiation](#certification-roadmap--competitive-differentiation)
+18. [Implementation Sprint Plan](#implementation-sprint-plan)
+19. [Schema & API Changes](#schema--api-changes)
+20. [Monitoring & Observability](#monitoring--observability)
+21. [Backup & Disaster Recovery](#backup--disaster-recovery)
+22. [Cost Estimates](#cost-estimates)
+23. [Migration Path from Pure Cloudflare](#migration-path-from-pure-cloudflare)
 
 ---
 
@@ -84,14 +85,15 @@ The Forge Cyber Defense platform is a suite of four interconnected products:
 
 ## Why Cloudflare + Hetzner
 
-ForgeComply 360 currently supports two deployment modes:
+ForgeComply 360 currently supports three deployment modes:
 
-| Mode | Stack | Best For |
-|------|-------|----------|
-| **Cloud-native** | Cloudflare Workers + D1 + R2 + KV | Low-ops SaaS delivery |
-| **On-premises** | Docker Compose (PostgreSQL, Redis, MinIO, Ollama) | Air-gapped/SCIF environments |
+| Mode | Stack | Best For | Recommendation |
+|------|-------|----------|---------------|
+| **Cloud-native** | Cloudflare Workers + D1 + R2 + KV | Low-ops SaaS delivery | Development/staging only |
+| **Hybrid (CF + Hetzner)** | Cloudflare Pages + Hetzner backend | Production SaaS + federal | **RECOMMENDED for production** |
+| **On-premises** | Docker Compose (PostgreSQL, Redis, MinIO, Ollama) | Air-gapped/SCIF environments | DoD IL5/TS only |
 
-A **hybrid Cloudflare + Hetzner** deployment combines the strengths of both:
+The **hybrid Cloudflare + Hetzner** deployment combines the strengths of cloud and bare metal:
 
 - **Cloudflare** handles what it does best: global CDN, DDoS protection, WAF, DNS, TLS termination, and static asset delivery
 - **Hetzner** provides cost-effective, high-performance bare metal or cloud VMs for stateful workloads: databases, AI inference, vulnerability scanning, and background processing
@@ -105,6 +107,62 @@ A **hybrid Cloudflare + Hetzner** deployment combines the strengths of both:
 - You want **predictable monthly costs** (Hetzner) with **elastic edge performance** (Cloudflare)
 - You require **Xiid SealedTunnel** for DoD/federal environments requiring quantum-resistant, zero-knowledge connectivity
 - Your compliance framework requires data to reside in a specific jurisdiction (Hetzner Falkenstein/Nuremberg for EU, Ashburn for US)
+
+---
+
+## Recommended Configuration
+
+This guide presents multiple options for each architectural decision. The table below captures the
+recommended configuration for most deployments, optimized for Forge Cyber Defense's position as an
+SDVOSB targeting federal/DoD procurement while maintaining a viable commercial SaaS offering.
+
+| Decision | Recommended Option | Rationale |
+|----------|-------------------|-----------|
+| **Tunnel technology** | Option 2: Xiid + Cloudflare (Defense in Depth) | Cloudflare provides free L7 WAF/DDoS for commercial SaaS tier; Xiid adds quantum-resistant zero-knowledge tunneling for federal. Neither alone covers both markets |
+| **Server configuration** | Option B: AX42 Dedicated (~€97/mo) | 64 GB RAM handles full 4-product stack + Ollama. Option A (16 GB) is too tight for AI inference + scanning. Option C (multi-server) is premature before 500+ users |
+| **Deployment mode** | Hybrid (Cloudflare Pages + Hetzner backend) | Cloudflare Pages for global CDN (free); Hetzner for stateful workloads (PostgreSQL, Ollama, Rust scanner). Pure Cloudflare hits Workers limits; pure on-prem is only for air-gap/SCIF |
+| **AI inference** | Ollama on-premises default; Claude API optional premium | Ollama on AX42 = zero marginal cost per inference; data never leaves your infrastructure. Federal customers require on-prem AI. Offer Claude API as premium tier for higher-quality generation |
+| **Target classification** | FedRAMP Moderate first, IL4-ready architecture | FedRAMP Moderate covers broadest federal market (civilian agencies). SOC 2 → TX-RAMP → FedRAMP Ready → FedRAMP Moderate sequence. Keep architecture IL4-ready so DoD pivot is configuration, not re-architecture |
+| **Integration pattern** | API gateway federation (planned); webhooks interim | Products share PostgreSQL instance with isolated databases. Webhook system (14+ event types) provides loose coupling now. Build toward API gateway (Kong/Caddy/Workers route) for cross-product federation |
+| **SSO strategy** | ForgeComply 360 as single identity provider | ForgeComply 360 already issues scoped tokens for Reporter and validates Scan engine JWTs. Standardize all products on ForgeComply-issued tokens. Long-term: Xiid ZKP SSO → ForgeComply JWT → all products |
+
+### Decision Flow
+
+```
+                            ┌──────────────────────────┐
+                            │  What is your deployment  │
+                            │  environment?              │
+                            └─────────┬────────────────┘
+                                      │
+                   ┌──────────────────┼──────────────────┐
+                   ▼                  ▼                  ▼
+            Commercial SaaS      Federal/CUI         DoD IL4/IL5
+            (SOC 2, HIPAA)       (FedRAMP Mod)       (CMMC L3)
+                   │                  │                  │
+                   ▼                  ▼                  ▼
+            Option B: AX42      Option B: AX42      Option C: Multi-Server
+            CF Tunnel only      Xiid + Cloudflare   Xiid replaces CF Tunnel
+            Ollama default      Ollama default      Ollama mandatory
+            Cloud AI optional   Cloud AI disabled   Air-gap overlay
+                   │                  │                  │
+                   └──────────────────┼──────────────────┘
+                                      ▼
+                            ForgeComply 360 = IdP
+                            Webhook integration now
+                            API gateway sprint planned
+```
+
+### Cost Comparison by Configuration
+
+| Configuration | Monthly Cost | Target Market |
+|--------------|-------------|---------------|
+| Option B + CF Tunnel (commercial) | ~€97/mo (~$106) | SaaS customers, SOC 2, HIPAA |
+| Option B + Xiid + CF (federal) | ~€97/mo + Xiid license | FedRAMP Moderate, CUI, CMMC L2 |
+| Option C + Xiid only (DoD) | ~€269/mo + Xiid license | DoD IL4/IL5, CMMC L3, air-gap |
+
+> **Start with Option B + Xiid + Cloudflare.** This configuration serves both commercial and
+> federal customers from a single infrastructure. Upgrade to Option C only when scan volume,
+> user count, or DoD IL5 requirements demand dedicated servers.
 
 ---
 
@@ -344,7 +402,13 @@ The Terniion control plane is the security orchestration layer above all ForgeCo
 | Model IP protection | Model weights inaccessible; extraction attacks blocked by closed inbound ports | AC-4 Information Flow |
 | Adversarial input blocking | Process isolation prevents injection from compromised adjacent services | SI-10 Information Input Validation |
 
-**On-Premises / Air-Gap Deployment (Ollama / Llama 3):** For DoD IL4/IL5 and CMMC Level 3 customers, local inference infrastructure operates with zero public IP addresses, zero inbound ports, and process-isolated SealedTunnel for inter-service communication. GPU clusters are microsegmented at the process level — a compromised training process cannot laterally reach the inference endpoint.
+**On-Premises / Air-Gap Deployment (Ollama / Llama 3) — RECOMMENDED DEFAULT:** Ollama running
+llama3.1:8b on the Hetzner AX42 server is the recommended default for all deployment tiers.
+Zero marginal cost per inference, compliance data never leaves your infrastructure, and federal
+customers require on-prem AI. Cloud AI (Claude API) should be offered as an optional premium tier
+for customers who need higher-quality generation and have no data residency constraints.
+
+For DoD IL4/IL5 and CMMC Level 3 customers, local inference infrastructure operates with zero public IP addresses, zero inbound ports, and process-isolated SealedTunnel for inter-service communication. GPU clusters are microsegmented at the process level — a compromised training process cannot laterally reach the inference endpoint.
 
 **RAG Control Mapping Knowledge Base:** The vector database powering ForgeComply 360's 94% accuracy control mapping (1,189 NIST 800-53 control embeddings, FedRAMP baselines, CMMC practices) is secured through process-isolated SealedTunnel connections with inbound ports closed. Embedding update operations require authenticated SealedTunnel connections with Xiid ZKP identity verification.
 
@@ -392,7 +456,11 @@ The GitHub Actions CI/CD pipeline for all Forge repositories builds Rust scanner
 
 #### Option 1: Xiid Replaces Cloudflare Tunnel
 
-Use this when you need the highest security posture (federal/DoD environments):
+Use this when you need the highest security posture (federal/DoD environments).
+
+> **Note:** This option removes Cloudflare WAF/DDoS protection from the API path. You must
+> provide your own L7 DDoS mitigation if you choose this option. See Option 2 for the
+> recommended defense-in-depth approach.
 
 ```
 Browser → Cloudflare CDN (static assets only)
@@ -405,9 +473,10 @@ In this mode:
 - All API traffic flows through Xiid SealedTunnel instead of Cloudflare Tunnel
 - Cloudflare WAF is NOT in the path (Xiid handles security at the network layer)
 
-#### Option 2: Xiid + Cloudflare (Defense in Depth)
+#### Option 2: Xiid + Cloudflare (Defense in Depth) — RECOMMENDED
 
-Use this for maximum layered security:
+Use this for maximum layered security. **This is the recommended option** for most deployments —
+it serves both commercial SaaS and federal customers from a single infrastructure:
 
 ```
 Browser → Cloudflare CDN + WAF → Xiid SealedTunnel → Hetzner
@@ -552,18 +621,23 @@ When using Xiid, replace the `cloudflared` service with:
 
 ### Xiid vs Cloudflare Tunnel Decision Matrix
 
-| Requirement | Use Cloudflare Tunnel | Use Xiid SealedTunnel |
-|-------------|----------------------|----------------------|
-| Commercial SaaS | Yes | Optional |
-| CMMC Level 1-2 | Yes | Optional |
-| CMMC Level 3 | Consider Xiid | **Yes** |
-| DoD IL4/IL5 | No | **Yes** |
-| FedRAMP High | Consider Xiid | **Yes** |
-| HIPAA | Yes | Optional |
-| Financial (SOX/PCI) | Yes | Recommended |
-| Data sovereignty | Depends | **Yes** (zero knowledge) |
-| Quantum-resistance requirement | No | **Yes** |
-| Budget-sensitive | Yes (free) | Enterprise licensing |
+| Requirement | Use Cloudflare Tunnel | Use Xiid SealedTunnel | Recommended: Use Both |
+|-------------|----------------------|----------------------|----------------------|
+| Commercial SaaS | Yes | Optional | **Yes — CF WAF + Xiid** |
+| CMMC Level 1-2 | Yes | Optional | **Yes — defense in depth** |
+| CMMC Level 3 | Consider Xiid | **Yes** | **Yes — CF DDoS + Xiid ZKP** |
+| DoD IL4/IL5 | No | **Yes** | Xiid only (CF proxy off) |
+| FedRAMP Moderate | Yes | Recommended | **Yes — strongest posture** |
+| FedRAMP High | Consider Xiid | **Yes** | **Yes — CF edge + Xiid** |
+| HIPAA | Yes | Optional | **Yes — dual encryption** |
+| Financial (SOX/PCI) | Yes | Recommended | **Yes — CF WAF + Xiid ZK** |
+| Data sovereignty | Depends | **Yes** (zero knowledge) | Xiid required |
+| Quantum-resistance | No | **Yes** | Xiid required |
+| Budget-sensitive | Yes (free) | Enterprise licensing | CF free + Xiid license |
+
+> **Recommendation:** The "Use Both" column reflects the defense-in-depth approach (Option 2).
+> For most deployments, running both Cloudflare and Xiid provides the strongest security posture
+> while maintaining Cloudflare's free WAF and DDoS protection for the commercial SaaS tier.
 
 ---
 
@@ -709,19 +783,27 @@ services:
 
 #### Option A: Single Server (Small team, up to ~50 users)
 
+> **Caution:** Ollama requires ~8 GB RAM for llama3.1:8b inference, leaving only ~8 GB for
+> PostgreSQL + Redis + MinIO + 3 API services + monitoring. This is tight for production
+> workloads with concurrent scanning. Use for development/staging or very light production use only.
+
 | Spec | Hetzner Product | Monthly Cost |
 |------|----------------|-------------|
 | **Cloud VPS** | CPX41 (8 vCPU, 16 GB RAM, 240 GB NVMe) | ~€15.90/mo |
 | **Block Storage** | 500 GB for evidence + scan data | ~€23.80/mo |
 | **Total** | | **~€40/mo** |
 
-#### Option B: Dedicated Server (Medium org, 50-500 users)
+#### Option B: Dedicated Server (Medium org, 50-500 users) — RECOMMENDED
 
 | Spec | Hetzner Product | Monthly Cost |
 |------|----------------|-------------|
 | **Dedicated** | AX42 (Ryzen 5 3600, 64 GB RAM, 2x512 GB NVMe) | ~€49/mo |
 | **Block Storage** | 1 TB for evidence + scan data | ~€47.60/mo |
 | **Total** | | **~€97/mo** |
+
+**This is the recommended starting configuration.** 64 GB RAM comfortably runs the full 4-product
+stack including Ollama inference. When AI inference latency becomes a bottleneck under load,
+split Ollama to a dedicated server (from Option C) as the first scale-out step.
 
 #### Option C: Multi-Server Enterprise (500+ users, full platform)
 
@@ -1034,10 +1116,13 @@ services:
           memory: 8G
 
   # ══════════════════════════════════════════════════════════════
-  #  CONNECTIVITY (choose ONE: cloudflared OR xiid-agent)
+  #  CONNECTIVITY
+  #  Recommended: Run BOTH cloudflared + xiid-agent (defense in depth)
+  #  Option A alone: commercial SaaS only
+  #  Option B alone: DoD IL4/IL5 only (Xiid replaces CF Tunnel)
   # ══════════════════════════════════════════════════════════════
 
-  # Option A: Cloudflare Tunnel (standard commercial deployment)
+  # Option A: Cloudflare Tunnel (included in recommended defense-in-depth config)
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: forge-tunnel
@@ -1658,6 +1743,13 @@ deployments. Cross-product API integration requires an API gateway or federation
 layer (planned — see Sprint Plan). Initial integration supports shared JWT
 authentication and manual export/import of control mappings.
 
+> **Recommendation:** Use the existing webhook system (14+ event types: `poam_update`,
+> `risk_alert`, `monitoring_fail`, etc.) for loose-coupled integration now. Plan an API
+> gateway (Caddy, Kong, or a Cloudflare Workers route acting as a federation layer) in
+> Sprint Phase 1 to enable direct cross-product API calls. Do **not** build a shared
+> database — the isolated-database-per-product model (`forgecomply`, `forgescan`, `forgeai`
+> in shared PostgreSQL) is the correct architecture for independent deployability.
+
 ### ForgeAI + ForgeML Protection (Xiid-Sealed)
 
 When Xiid is enabled, all ForgeAI Govern communications and AI inference calls are sealed:
@@ -1673,7 +1765,15 @@ When Xiid is enabled, all ForgeAI Govern communications and AI inference calls a
 ### Cross-Platform SSO — Shared JWT Authentication
 
 All four products share JWT-based authentication with ForgeComply 360 as the identity provider.
-Each product implements JWT independently but with compatible token validation:
+Each product currently implements JWT independently but with compatible token validation.
+
+> **Recommendation:** Consolidate to **ForgeComply 360 as the single identity provider** (IdP).
+> ForgeComply 360 already generates scoped tokens for Forge-Reporter and validates Forge-Scan
+> JWTs. ForgeAI Govern should be updated to accept ForgeComply-issued JWTs rather than
+> maintaining its own user table. Additionally, standardize all products on a single JWT
+> algorithm — either **HMAC-SHA384** (ForgeComply's current algorithm) or migrate to
+> **RS256 (asymmetric)** so products can validate tokens without sharing the signing secret.
+> Long-term: **Xiid ZKP SSO → ForgeComply 360 JWT → all products validate the same token.**
 
 **Per-Product JWT Implementation (Code-Verified):**
 
@@ -1899,13 +1999,19 @@ Xiid provides cryptographic evidence artifacts that 3PAO assessors can independe
 
 ### Certification Roadmap
 
-| Certification / Phase | Timeline | Xiid Impact |
-|----------------------|----------|-------------|
-| **SOC 2 Type II** | Phase 1 (Month 1-6) | SealedTunnel satisfies multiple SOC 2 CC6 (Logical Access) and CC7 (System Operations) criteria with cryptographic evidence |
-| **GSA Schedule 70** | Phase 1 (Month 3-6) | Xiid integration strengthens technical evaluation factors; AI security narrative differentiates from incumbent GRC vendors |
-| **TX-RAMP Level 2** | Phase 2 (by June 2026) | Sealed evidence delivery + ZKP auth addresses Texas DIR data security requirements; positions platform for 1,950+ entity opportunity |
-| **FedRAMP Ready** | Phase 2 (Month 6-12) | Xiid control implementations directly populate SC, IA, AC families in SSP; 3PAO assessment accelerated by cryptographic audit evidence |
-| **FedRAMP Moderate** | Phase 3 (Month 12-24) | Xiid authorization inheritance (if FedRAMP authorized) reduces assessment burden; PQC encryption addresses emerging NIST PQC mandate |
+> **Recommended sequence:** SOC 2 → TX-RAMP → FedRAMP Ready → FedRAMP Moderate. This progression
+> builds compliance evidence incrementally. SOC 2 is achievable fastest and validates your control
+> framework. TX-RAMP has a June 2026 deadline and opens 1,950+ Texas entity opportunities. FedRAMP
+> Moderate covers the broadest federal market (civilian agencies). Target IL4/IL5 only when a
+> specific DoD contract requires it — the architecture is already IL4-ready.
+
+| Certification / Phase | Timeline | Xiid Impact | Priority |
+|----------------------|----------|-------------|----------|
+| **SOC 2 Type II** | Phase 1 (Month 1-6) | SealedTunnel satisfies multiple SOC 2 CC6 (Logical Access) and CC7 (System Operations) criteria with cryptographic evidence | **Start here** |
+| **GSA Schedule 70** | Phase 1 (Month 3-6) | Xiid integration strengthens technical evaluation factors; AI security narrative differentiates from incumbent GRC vendors | Parallel with SOC 2 |
+| **TX-RAMP Level 2** | Phase 2 (by June 2026) | Sealed evidence delivery + ZKP auth addresses Texas DIR data security requirements; positions platform for 1,950+ entity opportunity | **Deadline-driven** |
+| **FedRAMP Ready** | Phase 2 (Month 6-12) | Xiid control implementations directly populate SC, IA, AC families in SSP; 3PAO assessment accelerated by cryptographic audit evidence | Builds on SOC 2 |
+| **FedRAMP Moderate** | Phase 3 (Month 12-24) | Xiid authorization inheritance (if FedRAMP authorized) reduces assessment burden; PQC encryption addresses emerging NIST PQC mandate | **Broadest federal market** |
 
 **TX-RAMP June 2026 deadline:** 1,950+ Texas entities need compliant platforms. The Xiid ZKP authentication and sealed evidence delivery directly address state AI legislation requirements (Colorado SB 21-169, California AB-2013) emerging alongside TX-RAMP.
 
