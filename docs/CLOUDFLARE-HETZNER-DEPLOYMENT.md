@@ -1,7 +1,7 @@
 # Forge Cyber Defense — Full Platform Hybrid Deployment Guide
 # Cloudflare + Hetzner + Xiid SealedTunnel
 
-**Version:** 6.0.0
+**Version:** 6.1.0
 **Date:** 2026-02-26
 **Author:** Forge Cyber Defense (SDVOSB)
 
@@ -1344,104 +1344,149 @@ hcloud firewall apply-to-resource forge-fw \
 
 ## Forge-Reporter Integration
 
-Forge-Reporter is an **offline-first** SSP wizard that can operate in two modes:
+Forge-Reporter (`Bjay0727-jay/Forge-Reporter`) is a **React 19 + TypeScript + Vite** offline-first NIST RMF SSP authoring engine with 23 RMF-mapped sections and full OSCAL 1.1.2 compliance validation.
 
-### Standalone Mode (Default)
-- Deployed to Cloudflare Pages as a static SPA
-- All data stored in browser `localStorage`
-- No backend required — ideal for classified environments
-- Exports OSCAL JSON, OSCAL XML, and PDF locally
+**Tech stack:** React 19.2, TypeScript 5.9, Vite 7.3, Tailwind CSS 4.1, Ajv 8.18 (OSCAL schema validation), jsPDF 4.1 (PDF export), js2xmlparser 5.0 (XML export)
 
-### Connected Mode (Synced with ForgeComply 360)
-- Authenticates with ForgeComply 360 API via URL parameters
-- Bidirectional sync: SSP data flows between Reporter and ForgeComply 360
-- ForgeML AI assistance for content generation via ForgeComply's Ollama backend
-- Evidence references link to the ForgeComply 360 evidence vault
+### Standalone Mode (Default — Offline-First)
+- Deployed to Cloudflare Pages as a static SPA (`forge-reporter.pages.dev`)
+- All SSP data persisted in browser `localStorage` (key: `forgecomply360-ssp-data`)
+- 800ms debounced auto-save on every field change; ~294 data fields across the full SSP model
+- No backend required — ideal for classified / air-gapped environments
+- Exports: OSCAL JSON (validated against NIST 1.1.2 schema), OSCAL XML (namespace `http://csrc.nist.gov/ns/oscal/1.0`), multi-page PDF (A4, cover page + TOC)
+- Imports: OSCAL JSON or XML with auto-detection, 50MB limit, 4-stage parsing
 
-### Integration Configuration
+### Connected Mode (Bidirectional Sync with ForgeComply 360)
+- Authenticates via URL hash token injection: `#token=<JWT>&ssp=<doc-id>`
+- Token stored in `sessionStorage` (temporary); validated against `HEAD /api/v1/auth/me`
+- Bidirectional sync via `useSync` hook with mutex-based concurrency protection
+- Data transformation layer (`sspMapper.ts`, 30KB) maps between flat Reporter format and nested OSCAL `_authoring` sections stored in ForgeComply 360's `ssp_documents.oscal_json`
+- ForgeML AI assistance via `POST /api/v1/ai/generate` with 3 modes: generate, refine, expand
+- 24 section-specific AI prompt pairs with prompt injection mitigation (XML tag wrapping, role stripping, 10K char limit)
+- Evidence references link to the ForgeComply 360 R2 Evidence Vault
+- Full sync orchestrates 7 parallel entity streams via `Promise.allSettled()`: info types, ports/protocols, crypto modules, separation of duties, policies, SCRM suppliers, CM baselines
 
-```bash
-# Forge-Reporter .env for connected mode
-VITE_API_URL=https://api.forgecomply360.com
-VITE_SYNC_ENABLED=true
-VITE_AI_ENABLED=true
+### Sync Architecture
+
+```
+ForgeComply 360 API                   Forge-Reporter SPA
+(Hetzner / Workers)                   (Cloudflare Pages)
+
+┌──────────────────────┐              ┌────────────────────────────┐
+│ ssp_documents table   │◀── GET ─────│ useSync.loadFromServer()   │
+│ oscal_json column     │── PUT ─────▶│ useSync.saveToServer()     │
+│ _authoring.sections   │             │ useSync.fullSync()         │
+│                       │             │   ├─ syncInfoTypes          │
+│ POST /api/v1/ssp/     │             │   ├─ syncPortsProtocols    │
+│   :id/section         │             │   ├─ syncCryptoModules     │
+│ PUT  /api/v1/ssp/:id  │             │   ├─ syncSepDuties         │
+│                       │             │   ├─ syncPolicies           │
+│ ForgeML AI:           │             │   ├─ syncSCRMSuppliers     │
+│ POST /api/v1/         │◀── AI ─────│   └─ syncCMBaselines        │
+│   ai/generate         │── resp ───▶│                              │
+│   (llama-3.1-8b)      │             │ sspMapper.ts (30KB):        │
+│                       │             │ Backend OSCAL ↔ Flat SSPData│
+└──────────────────────┘              └────────────────────────────┘
+  Token via URL hash:                   localStorage: SSP data
+  #token=<JWT>&ssp=<id>                 sessionStorage: access token
 ```
 
-### How It Fits in the Architecture
+### 23-Section RMF Coverage
 
-```
-┌─────────────────────┐        ┌─────────────────────┐
-│  Forge-Reporter      │  sync  │  ForgeComply 360     │
-│  (Cloudflare Pages)  │───────▶│  API (Hetzner)       │
-│                      │◀───────│                      │
-│  Browser-only SSP    │        │  Systems, Controls,  │
-│  wizard (23 sections)│        │  Evidence, SSP docs  │
-└─────────────────────┘        └──────────┬───────────┘
-                                          │
-                                          ▼
-                                ┌─────────────────────┐
-                                │  Ollama (Hetzner)    │
-                                │  AI-assisted SSP     │
-                                │  content generation  │
-                                └─────────────────────┘
-```
+| Phase | Sections | RMF Steps |
+|-------|---------|-----------|
+| **Frontmatter** | System Info, FIPS 199, Info Types, Control Baseline, RMF Lifecycle | Prepare, Categorize, Select |
+| **Architecture** | Auth Boundary, Data Flow, Network Architecture, Ports/Protocols, Interconnections, Crypto Modules (CNSA 2.0) | Implement |
+| **Personnel** | Personnel & Roles, Digital Identity (IAL/AAL/FAL), Separation of Duties | Prepare, Implement |
+| **Controls** | Control Implementations, Security Policies, SCRM (SP 800-161), Privacy Analysis (PTA/PIA) | Implement |
+| **Plans** | Contingency Plan (RTO/RPO/MTD), Incident Response, Configuration Management | Implement |
+| **Post-Auth** | Security Assessment, Authorization Decision, Continuous Monitoring (ISCM), POA&M | Assess, Authorize, Monitor |
 
 ---
 
 ## Forge-Scan Integration
 
-Forge-Scan is the vulnerability management backbone with four sub-products:
+Forge-Scan (`Bjay0727-jay/Forge-Scan`) is the vulnerability management backbone: a pure Rust scanner engine (13 crates) with a TypeScript platform layer (Cloudflare Workers + Hono). Four sub-products share a common event bus:
 
-| Sub-Product | Description | Integration Point |
-|-------------|-------------|-------------------|
-| **ForgeScan Engine** | Rust-based scanner (agentless + agent) | gRPC → Forge-Scan API → ForgeComply 360 |
-| **ForgeScan 360** | Vuln management, asset discovery, FRS scoring | Shared PostgreSQL, feeds POA&Ms |
-| **ForgeSOC** | 24/7 threat monitoring & incident response | Redis pub/sub alerts → ForgeComply 360 |
-| **ForgeRedOps** | AI-powered pen testing (24 autonomous agents) | Ollama inference, findings → POA&Ms |
+**Tech stack:** Rust 1.78 (scanner engine, 13 crates), TypeScript (Workers API + Dashboard), Cloudflare D1/R2/KV, Redis Cluster (pub/sub), Apache Kafka (event streaming)
 
-### Data Flow
+| Sub-Product | Description | Key Metrics | Integration Point |
+|-------------|-------------|-------------|-------------------|
+| **ForgeScan Engine** | Rust scanner: 13 crates (network, webapp, cloud, config-audit, NVD, ingest) | 65535-port coverage | gRPC bidirectional streaming → ForgeScan 360 API → ForgeComply 360 |
+| **ForgeScan 360** | Vuln management, asset discovery, FRS risk scoring | 5000+ CVE lookups | Shared PostgreSQL; auto-POA&M generation via event bus |
+| **ForgeSOC** | 24/7 threat detection, incident response, SIEM correlation | 847 MITRE ATT&CK rules | Splunk/Sentinel/QRadar feeds; `forge_events` → ForgeComply ControlPulse |
+| **ForgeRedOps** | AI-powered pen testing with autonomous agents | 24 agents, ~720 exploitation tests | Per-agent findings → POA&Ms; Ollama/Claude AI analysis |
+
+### Scanner-to-API Communication (STLink Protocol)
+
+The Rust scanner communicates via gRPC (protobuf) with REST bridge:
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                    SCAN → COMPLY PIPELINE                      │
-│                                                               │
-│  ┌────────────┐    gRPC     ┌────────────┐    REST API       │
-│  │ ForgeScan  │────────────▶│ ForgeScan  │──────────────┐    │
-│  │ Engine     │   findings  │ 360 API    │   vuln data   │    │
-│  │ (Rust)     │             │ :8444      │               │    │
-│  └────────────┘             └────────────┘               │    │
-│                                                           │    │
-│  ┌────────────┐  threat    ┌────────────┐               │    │
-│  │ ForgeSOC   │  alerts    │ Redis      │  pub/sub      │    │
-│  │ (monitor)  │───────────▶│ :6379      │───────────┐   │    │
-│  └────────────┘            └────────────┘           │   │    │
-│                                                      │   │    │
-│  ┌────────────┐  findings  ┌────────────┐           │   │    │
-│  │ ForgeRedOps│───────────▶│ Ollama     │           │   │    │
-│  │ (AI pentest│            │ :11434     │           │   │    │
-│  └────────────┘            └────────────┘           │   │    │
-│                                                      ▼   ▼    │
-│                                              ┌────────────┐   │
-│                                              │ForgeComply  │   │
-│                                              │360 API      │   │
-│                                              │:8443        │   │
-│                                              │             │   │
-│                                              │ Auto-creates│   │
-│                                              │ • POA&Ms    │   │
-│                                              │ • Risks     │   │
-│                                              │ • Assets    │   │
-│                                              │ • Alerts    │   │
-│                                              └────────────┘   │
-└──────────────────────────────────────────────────────────────┘
+ForgeScan Engine (Rust)                  ForgeScan 360 API (Workers)
+┌─────────────────────┐                 ┌─────────────────────────────┐
+│ forgescan-scanner    │                 │ /api/v1/scanner/register     │
+│ forgescan-agent      │                 │ /api/v1/scanner/heartbeat    │
+│                      │  gRPC (mTLS)    │ /api/v1/scanner/tasks        │
+│ AgentStream:         │ ──────────────▶ │ /api/v1/scanner/tasks/:id/   │
+│  ├─ AgentHeartbeat   │  bidirectional  │   findings                   │
+│  ├─ ScanStatus       │ ◀──────────────│                               │
+│  ├─ ScanCommand      │                 │ Auth: X-Scanner-Key header   │
+│  └─ Finding stream   │                 │ mTLS: cert issued at register│
+│                      │                 │ Heartbeat: 30s interval      │
+│ STLink outbound-only │                 │                               │
+│ 127.0.0.5:443 →      │                 │ Event Bus:                    │
+│ Caddy exitpoint      │                 │ forge.vulnerability.detected  │
+└─────────────────────┘                 └─────────────────────────────┘
+```
+
+**Authentication (3-tier):**
+- **Users:** JWT Bearer tokens (HS256, 24h expiry, RBAC: platform_admin/scan_admin/vuln_manager/remediation_owner/auditor)
+- **Scanners:** `X-Scanner-Key` header with HMAC digest replay protection; registered via `POST /api/v1/scanner/register` with CSR for mTLS
+- **Service-to-service:** Mutual TLS for gRPC; certificates issued by Forge CA at registration, renewed annually
+
+### Scan-to-Comply Data Pipeline
+
+```
+Scan Execution (Rust)                                    ForgeComply 360
+┌────────────┐    gRPC findings    ┌─────────────┐     ┌──────────────┐
+│ ForgeScan  │ ──────────────────▶ │ Ingest       │     │ POA&M table   │
+│ Engine     │    stream           │ Pipeline     │     │ auto-created  │
+│ (13 crates)│                     │              │     │ with SLAs:    │
+│            │                     │ Normalize →  │     │ Critical: 15d │
+└────────────┘                     │ Deduplicate→ │     │ High: 30d     │
+                                   │ Enrich →    │     │ Medium: 90d   │
+┌────────────┐    .nessus/.csv     │ CVE lookup → │     │ 5-milestone   │
+│ Nessus /   │ ──────────────────▶ │ CWE→NIST    │────▶│ template      │
+│ Qualys /   │    POST /api/v1/    │ mapping →   │     │               │
+│ Tenable    │    scans/import     │ FRS scoring  │     │ Risk register │
+└────────────┘    SHA-256 dedup    └──────┬──────┘     │ auto-populated│
+                                          │             │               │
+                                   forge.vulnerability  │ Assets table  │
+                                   .detected event      │ auto-created  │
+                                          │             └──────────────┘
+                                          ▼                     ▲
+                                   ┌─────────────┐             │
+                                   │ Event Bus    │ webhook/REST│
+                                   │ (Kafka/Redis)│─────────────┘
+                                   └──────┬──────┘
+                                          │
+                          ┌───────────────┼──────────────┐
+                          ▼               ▼              ▼
+                   ┌────────────┐  ┌──────────┐  ┌────────────┐
+                   │ ForgeRedOps │  │ ForgeSOC │  │ Compliance │
+                   │ auto-trigger│  │ alert    │  │ mapping    │
+                   │ if critical │  │ creation │  │ CWE→800-53 │
+                   └────────────┘  └──────────┘  └────────────┘
 ```
 
 ### Key Integration Points
 
-1. **Scan results → POA&Ms**: When Forge-Scan discovers vulnerabilities, ForgeComply 360 auto-creates POA&M entries
-2. **Asset discovery → Systems**: Discovered assets populate the ForgeComply 360 system inventory
-3. **CVE findings → Risk register**: High/critical CVEs auto-populate the RiskForge risk register
-4. **Continuous monitoring**: ForgeSOC feeds ControlPulse continuous monitoring checks
-5. **Shared database**: All products share PostgreSQL (separate databases) and Redis
+1. **Scan results → POA&Ms**: ForgeComply 360's `POST /api/v1/scans/import/:id/generate-poams` auto-creates POA&M entries from vulnerability findings with FedRAMP SLA milestones (Critical: 15d, High: 30d, Medium: 90d)
+2. **Asset discovery → Systems**: Scan `TargetDiscovered` events auto-create assets in ForgeComply 360's `assets` table (hostname, IP, OS, MAC, discovery source, risk score)
+3. **CVE findings → Risk register**: CWE-to-NIST mapping engine (50+ hardcoded CWE→control mappings: e.g., CWE-89→SI-10/SI-2, CWE-287→IA-2/IA-5/AC-3) auto-populates RiskForge
+4. **FRS Risk Scoring**: ForgeScan Risk Score (0-100) incorporates CVSS v3 + exploit maturity + CISA KEV + threat intel + asset criticality
+5. **Event bus**: `forge_events` table with subscription framework enables cross-product triggers (e.g., `forge.vulnerability.detected` → auto-trigger ForgeRedOps campaign)
+6. **Continuous monitoring**: ForgeSOC detection rules (847 MITRE-mapped) feed ControlPulse drift detection alerts
 
 ### Scan-to-Comply Pipeline with Xiid Sealing
 
@@ -1499,50 +1544,181 @@ Each ForgeRedOps autonomous penetration testing agent receives a dedicated Seale
 
 ## ForgeAI Govern Integration
 
-ForgeAI Govern manages AI system governance and maps to regulatory frameworks:
+**Architecture:** Cloudflare Workers + D1 (SQLite) + R2 (objects) + KV (cache)
+**Database:** 16 tables across `forgeai-govern-db` D1 binding
+**API:** 40+ REST endpoints via Hono router (same framework as ForgeComply 360)
+**Auth:** JWT HS256 + PBKDF2-SHA256 password hashing (see Cross-Platform SSO below)
 
-| Framework | Coverage |
-|-----------|----------|
-| NIST AI RMF 1.0 | Full 6-dimension risk assessment |
-| NIST AI 600-1 | Generative AI guidance |
-| FDA SaMD | Software as Medical Device |
-| ONC HTI-1 | Health IT decision support |
-| HIPAA | AI-specific privacy controls |
-| State laws | CO, CA, CT, NYC AI regulations |
+### NIST AI RMF 1.0 Full 4-Function Coverage (54 Controls)
+
+ForgeAI Govern implements the complete NIST AI Risk Management Framework across all four functions:
+
+| Function | Sub-categories | Key Tables | Key Endpoints |
+|----------|---------------|------------|---------------|
+| **GOVERN** | GV-1 through GV-6 | `ai_policies`, `governance_structures` | `GET/POST /api/v1/governance/policies` |
+| **MAP** | MP-1 through MP-5 | `ai_systems`, `system_contexts`, `stakeholder_impacts` | `GET/POST /api/v1/systems`, `POST /api/v1/systems/:id/contexts` |
+| **MEASURE** | MS-1 through MS-4 | `risk_assessments`, `bias_evaluations`, `metrics` | `GET/POST /api/v1/assessments`, `POST /api/v1/bias/evaluate` |
+| **MANAGE** | MG-1 through MG-4 | `incidents`, `mitigations`, `monitoring_plans` | `GET/POST /api/v1/incidents`, `POST /api/v1/mitigations` |
+
+### 6-Dimension Risk Assessment Engine
+
+Each AI system undergoes quantified risk scoring across 6 dimensions, stored in the `risk_assessments` table:
+
+| Dimension | Assessment Criteria | Score Range |
+|-----------|-------------------|-------------|
+| **Technical Performance** | Accuracy, reliability, robustness | 0–100 |
+| **Fairness & Bias** | Demographic parity, equalized odds, disparate impact | 0–100 |
+| **Privacy** | Data minimization, purpose limitation, consent | 0–100 |
+| **Security** | Adversarial robustness, model poisoning resistance | 0–100 |
+| **Transparency** | Explainability, documentation completeness | 0–100 |
+| **Accountability** | Governance structures, audit trails, human oversight | 0–100 |
+
+Composite risk score: weighted average → `overall_risk_level` (Low / Medium / High / Critical)
+
+### Regulatory Framework Coverage
+
+| Framework | Coverage | ForgeAI Tables |
+|-----------|----------|---------------|
+| NIST AI RMF 1.0 | Full 4-function, 54 controls | `ai_rmf_controls`, `control_assessments` |
+| NIST AI 600-1 | Generative AI supplement | `genai_evaluations` |
+| FDA SaMD | Software as Medical Device classification | `samd_classifications`, `clinical_evaluations` |
+| ONC HTI-1 | Health IT decision support criteria | `dst_evaluations` |
+| HIPAA | AI-specific PHI/ePHI processing controls | `privacy_assessments` |
+| Colorado SB 21-169 | Algorithmic discrimination prevention | `state_compliance` |
+| California AB 331 | Automated decision system impact assessments | `state_compliance` |
+| Connecticut SB 1103 | AI system inventory requirements | `state_compliance` |
+| NYC Local Law 144 | Bias audit for automated employment tools | `bias_evaluations` |
+| EU AI Act (preparatory) | Risk-tier classification mapping | `risk_assessments` |
+
+### 7-Domain Maturity Model
+
+Maturity scoring across 7 domains (stored in `maturity_assessments` table):
+
+1. **Strategy & Governance** — AI policy, board oversight, ethical guidelines
+2. **Risk Management** — Risk identification, assessment, mitigation lifecycle
+3. **Data Management** — Data quality, lineage, privacy-preserving techniques
+4. **Model Development** — MLOps practices, validation, testing protocols
+5. **Deployment & Monitoring** — Production monitoring, drift detection, alerting
+6. **People & Culture** — AI literacy, training, responsible AI culture
+7. **Third-Party Management** — Vendor AI assessments, supply chain risk
+
+Each domain: Level 1 (Initial) → Level 5 (Optimizing), mapped to `maturity_level` enum.
+
+### Vendor AI Assessment Portal
+
+Third-party AI vendor evaluations via dedicated endpoints:
+
+- `POST /api/v1/vendors` — Register vendor with AI system inventory
+- `POST /api/v1/vendors/:id/assessments` — Submit vendor risk assessment
+- `GET /api/v1/vendors/:id/compliance-status` — Aggregate compliance posture
+- Stored in `vendor_assessments` table (vendor_id, assessment_type, risk_score, findings JSON, remediation_plan)
 
 ### Integration with ForgeComply 360
 
 ```
-┌─────────────────────┐        ┌─────────────────────┐
-│  ForgeAI Govern      │  API   │  ForgeComply 360     │
-│  :8445               │───────▶│  :8443               │
-│                      │        │                      │
-│  AI system registry  │        │  Maps AI controls    │
-│  Risk assessments    │        │  to NIST 800-53,     │
-│  Bias testing        │        │  FedRAMP, HIPAA      │
-│  Maturity scoring    │        │  frameworks          │
-│  Incident tracking   │        │                      │
-│  Vendor assessments  │        │  Unified compliance  │
-│                      │◀───────│  dashboard           │
-│  Compliance status   │  sync  │  Evidence vault      │
-└─────────────────────┘        └─────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│              ForgeAI Govern ↔ ForgeComply 360 INTEGRATION               │
+│                                                                          │
+│  ┌─────────────────────────┐           ┌──────────────────────────┐     │
+│  │  ForgeAI Govern          │           │  ForgeComply 360          │     │
+│  │  Workers + D1 + R2 + KV  │           │  Workers + D1 + R2 + KV  │     │
+│  │                          │           │                          │     │
+│  │  16 tables               │   API     │  30+ tables              │     │
+│  │  40+ endpoints           │ ────────▶ │  130+ endpoints          │     │
+│  │                          │           │                          │     │
+│  │  ai_rmf_controls ────────│──mapping──│──▶ security_controls     │     │
+│  │  risk_assessments ───────│──feeds────│──▶ risks                 │     │
+│  │  incidents ──────────────│──creates──│──▶ poams                 │     │
+│  │  bias_evaluations ───────│──evidence─│──▶ evidence (R2 vault)   │     │
+│  │  vendor_assessments ─────│──maps─────│──▶ vendors               │     │
+│  │  maturity_assessments ───│──reports──│──▶ ssp_documents         │     │
+│  │                          │           │                          │     │
+│  │                          │  ◀────────│  compliance_frameworks   │     │
+│  │  Receives framework      │   sync    │  control_implementations │     │
+│  │  mapping updates         │           │  Unified dashboard       │     │
+│  └─────────────────────────┘           └──────────────────────────┘     │
+│                                                                          │
+│  AI Governance → NIST 800-53 Control Mapping:                           │
+│  ┌────────────────────────────────────────────────────────────────────┐  │
+│  │ AI RMF GOVERN (GV-1)   →  NIST PL-1  (Policy & Procedures)       │  │
+│  │ AI RMF MAP (MP-2)      →  NIST RA-3  (Risk Assessment)           │  │
+│  │ AI RMF MEASURE (MS-1)  →  NIST CA-7  (Continuous Monitoring)     │  │
+│  │ AI RMF MANAGE (MG-2)   →  NIST IR-4  (Incident Handling)         │  │
+│  │ Bias Evaluations        →  NIST AC-6  (Least Privilege)           │  │
+│  │ Vendor Assessments      →  NIST SA-9  (External Services)         │  │
+│  │ Maturity Assessments    →  NIST PM-1  (Program Management)        │  │
+│  │ Data Privacy Assessments→  NIST SI-12 (Info Management/Retention) │  │
+│  └────────────────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
+
+**Note:** ForgeAI Govern and ForgeComply 360 currently share the same Cloudflare
+Workers architecture (Hono + D1 + R2 + KV) but operate as separate Worker
+deployments. Cross-product API integration requires an API gateway or federation
+layer (planned — see Sprint Plan). Initial integration supports shared JWT
+authentication and manual export/import of control mappings.
 
 ### ForgeAI + ForgeML Protection (Xiid-Sealed)
 
 When Xiid is enabled, all ForgeAI Govern communications and AI inference calls are sealed:
 
-- **AI asset registry:** AI system inventory and risk assessment data accessed only via SealedTunnel
-- **Incident management:** AI incident tracking and response workflows sealed end-to-end
-- **Claude API calls:** All ForgeML inference (cloud mode) wrapped in SealedTunnel with Kyber/Dilithium encryption
+- **AI asset registry:** 16-table AI system inventory and 6-dimension risk assessment data accessed only via SealedTunnel
+- **Incident management:** AI incident tracking (`POST /api/v1/incidents`) and response workflows sealed end-to-end
+- **Claude API calls:** All ForgeML inference (`@cf/meta/llama-3.1-8b-instruct` via Workers AI) wrapped in SealedTunnel with Kyber/Dilithium encryption
 - **Ollama inference:** On-premises AI inference operates with zero inbound ports; GPU cluster microsegmented
-- **Vendor assessments:** Third-party AI vendor evaluation data transmitted via SealedTunnel
-- **NIST AI RMF compliance:** AI-specific control evidence delivered with cryptographic chain of custody
+- **Vendor assessments:** Third-party AI vendor evaluation data (`vendor_assessments` table) transmitted via SealedTunnel
+- **NIST AI RMF compliance:** 54-control AI-specific evidence delivered with cryptographic chain of custody
+- **Bias evaluation data:** Fairness metrics and demographic analysis sealed to prevent data exposure during transit
 
-### Cross-Platform SSO
+### Cross-Platform SSO — Shared JWT Authentication
 
-All four products share authentication. With Xiid, JWT is supplemented by Zero-Knowledge Proof SSO:
+All four products share JWT-based authentication with ForgeComply 360 as the identity provider.
+Each product implements JWT independently but with compatible token validation:
 
+**Per-Product JWT Implementation (Code-Verified):**
+
+| Product | Algorithm | Access Token TTL | Refresh Token | Password Hash | Auth Endpoint |
+|---------|-----------|-----------------|---------------|---------------|---------------|
+| **ForgeComply 360** | HMAC-SHA384 | 60 min | 7-day (httpOnly cookie) | bcrypt (10 rounds) | `POST /api/v1/auth/login` |
+| **Forge-Reporter** | N/A (consumer) | Received from FC360 | N/A | N/A | URL hash: `#token=<JWT>&ssp=<id>` |
+| **Forge-Scan API** | HMAC-SHA256 | 60 min | 7-day | bcrypt | `POST /api/v1/auth/login` + `X-Scanner-Key` |
+| **ForgeAI Govern** | HMAC-SHA256 | 60 min | 7-day | PBKDF2-SHA256 (100K iter) | `POST /api/v1/auth/login` |
+
+**ForgeComply 360 → Forge-Reporter Token Flow:**
+```
+ForgeComply 360                              Forge-Reporter
+     │                                            │
+     │  POST /api/v1/auth/reporter-token          │
+     │  (generates scoped JWT for Reporter)        │
+     │                                            │
+     │  Constructs URL:                            │
+     │  https://reporter.forge.example.com         │
+     │  #token=<JWT>&ssp=<ssp_id>&api=<api_url>   │
+     │ ──────────────────────────────────────────▶ │
+     │                                            │
+     │  Reporter extracts token from URL hash      │
+     │  (never sent to server — client-side only)  │
+     │  Validates JWT, loads SSP data via API       │
+     │                                            │
+```
+
+**ForgeComply 360 → Forge-Scan Authentication:**
+```
+Forge-Scan Engine                           ForgeComply 360 API
+     │                                            │
+     │  POST /api/v1/scans/import                 │
+     │  Authorization: Bearer <JWT>                │
+     │  X-Scanner-Key: <scanner_api_key>          │
+     │  Content-Type: multipart/form-data          │
+     │ ──────────────────────────────────────────▶ │
+     │                                            │
+     │  Rate limited: 10 imports/hr/org            │
+     │  SHA-256 dedup on file_hash + org_id        │
+     │  Auto-detect: Nessus XML / Qualys / Tenable │
+     │                                            │
+```
+
+**With Xiid SealedTunnel — ZKP SSO Enhancement:**
 ```
                            ┌───────────────────────────┐
                            │   Xiid ZKP SSO (Terniion)  │
@@ -1551,17 +1727,22 @@ All four products share authentication. With Xiid, JWT is supplemented by Zero-K
                            │   NIST 800-63-3 AAL3        │
                            └─────────┬─────────────────┘
                                      │ ZKP identity token
+                                     │ (replaces password auth)
                     ┌───────────────┼───────────────┐
                     ▼               ▼               ▼
-User logs in → ForgeComply 360 → Xiid token + JWT
+User logs in → ForgeComply 360 → Xiid token + JWT (HS384)
                                     │
                     ┌───────────────┼───────────────┐
                     ▼               ▼               ▼
               Forge-Reporter  Forge-Scan API   ForgeAI Govern
-              (URL params)    (Bearer token)   (Bearer token)
+              (URL #hash)     (Bearer + X-Key) (Bearer token)
+              Client-side     mTLS + sealed    PBKDF2 + sealed
+              token inject    gRPC channel     D1 sessions
 
-Without Xiid: standard JWT + PBKDF2 authentication
+Without Xiid: standard JWT + password authentication (bcrypt/PBKDF2)
 With Xiid:    ZKP SSO + JWT; biometric + device binding + continuous verification
+              All inter-product API calls wrapped in SealedTunnel
+              Scanner keys encrypted at rest with Kyber KEM
 ```
 
 ---
