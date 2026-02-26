@@ -1,7 +1,7 @@
 # Forge Cyber Defense — Full Platform Hybrid Deployment Guide
 # Cloudflare + Hetzner + Xiid SealedTunnel
 
-**Version:** 6.2.0
+**Version:** 6.3.0
 **Date:** 2026-02-26
 **Author:** Forge Cyber Defense (SDVOSB)
 
@@ -90,14 +90,14 @@ ForgeComply 360 currently supports three deployment modes:
 | Mode | Stack | Best For | Recommendation |
 |------|-------|----------|---------------|
 | **Cloud-native** | Cloudflare Workers + D1 + R2 + KV | Low-ops SaaS delivery | Development/staging only |
-| **Hybrid (CF + Hetzner)** | Cloudflare Pages + Hetzner backend | Production SaaS + federal | **RECOMMENDED for production** |
-| **On-premises** | Docker Compose (PostgreSQL, Redis, MinIO, Ollama) | Air-gapped/SCIF environments | DoD IL5/TS only |
+| **Xiid + Hetzner** | Xiid SealedTunnel + Hetzner backend (CF Pages for static CDN only) | Production SaaS + federal | **RECOMMENDED for production** |
+| **On-premises** | Docker Compose (PostgreSQL, Redis, MinIO, Ollama) + Xiid air-gap gateway | Air-gapped/SCIF environments | DoD IL5/TS |
 
-The **hybrid Cloudflare + Hetzner** deployment combines the strengths of cloud and bare metal:
+The **Xiid + Hetzner** deployment eliminates Cloudflare from the API traffic path entirely:
 
-- **Cloudflare** handles what it does best: global CDN, DDoS protection, WAF, DNS, TLS termination, and static asset delivery
+- **Xiid SealedTunnel** provides DoD ATO-certified, quantum-resistant, zero-knowledge network connectivity for all API traffic — the sole tunnel layer
 - **Hetzner** provides cost-effective, high-performance bare metal or cloud VMs for stateful workloads: databases, AI inference, vulnerability scanning, and background processing
-- **Xiid SealedTunnel** (optional, replaces Cloudflare Tunnel) provides DoD ATO-certified, quantum-resistant, zero-knowledge network connectivity
+- **Cloudflare Pages** serves static frontend SPAs only (CDN); Cloudflare DNS in DNS-only mode — Cloudflare never sees or proxies API traffic
 
 ### When to choose this architecture
 
@@ -113,18 +113,18 @@ The **hybrid Cloudflare + Hetzner** deployment combines the strengths of cloud a
 ## Recommended Configuration
 
 This guide presents multiple options for each architectural decision. The table below captures the
-recommended configuration for most deployments, optimized for Forge Cyber Defense's position as an
-SDVOSB targeting federal/DoD procurement while maintaining a viable commercial SaaS offering.
+recommended configuration for Forge Cyber Defense's deployment, using **Xiid SealedTunnel as the
+sole connectivity and security layer** — no Cloudflare Tunnel dependency.
 
 | Decision | Recommended Option | Rationale |
 |----------|-------------------|-----------|
-| **Tunnel technology** | Option 2: Xiid + Cloudflare (Defense in Depth) | Cloudflare provides free L7 WAF/DDoS for commercial SaaS tier; Xiid adds quantum-resistant zero-knowledge tunneling for federal. Neither alone covers both markets |
+| **Tunnel technology** | Option 1: Xiid replaces Cloudflare Tunnel | Xiid provides quantum-resistant zero-knowledge tunneling with DoD ATO certification. Eliminates Cloudflare as a middleman — Cloudflare never sees API traffic. Xiid's zero-knowledge model means even the tunnel provider cannot inspect data |
 | **Server configuration** | Option B: AX42 Dedicated (~€97/mo) | 64 GB RAM handles full 4-product stack + Ollama. Option A (16 GB) is too tight for AI inference + scanning. Option C (multi-server) is premature before 500+ users |
-| **Deployment mode** | Hybrid (Cloudflare Pages + Hetzner backend) | Cloudflare Pages for global CDN (free); Hetzner for stateful workloads (PostgreSQL, Ollama, Rust scanner). Pure Cloudflare hits Workers limits; pure on-prem is only for air-gap/SCIF |
+| **Deployment mode** | Xiid SealedTunnel + Hetzner (Cloudflare Pages for static CDN only) | Hetzner for all stateful workloads (PostgreSQL, Ollama, Rust scanner). Cloudflare Pages serves static SPAs only (CDN); all API traffic routes through Xiid, bypassing Cloudflare proxy entirely |
 | **AI inference** | Ollama on-premises default; Claude API optional premium | Ollama on AX42 = zero marginal cost per inference; data never leaves your infrastructure. Federal customers require on-prem AI. Offer Claude API as premium tier for higher-quality generation |
-| **Target classification** | FedRAMP Moderate first, IL4-ready architecture | FedRAMP Moderate covers broadest federal market (civilian agencies). SOC 2 → TX-RAMP → FedRAMP Ready → FedRAMP Moderate sequence. Keep architecture IL4-ready so DoD pivot is configuration, not re-architecture |
-| **Integration pattern** | API gateway federation (planned); webhooks interim | Products share PostgreSQL instance with isolated databases. Webhook system (14+ event types) provides loose coupling now. Build toward API gateway (Kong/Caddy/Workers route) for cross-product federation |
-| **SSO strategy** | ForgeComply 360 as single identity provider | ForgeComply 360 already issues scoped tokens for Reporter and validates Scan engine JWTs. Standardize all products on ForgeComply-issued tokens. Long-term: Xiid ZKP SSO → ForgeComply JWT → all products |
+| **Target classification** | FedRAMP Moderate first, IL4-ready architecture | FedRAMP Moderate covers broadest federal market (civilian agencies). SOC 2 → TX-RAMP → FedRAMP Ready → FedRAMP Moderate sequence. Architecture is already IL4-ready with Xiid as sole tunnel |
+| **Integration pattern** | API gateway federation (planned); webhooks interim | Products share PostgreSQL instance with isolated databases. Webhook system (14+ event types) provides loose coupling now. Build toward API gateway for cross-product federation |
+| **SSO strategy** | ForgeComply 360 as single IdP with Xiid ZKP SSO | ForgeComply 360 issues all platform JWTs. Xiid ZKP SSO replaces password-based auth entirely — no credentials stored or transmitted. All products validate ForgeComply-issued tokens |
 
 ### Decision Flow
 
@@ -141,12 +141,13 @@ SDVOSB targeting federal/DoD procurement while maintaining a viable commercial S
                    │                  │                  │
                    ▼                  ▼                  ▼
             Option B: AX42      Option B: AX42      Option C: Multi-Server
-            CF Tunnel only      Xiid + Cloudflare   Xiid replaces CF Tunnel
+            Xiid SealedTunnel   Xiid SealedTunnel   Xiid SealedTunnel
             Ollama default      Ollama default      Ollama mandatory
             Cloud AI optional   Cloud AI disabled   Air-gap overlay
                    │                  │                  │
                    └──────────────────┼──────────────────┘
                                       ▼
+                            Xiid ZKP SSO everywhere
                             ForgeComply 360 = IdP
                             Webhook integration now
                             API gateway sprint planned
@@ -156,13 +157,15 @@ SDVOSB targeting federal/DoD procurement while maintaining a viable commercial S
 
 | Configuration | Monthly Cost | Target Market |
 |--------------|-------------|---------------|
-| Option B + CF Tunnel (commercial) | ~€97/mo (~$106) | SaaS customers, SOC 2, HIPAA |
-| Option B + Xiid + CF (federal) | ~€97/mo + Xiid license | FedRAMP Moderate, CUI, CMMC L2 |
-| Option C + Xiid only (DoD) | ~€269/mo + Xiid license | DoD IL4/IL5, CMMC L3, air-gap |
+| Option B + Xiid (standard) | ~€97/mo + Xiid license | SaaS, SOC 2, HIPAA, FedRAMP Moderate |
+| Option B + Xiid (federal hardened) | ~€97/mo + Xiid license | FedRAMP High, CUI, CMMC L2/L3 |
+| Option C + Xiid (DoD) | ~€269/mo + Xiid license | DoD IL4/IL5, CMMC L3, air-gap/SCIF |
 
-> **Start with Option B + Xiid + Cloudflare.** This configuration serves both commercial and
-> federal customers from a single infrastructure. Upgrade to Option C only when scan volume,
-> user count, or DoD IL5 requirements demand dedicated servers.
+> **Start with Option B + Xiid SealedTunnel.** This configuration serves both commercial and
+> federal customers from a single infrastructure with zero-knowledge security from day one.
+> Cloudflare Pages continues to serve static SPAs (free CDN) but all API traffic flows
+> exclusively through Xiid. Upgrade to Option C only when scan volume, user count, or
+> DoD IL5 requirements demand dedicated servers.
 
 ---
 
@@ -454,13 +457,11 @@ The GitHub Actions CI/CD pipeline for all Forge repositories builds Rust scanner
 
 ### Deployment Options
 
-#### Option 1: Xiid Replaces Cloudflare Tunnel
+#### Option 1: Xiid Replaces Cloudflare Tunnel — RECOMMENDED
 
-Use this when you need the highest security posture (federal/DoD environments).
-
-> **Note:** This option removes Cloudflare WAF/DDoS protection from the API path. You must
-> provide your own L7 DDoS mitigation if you choose this option. See Option 2 for the
-> recommended defense-in-depth approach.
+**This is the recommended option.** Xiid SealedTunnel is the sole connectivity layer for all
+API traffic. Cloudflare is limited to static CDN delivery (Pages) only — it never touches
+API requests, never sees plaintext data, and cannot be a point of compromise for the API surface.
 
 ```
 Browser → Cloudflare CDN (static assets only)
@@ -471,12 +472,14 @@ In this mode:
 - Cloudflare Pages still serves the static frontend SPAs (CDN only)
 - Cloudflare DNS is set to **DNS-only** (gray cloud) for API domains — no proxy
 - All API traffic flows through Xiid SealedTunnel instead of Cloudflare Tunnel
-- Cloudflare WAF is NOT in the path (Xiid handles security at the network layer)
+- Xiid handles security at the network layer with quantum-resistant encryption
+- DDoS protection is handled by Xiid's architecture: zero open inbound ports means
+  no attack surface for volumetric attacks; Xiid Collector absorbs and queues requests
 
-#### Option 2: Xiid + Cloudflare (Defense in Depth) — RECOMMENDED
+#### Option 2: Xiid + Cloudflare (Defense in Depth)
 
-Use this for maximum layered security. **This is the recommended option** for most deployments —
-it serves both commercial SaaS and federal customers from a single infrastructure:
+Use this only if your deployment specifically requires Cloudflare's Layer 7 WAF rules
+(e.g., custom WAF policies mandated by a compliance framework):
 
 ```
 Browser → Cloudflare CDN + WAF → Xiid SealedTunnel → Hetzner
@@ -621,23 +624,27 @@ When using Xiid, replace the `cloudflared` service with:
 
 ### Xiid vs Cloudflare Tunnel Decision Matrix
 
-| Requirement | Use Cloudflare Tunnel | Use Xiid SealedTunnel | Recommended: Use Both |
-|-------------|----------------------|----------------------|----------------------|
-| Commercial SaaS | Yes | Optional | **Yes — CF WAF + Xiid** |
-| CMMC Level 1-2 | Yes | Optional | **Yes — defense in depth** |
-| CMMC Level 3 | Consider Xiid | **Yes** | **Yes — CF DDoS + Xiid ZKP** |
-| DoD IL4/IL5 | No | **Yes** | Xiid only (CF proxy off) |
-| FedRAMP Moderate | Yes | Recommended | **Yes — strongest posture** |
-| FedRAMP High | Consider Xiid | **Yes** | **Yes — CF edge + Xiid** |
-| HIPAA | Yes | Optional | **Yes — dual encryption** |
-| Financial (SOX/PCI) | Yes | Recommended | **Yes — CF WAF + Xiid ZK** |
-| Data sovereignty | Depends | **Yes** (zero knowledge) | Xiid required |
-| Quantum-resistance | No | **Yes** | Xiid required |
-| Budget-sensitive | Yes (free) | Enterprise licensing | CF free + Xiid license |
+| Requirement | Cloudflare Tunnel | Xiid SealedTunnel (Recommended) |
+|-------------|------------------|--------------------------------|
+| Commercial SaaS | Adequate | **Yes — zero-knowledge, no middleman** |
+| CMMC Level 1-2 | Adequate | **Yes — exceeds requirements** |
+| CMMC Level 3 | Insufficient | **Yes — required** |
+| DoD IL4/IL5 | Not applicable | **Yes — DoD ATO certified** |
+| FedRAMP Moderate | Adequate | **Yes — cryptographic audit evidence** |
+| FedRAMP High | Insufficient | **Yes — required** |
+| HIPAA | Adequate | **Yes — zero-knowledge protects PHI** |
+| Financial (SOX/PCI) | Adequate | **Yes — quantum-resistant** |
+| Data sovereignty | CF sees plaintext | **Yes — zero knowledge, CF never sees data** |
+| Quantum-resistance | No | **Yes — Kyber KEX + Dilithium** |
+| Zero-knowledge trust | No (CF is middleman) | **Yes — even Xiid cannot see traffic** |
+| DDoS protection | L7 WAF + Anycast | Zero inbound ports = no attack surface |
+| Cost | Free (basic) | Enterprise licensing |
 
-> **Recommendation:** The "Use Both" column reflects the defense-in-depth approach (Option 2).
-> For most deployments, running both Cloudflare and Xiid provides the strongest security posture
-> while maintaining Cloudflare's free WAF and DDoS protection for the commercial SaaS tier.
+> **Recommendation:** Use **Xiid SealedTunnel only** (Option 1). Cloudflare Tunnel introduces
+> a trust dependency — Cloudflare can see plaintext API traffic, which is unacceptable for
+> federal/DoD environments and unnecessary for commercial deployments. Xiid's zero-knowledge
+> architecture provides stronger security without this trust compromise. Cloudflare Pages
+> continues to serve static SPAs as a CDN, but API traffic never touches Cloudflare.
 
 ---
 
@@ -772,7 +779,7 @@ services:
 | Cache | Redis 7 | Sessions, rate limiting, pub/sub, scan queues |
 | Object Storage | MinIO | Evidence vault, scan reports, AI documents |
 | AI/LLM | Ollama | ForgeML Writer, ForgeRedOps AI agents |
-| Tunnel | Cloudflare Tunnel OR Xiid SealedTunnel | Secure connectivity |
+| Tunnel | Xiid SealedTunnel (recommended) | Zero-knowledge quantum-resistant connectivity |
 | Monitoring | Prometheus + Grafana | Full observability |
 
 ---
@@ -1117,12 +1124,12 @@ services:
 
   # ══════════════════════════════════════════════════════════════
   #  CONNECTIVITY
-  #  Recommended: Run BOTH cloudflared + xiid-agent (defense in depth)
-  #  Option A alone: commercial SaaS only
-  #  Option B alone: DoD IL4/IL5 only (Xiid replaces CF Tunnel)
+  #  Recommended: Xiid SealedTunnel only (runs on HOST, not Docker)
+  #  See "Xiid Setup on Hetzner" section for host-based agent config.
+  #  Cloudflare Tunnel below is OPTIONAL — only for legacy/fallback use.
   # ══════════════════════════════════════════════════════════════
 
-  # Option A: Cloudflare Tunnel (included in recommended defense-in-depth config)
+  # OPTIONAL: Cloudflare Tunnel (legacy/fallback only — not recommended)
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: forge-tunnel
@@ -1272,15 +1279,18 @@ BACKUP_RETENTION_DAYS=30
 ### Starting the Platform
 
 ```bash
-# With Cloudflare Tunnel:
-docker compose -f docker/docker-compose.hetzner.yml --profile cloudflare-tunnel up -d
-
-# With Xiid SealedTunnel (agent runs on host):
+# Recommended: Xiid SealedTunnel (agent runs on host)
 docker compose -f docker/docker-compose.hetzner.yml up -d
 systemctl start xiid-agent
 
 # Pull AI model
 docker exec forge-ollama ollama pull llama3.1:8b
+
+# Verify Xiid agent is connected
+xiid-agent status
+
+# OPTIONAL: With Cloudflare Tunnel instead (legacy/fallback only):
+# docker compose -f docker/docker-compose.hetzner.yml --profile cloudflare-tunnel up -d
 ```
 
 ---
@@ -2227,7 +2237,7 @@ echo "Backup complete: $BACKUP_DIR.tar.gz"
 | Object storage (1TB) | R2: ~$15/mo | MinIO (block storage): ~€48/mo |
 | AI inference | Workers AI: $50-200+/mo | Ollama (included) |
 | CDN/WAF/DNS | Free | Free |
-| Tunnel | Free | Free (CF) or Xiid license |
+| Tunnel | Free (CF Tunnel) | Xiid SealedTunnel license (recommended) |
 | **Hetzner compute** | N/A | AX42 dedicated: €49/mo |
 | **Total (est.)** | **$100-400/mo** | **~€97/mo (~$106)** |
 
@@ -2247,7 +2257,7 @@ Xiid SealedTunnel is enterprise-licensed. Contact Xiid for pricing. Factor in:
 1. Provision Hetzner server
 2. Clone all four repositories
 3. Deploy `docker-compose.hetzner.yml`
-4. Set up connectivity (Cloudflare Tunnel or Xiid SealedTunnel)
+4. Install and configure Xiid SealedTunnel agent
 5. Verify all APIs accessible via tunnel
 
 ### Phase 2: Data Migration (Day 2-3)
@@ -2303,18 +2313,18 @@ git clone https://github.com/Bjay0727-jay/AI-Governance.git
 cp ForgeComply360/docker/.env.hetzner.example ForgeComply360/docker/.env.hetzner
 # Edit with generated secrets
 
-# 5. Start platform with Cloudflare Tunnel
-docker compose -f ForgeComply360/docker/docker-compose.hetzner.yml \
-  --profile cloudflare-tunnel up -d
+# 5. Install and configure Xiid SealedTunnel agent (see "Xiid Setup on Hetzner")
+xiid-agent register --config /etc/xiid/config.yml
 
-# OR with Xiid SealedTunnel (after installing agent on host)
+# 6. Start platform with Xiid SealedTunnel
 docker compose -f ForgeComply360/docker/docker-compose.hetzner.yml up -d
 systemctl start xiid-agent
 
-# 6. Pull AI model
+# 7. Pull AI model
 docker exec forge-ollama ollama pull llama3.1:8b
 
-# 7. Verify all services
+# 8. Verify all services (via Xiid SealedTunnel)
+xiid-agent status
 curl https://api.forgecomply360.com/health      # ForgeComply 360
 curl https://scan.forgecomply360.com/health      # Forge-Scan
 curl https://ai-api.forgecomply360.com/health    # ForgeAI Govern
