@@ -528,7 +528,11 @@ export function SettingsPage() {
             ) : (
               <button onClick={() => { setShowRegen(true); setShowDisable(false); setMfaError(''); }} className="text-sm text-blue-600 hover:text-blue-700 font-medium">Regenerate Backup Codes</button>
             )}
-            {showDisable ? (
+            {isAdmin ? (
+              <div className="bg-gray-50 rounded-lg p-3">
+                <p className="text-xs text-gray-600">Two-factor authentication cannot be disabled for administrator accounts (NIST IA-2(1) policy).</p>
+              </div>
+            ) : showDisable ? (
               <div className="bg-red-50 rounded-lg p-3">
                 <p className="text-xs text-red-700 mb-2">Enter your current TOTP code or a backup code to disable 2FA:</p>
                 <div className="flex gap-2">
