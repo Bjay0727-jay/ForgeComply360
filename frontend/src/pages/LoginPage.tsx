@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../hooks/useAuth';
-import { api } from '../utils/api';
+import { api, setTokens } from '../utils/api';
 
 export function LoginPage() {
-  const { login, verifyMFA } = useAuth();
+  const { login, verifyMFA, refreshUser } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -36,6 +36,15 @@ export function LoginPage() {
   const [mfaSetupRequired, setMfaSetupRequired] = useState(false);
   const [mfaSetupMessage, setMfaSetupMessage] = useState('');
 
+  // Forced MFA setup state (NIST IA-2(1) enforcement)
+  const [mfaSetupToken, setMfaSetupToken] = useState('');
+  const [mfaSetupStep, setMfaSetupStep] = useState<'intro' | 'qr' | 'verify' | 'backup'>('intro');
+  const [mfaSetupSecret, setMfaSetupSecret] = useState('');
+  const [mfaSetupUri, setMfaSetupUri] = useState('');
+  const [mfaSetupCode, setMfaSetupCode] = useState('');
+  const [mfaBackupCodes, setMfaBackupCodes] = useState<string[]>([]);
+  const [backupCodesCopied, setBackupCodesCopied] = useState(false);
+
   // Forgot password state
   const [showForgotPassword, setShowForgotPassword] = useState(false);
   const [forgotEmail, setForgotEmail] = useState('');
@@ -56,7 +65,9 @@ export function LoginPage() {
         setMfaToken(result.mfa_token!);
       } else if (result.mfa_setup_required) {
         setMfaSetupRequired(true);
+        setMfaSetupToken(result.mfa_setup_token || '');
         setMfaSetupMessage(result.message || 'MFA is required for privileged accounts.');
+        setMfaSetupStep('intro');
       }
     } catch (err: any) {
       const msg = err.message || 'Login failed';
@@ -124,6 +135,68 @@ export function LoginPage() {
     setForgotError('');
   };
 
+  // Forced MFA setup handlers
+  const startForcedMfaSetup = async () => {
+    setError('');
+    setLoading(true);
+    try {
+      const data = await api('/api/v1/auth/mfa/forced-setup', {
+        method: 'POST',
+        body: JSON.stringify({ mfa_setup_token: mfaSetupToken }),
+      });
+      setMfaSetupSecret(data.secret);
+      setMfaSetupUri(data.uri);
+      setMfaSetupStep('qr');
+    } catch (err: any) {
+      setError(err.message || 'Failed to start MFA setup');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const verifyForcedMfaSetup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+    try {
+      const data = await api('/api/v1/auth/mfa/forced-verify', {
+        method: 'POST',
+        body: JSON.stringify({ mfa_setup_token: mfaSetupToken, code: mfaSetupCode }),
+      });
+      setMfaBackupCodes(data.backup_codes);
+      setTokens(data.access_token, data.refresh_token);
+      setMfaSetupStep('backup');
+    } catch (err: any) {
+      setError(err.message || 'Invalid code');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const completeForcedMfaSetup = async () => {
+    await refreshUser();
+  };
+
+  const copyBackupCodes = () => {
+    navigator.clipboard.writeText(mfaBackupCodes.join('\n')).then(() => {
+      setBackupCodesCopied(true);
+      setTimeout(() => setBackupCodesCopied(false), 2000);
+    });
+  };
+
+  const resetForcedMfaSetup = () => {
+    setMfaSetupRequired(false);
+    setMfaSetupToken('');
+    setMfaSetupStep('intro');
+    setMfaSetupSecret('');
+    setMfaSetupUri('');
+    setMfaSetupCode('');
+    setMfaBackupCodes([]);
+    setBackupCodesCopied(false);
+    setMfaSetupMessage('');
+    setError('');
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-blue-900 to-gray-900 flex items-center justify-center p-4">
       <div className="w-full max-w-md">
@@ -141,25 +214,167 @@ export function LoginPage() {
 
         {mfaSetupRequired ? (
           <div className="bg-white rounded-xl shadow-2xl p-8">
-            <div className="text-center mb-6">
-              <div className="w-12 h-12 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-3">
-                <svg className="w-6 h-6 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z" />
-                </svg>
-              </div>
-              <h2 className="text-xl font-semibold text-gray-900">MFA Setup Required</h2>
-              <p className="text-sm text-gray-600 mt-2">{mfaSetupMessage}</p>
+            {/* Step indicator */}
+            <div className="flex items-center justify-center gap-2 mb-6">
+              {['Setup', 'Scan', 'Verify', 'Backup'].map((label, i) => {
+                const stepIndex = ['intro', 'qr', 'verify', 'backup'].indexOf(mfaSetupStep);
+                return (
+                  <div key={label} className="flex items-center gap-2">
+                    <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${i <= stepIndex ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-500'}`}>{i + 1}</div>
+                    {i < 3 && <div className={`w-6 h-0.5 ${i < stepIndex ? 'bg-blue-600' : 'bg-gray-200'}`} />}
+                  </div>
+                );
+              })}
             </div>
-            <p className="text-sm text-gray-500 mb-4 text-center">
-              As an administrator, two-factor authentication must be enabled before you can sign in. Please contact your system owner to enable MFA on your account, or use the security settings after initial setup.
-            </p>
-            <button
-              type="button"
-              onClick={() => { setMfaSetupRequired(false); setMfaSetupMessage(''); setError(''); }}
-              className="w-full py-2.5 bg-gray-600 text-white rounded-lg font-medium hover:bg-gray-700 transition-colors"
-            >
-              Back to login
-            </button>
+
+            {error && (
+              <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4 text-sm">
+                {error}
+              </div>
+            )}
+
+            {mfaSetupStep === 'intro' && (
+              <>
+                <div className="text-center mb-6">
+                  <div className="w-12 h-12 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-3">
+                    <svg className="w-6 h-6 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                    </svg>
+                  </div>
+                  <h2 className="text-xl font-semibold text-gray-900">MFA Setup Required</h2>
+                  <p className="text-sm text-gray-600 mt-2">{mfaSetupMessage}</p>
+                </div>
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 text-xs text-blue-800">
+                  <p className="font-medium mb-1">NIST IA-2(1) Compliance</p>
+                  <p>Two-factor authentication is mandatory for administrator accounts. You will need an authenticator app (Google Authenticator, Microsoft Authenticator, Authy, etc.).</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={startForcedMfaSetup}
+                  disabled={loading}
+                  className="w-full py-2.5 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                >
+                  {loading ? 'Setting up...' : 'Begin MFA Setup'}
+                </button>
+                <button
+                  type="button"
+                  onClick={resetForcedMfaSetup}
+                  className="w-full mt-2 py-2 text-sm text-gray-500 hover:text-gray-700 transition-colors"
+                >
+                  Back to login
+                </button>
+              </>
+            )}
+
+            {mfaSetupStep === 'qr' && (
+              <>
+                <div className="text-center mb-4">
+                  <h2 className="text-lg font-semibold text-gray-900">Scan QR Code</h2>
+                  <p className="text-sm text-gray-500 mt-1">Open your authenticator app and scan this code.</p>
+                </div>
+                <div className="bg-gray-50 border rounded-lg p-4 mb-4 text-center">
+                  <img
+                    src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(mfaSetupUri)}`}
+                    alt="MFA QR Code"
+                    className="mx-auto w-48 h-48"
+                  />
+                </div>
+                <div className="mb-4">
+                  <p className="text-xs text-gray-500 mb-1 text-center">Or enter this key manually:</p>
+                  <div className="bg-gray-100 rounded-lg px-3 py-2 text-center font-mono text-sm tracking-wider select-all break-all">
+                    {mfaSetupSecret}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setMfaSetupStep('verify')}
+                  className="w-full py-2.5 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-colors"
+                >
+                  I've Scanned the Code
+                </button>
+                <button
+                  type="button"
+                  onClick={resetForcedMfaSetup}
+                  className="w-full mt-2 py-2 text-sm text-gray-500 hover:text-gray-700 transition-colors"
+                >
+                  Cancel
+                </button>
+              </>
+            )}
+
+            {mfaSetupStep === 'verify' && (
+              <form onSubmit={verifyForcedMfaSetup}>
+                <div className="text-center mb-4">
+                  <h2 className="text-lg font-semibold text-gray-900">Verify Setup</h2>
+                  <p className="text-sm text-gray-500 mt-1">Enter the 6-digit code from your authenticator app.</p>
+                </div>
+                <input
+                  type="text"
+                  value={mfaSetupCode}
+                  onChange={(e) => setMfaSetupCode(e.target.value.replace(/[^0-9]/g, ''))}
+                  maxLength={6}
+                  placeholder="000000"
+                  autoFocus
+                  autoComplete="one-time-code"
+                  className="w-full px-4 py-3 text-center text-2xl tracking-[0.3em] border border-gray-300 rounded-lg font-mono focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+                <button
+                  type="submit"
+                  disabled={loading || mfaSetupCode.length < 6}
+                  className="w-full mt-4 py-2.5 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                >
+                  {loading ? 'Verifying...' : 'Verify & Enable MFA'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setMfaSetupStep('qr'); setMfaSetupCode(''); setError(''); }}
+                  className="w-full mt-2 py-2 text-sm text-gray-500 hover:text-gray-700 transition-colors"
+                >
+                  Back to QR code
+                </button>
+              </form>
+            )}
+
+            {mfaSetupStep === 'backup' && (
+              <>
+                <div className="text-center mb-4">
+                  <div className="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-3">
+                    <svg className="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                  </div>
+                  <h2 className="text-lg font-semibold text-gray-900">MFA Enabled Successfully</h2>
+                  <p className="text-sm text-gray-500 mt-1">Save your backup codes in a secure location.</p>
+                </div>
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4 text-xs text-amber-800">
+                  <p className="font-medium">Important:</p>
+                  <p>These codes can be used if you lose access to your authenticator app. Each code can only be used once. Store them securely.</p>
+                </div>
+                <div className="bg-gray-50 border rounded-lg p-3 mb-4">
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {mfaBackupCodes.map((code) => (
+                      <div key={code} className="font-mono text-sm text-center bg-white rounded px-2 py-1 border">
+                        {code}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={copyBackupCodes}
+                  className="w-full py-2 bg-gray-100 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-200 transition-colors mb-3"
+                >
+                  {backupCodesCopied ? 'Copied!' : 'Copy Backup Codes'}
+                </button>
+                <button
+                  type="button"
+                  onClick={completeForcedMfaSetup}
+                  className="w-full py-2.5 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-colors"
+                >
+                  Continue to ForgeComply 360
+                </button>
+              </>
+            )}
           </div>
         ) : mfaRequired ? (
           <form onSubmit={handleMfaSubmit} className="bg-white rounded-xl shadow-2xl p-8">

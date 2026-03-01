@@ -245,6 +245,8 @@ async function handleRequest(request, env, url, ctx) {
   if (path === '/api/v1/auth/login' && method === 'POST') return handleLogin(request, env);
   if (path === '/api/v1/auth/refresh' && method === 'POST') return handleRefreshToken(request, env);
   if (path === '/api/v1/auth/mfa/verify' && method === 'POST') return handleMFAVerify(request, env);
+  if (path === '/api/v1/auth/mfa/forced-setup' && method === 'POST') return handleMFAForcedSetup(request, env);
+  if (path === '/api/v1/auth/mfa/forced-verify' && method === 'POST') return handleMFAForcedVerify(request, env);
   if (path === '/api/v1/auth/emergency-access' && method === 'POST') return handleEmergencyAccess(request, env);
   if (path === '/api/v1/auth/forgot-password' && method === 'POST') return handleForgotPassword(request, env);
   if (path === '/api/v1/auth/reset-password' && method === 'POST') return handleResetPassword(request, env);
@@ -281,7 +283,7 @@ async function handleRequest(request, env, url, ctx) {
   if (path === '/api/v1/auth/change-password' && method === 'POST') return handleChangePassword(request, env, user);
   if (path === '/api/v1/auth/mfa/setup' && method === 'POST') return handleMFASetup(request, env, user);
   if (path === '/api/v1/auth/mfa/verify-setup' && method === 'POST') return handleMFAVerifySetup(request, env, user);
-  if (path === '/api/v1/auth/mfa/disable' && method === 'POST') return handleMFADisable(request, env, user);
+  if (path === '/api/v1/auth/mfa/disable' && method === 'POST') return handleMFADisable(request, env, org, user);
   if (path === '/api/v1/auth/mfa/backup-codes' && method === 'POST') return handleMFARegenerateBackupCodes(request, env, user);
   if (path === '/api/v1/auth/reporter-token' && method === 'POST') return handleGenerateReporterTokenGeneric(request, env, org, user);
 
@@ -1541,11 +1543,21 @@ async function handleLogin(request, env) {
     return jsonResponse({ mfa_required: true, mfa_token: mfaToken });
   }
 
-  // TAC 202 / NIST IA-2(1): Flag MFA requirement for privileged accounts (admin, owner)
-  // Allows login but signals the frontend to prompt MFA setup
-  const mfaSetupNeeded = ['admin', 'owner'].includes(user.role) && !user.mfa_enabled;
-  if (mfaSetupNeeded) {
-    await auditLog(env, user.org_id, user.id, 'login_mfa_setup_recommended', 'user', user.id, { role: user.role }, request);
+  // TAC 202 / NIST IA-2(1): Enforced MFA for privileged accounts (admin, owner)
+  // When enabled via org settings, no access/refresh tokens are issued until MFA is configured
+  const orgMeta = typeof org.settings === 'string' ? JSON.parse(org.settings || '{}') : (org.settings || {});
+  if (orgMeta.require_admin_mfa && ['admin', 'owner'].includes(user.role) && !user.mfa_enabled) {
+    const mfaSetupToken = await createJWT(
+      { sub: user.id, org: user.org_id, purpose: 'mfa_setup' },
+      requireJWTSecret(env),
+      10 // 10-minute window to complete MFA setup
+    );
+    await auditLog(env, user.org_id, user.id, 'login_mfa_setup_required', 'user', user.id, { role: user.role }, request);
+    return jsonResponse({
+      mfa_setup_required: true,
+      mfa_setup_token: mfaSetupToken,
+      message: 'Two-factor authentication is mandatory for administrator accounts. Please set up MFA to continue.',
+    });
   }
 
   const jwtSecret = requireJWTSecret(env);
@@ -1560,17 +1572,12 @@ async function handleLogin(request, env) {
 
   await auditLog(env, user.org_id, user.id, 'login', 'user', user.id, {}, request);
 
-  const response = {
+  return jsonResponse({
     access_token: accessToken,
     refresh_token: refreshToken,
     user: sanitizeUser(user),
     org,
-  };
-  if (mfaSetupNeeded) {
-    response.mfa_setup_recommended = true;
-    response.mfa_setup_message = 'MFA is required for privileged accounts. Please enable two-factor authentication in Security Settings.';
-  }
-  return jsonResponse(response);
+  });
 }
 
 async function handleRefreshToken(request, env) {
@@ -1742,7 +1749,94 @@ async function handleMFAVerify(request, env) {
   });
 }
 
-async function handleMFADisable(request, env, user) {
+// ============================================================================
+// FORCED MFA SETUP (NIST IA-2(1) — mandatory for admin/owner before login)
+// These endpoints use a limited-purpose mfa_setup_token (not a full access token).
+// ============================================================================
+
+async function handleMFAForcedSetup(request, env) {
+  const { mfa_setup_token } = await request.json();
+  if (!mfa_setup_token) return jsonResponse({ error: 'MFA setup token required' }, 400);
+
+  let payload;
+  try {
+    payload = await verifyJWT(mfa_setup_token, requireJWTSecret(env));
+  } catch {
+    return jsonResponse({ error: 'Invalid or expired MFA setup token. Please log in again.' }, 401);
+  }
+  if (payload.purpose !== 'mfa_setup') return jsonResponse({ error: 'Invalid token type' }, 401);
+
+  const user = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(payload.sub).first();
+  if (!user || user.status === 'deactivated') return jsonResponse({ error: 'User not found' }, 404);
+  if (user.mfa_enabled) return jsonResponse({ error: '2FA is already enabled' }, 400);
+
+  const { base32 } = generateMFASecret();
+  const uri = buildTOTPUri(base32, user.email);
+  const encryptedSecret = await encryptField(env, base32);
+  await env.DB.prepare('UPDATE users SET mfa_secret = ? WHERE id = ?').bind(encryptedSecret, user.id).run();
+
+  return jsonResponse({ secret: base32, uri });
+}
+
+async function handleMFAForcedVerify(request, env) {
+  const { mfa_setup_token, code } = await request.json();
+  if (!mfa_setup_token || !code) return jsonResponse({ error: 'MFA setup token and code required' }, 400);
+
+  let payload;
+  try {
+    payload = await verifyJWT(mfa_setup_token, requireJWTSecret(env));
+  } catch {
+    return jsonResponse({ error: 'Invalid or expired MFA setup token. Please log in again.' }, 401);
+  }
+  if (payload.purpose !== 'mfa_setup') return jsonResponse({ error: 'Invalid token type' }, 401);
+
+  const user = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(payload.sub).first();
+  if (!user || user.status === 'deactivated') return jsonResponse({ error: 'User not found' }, 404);
+  if (!user.mfa_secret) return jsonResponse({ error: 'No MFA setup in progress. Please start setup first.' }, 400);
+  if (user.mfa_enabled) return jsonResponse({ error: '2FA is already enabled' }, 400);
+
+  const decryptedSecret = await decryptField(env, user.mfa_secret);
+  const secretBytes = base32Decode(decryptedSecret);
+  const valid = await verifyTOTP(secretBytes, code.replace(/\s/g, ''));
+  if (!valid) return jsonResponse({ error: 'Invalid code. Check your authenticator app and try again.' }, 400);
+
+  // Enable MFA and generate backup codes
+  const backupCodes = generateBackupCodes(8);
+  const encryptedBackupCodes = await encryptField(env, JSON.stringify(backupCodes));
+  await env.DB.prepare('UPDATE users SET mfa_enabled = 1, mfa_backup_codes = ? WHERE id = ?')
+    .bind(encryptedBackupCodes, user.id).run();
+
+  const org = await env.DB.prepare('SELECT * FROM organizations WHERE id = ?').bind(user.org_id).first();
+
+  // Issue real session tokens now that MFA is configured
+  const jwtSecret = requireJWTSecret(env);
+  const accessToken = await createJWT({ sub: user.id, org: user.org_id, role: user.role }, jwtSecret, 60);
+  const refreshToken = generateId() + generateId();
+  const refreshHash = await hmacRefreshToken(refreshToken, jwtSecret);
+  const refreshExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
+  await env.DB.prepare('INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)')
+    .bind(generateId(), user.id, refreshHash, refreshExpiry).run();
+
+  await auditLog(env, user.org_id, user.id, 'mfa_enabled', 'user', user.id, { forced: true });
+  await auditLog(env, user.org_id, user.id, 'login', 'user', user.id, { mfa: true, forced_setup: true });
+
+  return jsonResponse({
+    access_token: accessToken,
+    refresh_token: refreshToken,
+    user: sanitizeUser(user),
+    org,
+    backup_codes: backupCodes,
+  });
+}
+
+async function handleMFADisable(request, env, org, user) {
+  // NIST IA-2(1): When require_admin_mfa is enabled, privileged accounts cannot disable MFA
+  const orgMeta = typeof org.settings === 'string' ? JSON.parse(org.settings || '{}') : (org.settings || {});
+  if (orgMeta.require_admin_mfa && ['admin', 'owner'].includes(user.role)) {
+    return jsonResponse({ error: 'Privileged accounts cannot disable two-factor authentication (NIST IA-2(1) policy).' }, 403);
+  }
+
   const { code } = await request.json();
   if (!code) return jsonResponse({ error: 'Current TOTP code required' }, 400);
 
@@ -12395,21 +12489,38 @@ async function handleUpdateFeatureFlags(request, env, org, user) {
 async function handleGetSecuritySettings(env, org, user) {
   if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
   const meta = typeof org.settings === 'string' ? JSON.parse(org.settings) : (org.settings || {});
-  return jsonResponse({ session_timeout_minutes: meta.session_timeout_minutes || 30 });
+  return jsonResponse({
+    session_timeout_minutes: meta.session_timeout_minutes || 30,
+    require_admin_mfa: !!meta.require_admin_mfa,
+  });
 }
 
 async function handleUpdateSecuritySettings(request, env, org, user) {
   if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
   const body = await request.json();
-  const validTimeouts = [15, 30, 60];
-  if (!validTimeouts.includes(body.session_timeout_minutes)) {
-    return jsonResponse({ error: 'session_timeout_minutes must be 15, 30, or 60' }, 400);
-  }
   const meta = typeof org.settings === 'string' ? JSON.parse(org.settings) : (org.settings || {});
-  meta.session_timeout_minutes = body.session_timeout_minutes;
+  const changes = {};
+
+  if (body.session_timeout_minutes !== undefined) {
+    const validTimeouts = [15, 30, 60];
+    if (!validTimeouts.includes(body.session_timeout_minutes)) {
+      return jsonResponse({ error: 'session_timeout_minutes must be 15, 30, or 60' }, 400);
+    }
+    meta.session_timeout_minutes = body.session_timeout_minutes;
+    changes.session_timeout_minutes = body.session_timeout_minutes;
+  }
+
+  if (body.require_admin_mfa !== undefined) {
+    meta.require_admin_mfa = !!body.require_admin_mfa;
+    changes.require_admin_mfa = meta.require_admin_mfa;
+  }
+
   await env.DB.prepare('UPDATE organizations SET settings = ?, updated_at = datetime(\'now\') WHERE id = ?').bind(JSON.stringify(meta), org.id).run();
-  await auditLog(env, org.id, user.id, 'update', 'organization', org.id, { action: 'security_settings_change', session_timeout_minutes: body.session_timeout_minutes }, request);
-  return jsonResponse({ session_timeout_minutes: body.session_timeout_minutes });
+  await auditLog(env, org.id, user.id, 'update', 'organization', org.id, { action: 'security_settings_change', ...changes }, request);
+  return jsonResponse({
+    session_timeout_minutes: meta.session_timeout_minutes || 30,
+    require_admin_mfa: !!meta.require_admin_mfa,
+  });
 }
 
 // Update dashboard widget configuration for the user
