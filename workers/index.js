@@ -283,7 +283,7 @@ async function handleRequest(request, env, url, ctx) {
   if (path === '/api/v1/auth/change-password' && method === 'POST') return handleChangePassword(request, env, user);
   if (path === '/api/v1/auth/mfa/setup' && method === 'POST') return handleMFASetup(request, env, user);
   if (path === '/api/v1/auth/mfa/verify-setup' && method === 'POST') return handleMFAVerifySetup(request, env, user);
-  if (path === '/api/v1/auth/mfa/disable' && method === 'POST') return handleMFADisable(request, env, user);
+  if (path === '/api/v1/auth/mfa/disable' && method === 'POST') return handleMFADisable(request, env, org, user);
   if (path === '/api/v1/auth/mfa/backup-codes' && method === 'POST') return handleMFARegenerateBackupCodes(request, env, user);
   if (path === '/api/v1/auth/reporter-token' && method === 'POST') return handleGenerateReporterTokenGeneric(request, env, org, user);
 
@@ -1543,9 +1543,10 @@ async function handleLogin(request, env) {
     return jsonResponse({ mfa_required: true, mfa_token: mfaToken });
   }
 
-  // TAC 202 / NIST IA-2(1): HARD BLOCK — privileged accounts (admin, owner) MUST have MFA
-  // No access/refresh tokens are issued; a limited mfa_setup_token allows inline MFA enrollment
-  if (['admin', 'owner'].includes(user.role) && !user.mfa_enabled) {
+  // TAC 202 / NIST IA-2(1): Enforced MFA for privileged accounts (admin, owner)
+  // When enabled via org settings, no access/refresh tokens are issued until MFA is configured
+  const orgMeta = typeof org.settings === 'string' ? JSON.parse(org.settings || '{}') : (org.settings || {});
+  if (orgMeta.require_admin_mfa && ['admin', 'owner'].includes(user.role) && !user.mfa_enabled) {
     const mfaSetupToken = await createJWT(
       { sub: user.id, org: user.org_id, purpose: 'mfa_setup' },
       requireJWTSecret(env),
@@ -1829,9 +1830,10 @@ async function handleMFAForcedVerify(request, env) {
   });
 }
 
-async function handleMFADisable(request, env, user) {
-  // NIST IA-2(1): Privileged accounts cannot disable MFA
-  if (['admin', 'owner'].includes(user.role)) {
+async function handleMFADisable(request, env, org, user) {
+  // NIST IA-2(1): When require_admin_mfa is enabled, privileged accounts cannot disable MFA
+  const orgMeta = typeof org.settings === 'string' ? JSON.parse(org.settings || '{}') : (org.settings || {});
+  if (orgMeta.require_admin_mfa && ['admin', 'owner'].includes(user.role)) {
     return jsonResponse({ error: 'Privileged accounts cannot disable two-factor authentication (NIST IA-2(1) policy).' }, 403);
   }
 
@@ -12487,21 +12489,38 @@ async function handleUpdateFeatureFlags(request, env, org, user) {
 async function handleGetSecuritySettings(env, org, user) {
   if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
   const meta = typeof org.settings === 'string' ? JSON.parse(org.settings) : (org.settings || {});
-  return jsonResponse({ session_timeout_minutes: meta.session_timeout_minutes || 30 });
+  return jsonResponse({
+    session_timeout_minutes: meta.session_timeout_minutes || 30,
+    require_admin_mfa: !!meta.require_admin_mfa,
+  });
 }
 
 async function handleUpdateSecuritySettings(request, env, org, user) {
   if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
   const body = await request.json();
-  const validTimeouts = [15, 30, 60];
-  if (!validTimeouts.includes(body.session_timeout_minutes)) {
-    return jsonResponse({ error: 'session_timeout_minutes must be 15, 30, or 60' }, 400);
-  }
   const meta = typeof org.settings === 'string' ? JSON.parse(org.settings) : (org.settings || {});
-  meta.session_timeout_minutes = body.session_timeout_minutes;
+  const changes = {};
+
+  if (body.session_timeout_minutes !== undefined) {
+    const validTimeouts = [15, 30, 60];
+    if (!validTimeouts.includes(body.session_timeout_minutes)) {
+      return jsonResponse({ error: 'session_timeout_minutes must be 15, 30, or 60' }, 400);
+    }
+    meta.session_timeout_minutes = body.session_timeout_minutes;
+    changes.session_timeout_minutes = body.session_timeout_minutes;
+  }
+
+  if (body.require_admin_mfa !== undefined) {
+    meta.require_admin_mfa = !!body.require_admin_mfa;
+    changes.require_admin_mfa = meta.require_admin_mfa;
+  }
+
   await env.DB.prepare('UPDATE organizations SET settings = ?, updated_at = datetime(\'now\') WHERE id = ?').bind(JSON.stringify(meta), org.id).run();
-  await auditLog(env, org.id, user.id, 'update', 'organization', org.id, { action: 'security_settings_change', session_timeout_minutes: body.session_timeout_minutes }, request);
-  return jsonResponse({ session_timeout_minutes: body.session_timeout_minutes });
+  await auditLog(env, org.id, user.id, 'update', 'organization', org.id, { action: 'security_settings_change', ...changes }, request);
+  return jsonResponse({
+    session_timeout_minutes: meta.session_timeout_minutes || 30,
+    require_admin_mfa: !!meta.require_admin_mfa,
+  });
 }
 
 // Update dashboard widget configuration for the user

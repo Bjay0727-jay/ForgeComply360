@@ -53,6 +53,7 @@ export function SettingsPage() {
 
   // Security settings (admin+)
   const [sessionTimeout, setSessionTimeout] = useState(30);
+  const [requireAdminMfa, setRequireAdminMfa] = useState(false);
   const [savingSecuritySettings, setSavingSecuritySettings] = useState(false);
 
   // Data export
@@ -178,6 +179,7 @@ export function SettingsPage() {
   }, [isAdmin]);
 
   useEffect(() => {
+    if (activeTab === 'profile' && isAdmin) loadSecuritySettings();
     if (activeTab === 'security' && isAdmin) loadSecuritySettings();
     if (activeTab === 'integrations' && isAdmin) loadWebhooks();
   }, [activeTab]);
@@ -260,13 +262,14 @@ export function SettingsPage() {
     try {
       const data = await api('/api/v1/security-settings');
       setSessionTimeout(data.session_timeout_minutes || 30);
+      setRequireAdminMfa(!!data.require_admin_mfa);
     } catch {}
   };
 
   const saveSecuritySettings = async () => {
     setSavingSecuritySettings(true);
     try {
-      await api('/api/v1/security-settings', { method: 'PUT', body: JSON.stringify({ session_timeout_minutes: sessionTimeout }) });
+      await api('/api/v1/security-settings', { method: 'PUT', body: JSON.stringify({ session_timeout_minutes: sessionTimeout, require_admin_mfa: requireAdminMfa }) });
       addToast({ type: 'success', title: 'Security settings saved' });
     } catch { addToast({ type: 'error', title: 'Failed to save security settings' }); }
     finally { setSavingSecuritySettings(false); }
@@ -528,7 +531,7 @@ export function SettingsPage() {
             ) : (
               <button onClick={() => { setShowRegen(true); setShowDisable(false); setMfaError(''); }} className="text-sm text-blue-600 hover:text-blue-700 font-medium">Regenerate Backup Codes</button>
             )}
-            {isAdmin ? (
+            {isAdmin && requireAdminMfa ? (
               <div className="bg-gray-50 rounded-lg p-3">
                 <p className="text-xs text-gray-600">Two-factor authentication cannot be disabled for administrator accounts (NIST IA-2(1) policy).</p>
               </div>
@@ -782,6 +785,21 @@ export function SettingsPage() {
                 <option value={30}>30 minutes</option>
                 <option value={60}>60 minutes</option>
               </select>
+              <button onClick={saveSecuritySettings} disabled={savingSecuritySettings} className="px-4 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
+                {savingSecuritySettings ? 'Saving...' : 'Save'}
+              </button>
+            </div>
+          </div>
+
+          {/* Enforce MFA for Admins */}
+          <div className="bg-white rounded-xl border border-blue-200 p-6">
+            <h2 className="font-semibold text-gray-900 mb-1">Enforce MFA for Admin Accounts</h2>
+            <p className="text-sm text-gray-500 mb-4">When enabled, admin and owner accounts must set up two-factor authentication before accessing the system. They also cannot disable MFA. Recommended for NIST IA-2(1) / FedRAMP compliance.</p>
+            <div className="flex items-center gap-4">
+              <button onClick={() => setRequireAdminMfa(!requireAdminMfa)} className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${requireAdminMfa ? 'bg-blue-600' : 'bg-gray-300'}`}>
+                <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${requireAdminMfa ? 'translate-x-6' : 'translate-x-1'}`} />
+              </button>
+              <span className="text-sm text-gray-700">{requireAdminMfa ? 'Enabled' : 'Disabled'}</span>
               <button onClick={saveSecuritySettings} disabled={savingSecuritySettings} className="px-4 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
                 {savingSecuritySettings ? 'Saving...' : 'Save'}
               </button>
