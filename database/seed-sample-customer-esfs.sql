@@ -47,12 +47,12 @@ VALUES
   ('user-esfs-001', 'org_002', 'robert.hayes@eagleshield.com',
    'a17b334b4cfc932e35a3014a4b70ff90a8c6c903b162e3383647f86d5197a544',
    'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2',
-   'Col. Robert Hayes (Ret.)', 'owner', 1, 'active', 1, '2023-06-01 09:00:00', '2026-02-28 08:00:00'),
+   'Col. Robert Hayes (Ret.)', 'owner', 0, 'active', 1, '2023-06-01 09:00:00', '2026-02-28 08:00:00'),
 
   ('user-esfs-002', 'org_002', 'jennifer.walsh@eagleshield.com',
    'a17b334b4cfc932e35a3014a4b70ff90a8c6c903b162e3383647f86d5197a544',
    'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2',
-   'Jennifer Walsh', 'admin', 1, 'active', 1, '2023-06-01 10:00:00', '2026-02-28 08:00:00'),
+   'Jennifer Walsh', 'admin', 0, 'active', 1, '2023-06-01 10:00:00', '2026-02-28 08:00:00'),
 
   ('user-esfs-003', 'org_002', 'michael.torres@eagleshield.com',
    'a17b334b4cfc932e35a3014a4b70ff90a8c6c903b162e3383647f86d5197a544',
