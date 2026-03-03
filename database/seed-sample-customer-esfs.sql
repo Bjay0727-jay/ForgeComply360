@@ -47,12 +47,12 @@ VALUES
   ('user-esfs-001', 'org_002', 'robert.hayes@eagleshield.com',
    'a17b334b4cfc932e35a3014a4b70ff90a8c6c903b162e3383647f86d5197a544',
    'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2',
-   'Col. Robert Hayes (Ret.)', 'owner', 1, 'active', 1, '2023-06-01 09:00:00', '2026-02-28 08:00:00'),
+   'Col. Robert Hayes (Ret.)', 'owner', 0, 'active', 1, '2023-06-01 09:00:00', '2026-02-28 08:00:00'),
 
   ('user-esfs-002', 'org_002', 'jennifer.walsh@eagleshield.com',
    'a17b334b4cfc932e35a3014a4b70ff90a8c6c903b162e3383647f86d5197a544',
    'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2',
-   'Jennifer Walsh', 'admin', 1, 'active', 1, '2023-06-01 10:00:00', '2026-02-28 08:00:00'),
+   'Jennifer Walsh', 'admin', 0, 'active', 1, '2023-06-01 10:00:00', '2026-02-28 08:00:00'),
 
   ('user-esfs-003', 'org_002', 'michael.torres@eagleshield.com',
    'a17b334b4cfc932e35a3014a4b70ff90a8c6c903b162e3383647f86d5197a544',
@@ -108,26 +108,26 @@ INSERT OR IGNORE INTO organization_frameworks (id, org_id, framework_id, enabled
 -- ========================================
 -- 5. ASSETS (16 assets)
 -- ========================================
-INSERT OR IGNORE INTO assets (id, org_id, system_id, hostname, ip_address, mac_address, asset_type, os_type, discovery_source, environment, last_seen_at, risk_score, first_seen_at, created_at, updated_at)
+INSERT OR IGNORE INTO assets (id, org_id, system_id, hostname, ip_address, mac_address, asset_type, os_type, discovery_source, environment, last_seen_at, risk_score, created_at, updated_at)
 VALUES
   -- FCMS System Assets (12)
-  ('asset-esfs-001', 'org_002', 'sys-esfs-001', 'fcms-web-01', '10.200.1.10', '00:50:56:A1:01:01', 'server', 'Windows Server 2022', 'nessus', 'production', '2026-02-28 06:00:00', 25, '2023-06-15 10:00:00', '2023-06-15 10:00:00', '2026-02-28 06:00:00'),
-  ('asset-esfs-002', 'org_002', 'sys-esfs-001', 'fcms-web-02', '10.200.1.11', '00:50:56:A1:01:02', 'server', 'Windows Server 2022', 'nessus', 'production', '2026-02-28 06:00:00', 25, '2023-06-15 10:00:00', '2023-06-15 10:00:00', '2026-02-28 06:00:00'),
-  ('asset-esfs-003', 'org_002', 'sys-esfs-001', 'fcms-app-01', '10.200.2.10', '00:50:56:A1:02:01', 'server', 'Windows Server 2022', 'nessus', 'production', '2026-02-28 06:00:00', 42, '2023-06-15 10:00:00', '2023-06-15 10:00:00', '2026-02-28 06:00:00'),
-  ('asset-esfs-004', 'org_002', 'sys-esfs-001', 'fcms-app-02', '10.200.2.11', '00:50:56:A1:02:02', 'server', 'Windows Server 2022', 'nessus', 'production', '2026-02-28 06:00:00', 42, '2023-06-15 10:00:00', '2023-06-15 10:00:00', '2026-02-28 06:00:00'),
-  ('asset-esfs-005', 'org_002', 'sys-esfs-001', 'fcms-db-primary', '10.200.3.10', '00:50:56:A1:03:01', 'database', 'Windows Server 2022', 'nessus', 'production', '2026-02-28 06:00:00', 38, '2023-06-15 10:00:00', '2023-06-15 10:00:00', '2026-02-28 06:00:00'),
-  ('asset-esfs-006', 'org_002', 'sys-esfs-001', 'fcms-db-secondary', '10.200.3.11', '00:50:56:A1:03:02', 'database', 'Windows Server 2022', 'nessus', 'production', '2026-02-28 06:00:00', 30, '2023-06-15 10:00:00', '2023-06-15 10:00:00', '2026-02-28 06:00:00'),
-  ('asset-esfs-007', 'org_002', 'sys-esfs-001', 'fcms-dc-01', '10.200.4.10', '00:50:56:A1:04:01', 'server', 'Windows Server 2022', 'nessus', 'production', '2026-02-28 06:00:00', 20, '2023-06-15 10:00:00', '2023-06-15 10:00:00', '2026-02-28 06:00:00'),
-  ('asset-esfs-008', 'org_002', 'sys-esfs-001', 'fcms-adfs', '10.200.4.20', '00:50:56:A1:04:02', 'server', 'Windows Server 2022', 'nessus', 'production', '2026-02-28 06:00:00', 22, '2023-06-15 10:00:00', '2023-06-15 10:00:00', '2026-02-28 06:00:00'),
-  ('asset-esfs-009', 'org_002', 'sys-esfs-001', 'fcms-sccm', '10.200.5.10', '00:50:56:A1:05:01', 'server', 'Windows Server 2022', 'nessus', 'production', '2026-02-28 06:00:00', 18, '2023-06-15 10:00:00', '2023-06-15 10:00:00', '2026-02-28 06:00:00'),
-  ('asset-esfs-010', 'org_002', 'sys-esfs-001', 'fcms-splunk', '10.200.6.10', '00:50:56:A1:06:01', 'application', 'Linux', 'nessus', 'production', '2026-02-28 06:00:00', 15, '2023-06-15 10:00:00', '2023-06-15 10:00:00', '2026-02-28 06:00:00'),
-  ('asset-esfs-011', 'org_002', 'sys-esfs-001', 'fcms-nessus', '10.200.6.20', '00:50:56:A1:06:02', 'application', 'Linux', 'manual', 'production', '2026-02-28 06:00:00', 12, '2023-06-15 10:00:00', '2023-06-15 10:00:00', '2026-02-28 06:00:00'),
-  ('asset-esfs-012', 'org_002', 'sys-esfs-001', 'fcms-fw-paloalto', '10.200.0.1', NULL, 'network_device', 'PAN-OS', 'nessus', 'production', '2026-02-28 06:00:00', 10, '2023-06-15 10:00:00', '2023-06-15 10:00:00', '2026-02-28 06:00:00'),
+  ('asset-esfs-001', 'org_002', 'sys-esfs-001', 'fcms-web-01', '10.200.1.10', '00:50:56:A1:01:01', 'server', 'Windows Server 2022', 'nessus', 'production', '2026-02-28 06:00:00', 25, '2023-06-15 10:00:00', '2026-02-28 06:00:00'),
+  ('asset-esfs-002', 'org_002', 'sys-esfs-001', 'fcms-web-02', '10.200.1.11', '00:50:56:A1:01:02', 'server', 'Windows Server 2022', 'nessus', 'production', '2026-02-28 06:00:00', 25, '2023-06-15 10:00:00', '2026-02-28 06:00:00'),
+  ('asset-esfs-003', 'org_002', 'sys-esfs-001', 'fcms-app-01', '10.200.2.10', '00:50:56:A1:02:01', 'server', 'Windows Server 2022', 'nessus', 'production', '2026-02-28 06:00:00', 42, '2023-06-15 10:00:00', '2026-02-28 06:00:00'),
+  ('asset-esfs-004', 'org_002', 'sys-esfs-001', 'fcms-app-02', '10.200.2.11', '00:50:56:A1:02:02', 'server', 'Windows Server 2022', 'nessus', 'production', '2026-02-28 06:00:00', 42, '2023-06-15 10:00:00', '2026-02-28 06:00:00'),
+  ('asset-esfs-005', 'org_002', 'sys-esfs-001', 'fcms-db-primary', '10.200.3.10', '00:50:56:A1:03:01', 'database', 'Windows Server 2022', 'nessus', 'production', '2026-02-28 06:00:00', 38, '2023-06-15 10:00:00', '2026-02-28 06:00:00'),
+  ('asset-esfs-006', 'org_002', 'sys-esfs-001', 'fcms-db-secondary', '10.200.3.11', '00:50:56:A1:03:02', 'database', 'Windows Server 2022', 'nessus', 'production', '2026-02-28 06:00:00', 30, '2023-06-15 10:00:00', '2026-02-28 06:00:00'),
+  ('asset-esfs-007', 'org_002', 'sys-esfs-001', 'fcms-dc-01', '10.200.4.10', '00:50:56:A1:04:01', 'server', 'Windows Server 2022', 'nessus', 'production', '2026-02-28 06:00:00', 20, '2023-06-15 10:00:00', '2026-02-28 06:00:00'),
+  ('asset-esfs-008', 'org_002', 'sys-esfs-001', 'fcms-adfs', '10.200.4.20', '00:50:56:A1:04:02', 'server', 'Windows Server 2022', 'nessus', 'production', '2026-02-28 06:00:00', 22, '2023-06-15 10:00:00', '2026-02-28 06:00:00'),
+  ('asset-esfs-009', 'org_002', 'sys-esfs-001', 'fcms-sccm', '10.200.5.10', '00:50:56:A1:05:01', 'server', 'Windows Server 2022', 'nessus', 'production', '2026-02-28 06:00:00', 18, '2023-06-15 10:00:00', '2026-02-28 06:00:00'),
+  ('asset-esfs-010', 'org_002', 'sys-esfs-001', 'fcms-splunk', '10.200.6.10', '00:50:56:A1:06:01', 'application', 'Linux', 'nessus', 'production', '2026-02-28 06:00:00', 15, '2023-06-15 10:00:00', '2026-02-28 06:00:00'),
+  ('asset-esfs-011', 'org_002', 'sys-esfs-001', 'fcms-nessus', '10.200.6.20', '00:50:56:A1:06:02', 'application', 'Linux', 'manual', 'production', '2026-02-28 06:00:00', 12, '2023-06-15 10:00:00', '2026-02-28 06:00:00'),
+  ('asset-esfs-012', 'org_002', 'sys-esfs-001', 'fcms-fw-paloalto', '10.200.0.1', NULL, 'network_device', 'PAN-OS', 'nessus', 'production', '2026-02-28 06:00:00', 10, '2023-06-15 10:00:00', '2026-02-28 06:00:00'),
   -- SDR System Assets (4)
-  ('asset-esfs-013', 'org_002', 'sys-esfs-002', 'sdr-sharepoint', '10.200.10.10', '00:50:56:A2:01:01', 'application', 'Windows Server 2022', 'nessus', 'production', '2026-02-28 06:00:00', 15, '2024-03-15 10:00:00', '2024-03-15 10:00:00', '2026-02-28 06:00:00'),
-  ('asset-esfs-014', 'org_002', 'sys-esfs-002', 'sdr-search', '10.200.10.20', '00:50:56:A2:01:02', 'server', 'Windows Server 2022', 'nessus', 'production', '2026-02-28 06:00:00', 12, '2024-03-15 10:00:00', '2024-03-15 10:00:00', '2026-02-28 06:00:00'),
-  ('asset-esfs-015', 'org_002', 'sys-esfs-002', 'sdr-sql', '10.200.10.30', '00:50:56:A2:01:03', 'database', 'Windows Server 2022', 'nessus', 'production', '2026-02-28 06:00:00', 18, '2024-03-15 10:00:00', '2024-03-15 10:00:00', '2026-02-28 06:00:00'),
-  ('asset-esfs-016', 'org_002', 'sys-esfs-002', 'sdr-backup', '10.200.10.40', '00:50:56:A2:01:04', 'server', 'Windows Server 2022', 'nessus', 'production', '2026-02-28 06:00:00', 8, '2024-03-15 10:00:00', '2024-03-15 10:00:00', '2026-02-28 06:00:00');
+  ('asset-esfs-013', 'org_002', 'sys-esfs-002', 'sdr-sharepoint', '10.200.10.10', '00:50:56:A2:01:01', 'application', 'Windows Server 2022', 'nessus', 'production', '2026-02-28 06:00:00', 15, '2024-03-15 10:00:00', '2026-02-28 06:00:00'),
+  ('asset-esfs-014', 'org_002', 'sys-esfs-002', 'sdr-search', '10.200.10.20', '00:50:56:A2:01:02', 'server', 'Windows Server 2022', 'nessus', 'production', '2026-02-28 06:00:00', 12, '2024-03-15 10:00:00', '2026-02-28 06:00:00'),
+  ('asset-esfs-015', 'org_002', 'sys-esfs-002', 'sdr-sql', '10.200.10.30', '00:50:56:A2:01:03', 'database', 'Windows Server 2022', 'nessus', 'production', '2026-02-28 06:00:00', 18, '2024-03-15 10:00:00', '2026-02-28 06:00:00'),
+  ('asset-esfs-016', 'org_002', 'sys-esfs-002', 'sdr-backup', '10.200.10.40', '00:50:56:A2:01:04', 'server', 'Windows Server 2022', 'nessus', 'production', '2026-02-28 06:00:00', 8, '2024-03-15 10:00:00', '2026-02-28 06:00:00');
 
 -- ========================================
 -- 6. CONTROL IMPLEMENTATIONS (12 key controls for FCMS)
