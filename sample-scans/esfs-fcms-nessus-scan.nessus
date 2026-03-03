@@ -1,0 +1,519 @@
+<?xml version="1.0" ?>
+<NessusClientData_v2>
+  <Policy>
+    <policyName>ForgeComply360 Demo - ESFS FCMS Credentialed Scan</policyName>
+  </Policy>
+  <Report name="ESFS FCMS Infrastructure Scan - 2026-02-28">
+    <!-- ================================================================ -->
+    <!-- HOST 1: fcms-web-01 (IIS Web Server) -->
+    <!-- ================================================================ -->
+    <ReportHost name="10.200.1.10">
+      <HostProperties>
+        <tag name="host-ip">10.200.1.10</tag>
+        <tag name="host-fqdn">fcms-web-01.eagleshield.local</tag>
+        <tag name="hostname">fcms-web-01</tag>
+        <tag name="netbios-name">FCMS-WEB-01</tag>
+        <tag name="operating-system">Microsoft Windows Server 2022 Standard</tag>
+        <tag name="mac-address">00:50:56:A1:01:01</tag>
+        <tag name="Credentialed_Scan">true</tag>
+        <tag name="HOST_START">Sat Feb 28 02:00:00 2026</tag>
+        <tag name="HOST_END">Sat Feb 28 02:45:00 2026</tag>
+      </HostProperties>
+
+      <!-- Critical: OpenSSL Remote Code Execution -->
+      <ReportItem port="443" svc_name="https" protocol="tcp" severity="4" pluginID="190001" pluginName="OpenSSL 3.0.x &lt; 3.0.15 Remote Code Execution" pluginFamily="Web Servers">
+        <description>The version of OpenSSL installed on the remote host is prior to 3.0.15 and is affected by a remote code execution vulnerability. An attacker could exploit this to execute arbitrary code on the target system by sending a specially crafted TLS handshake.</description>
+        <synopsis>The remote host has a vulnerable version of OpenSSL installed.</synopsis>
+        <solution>Upgrade OpenSSL to version 3.0.15 or later.</solution>
+        <cvss_base_score>9.8</cvss_base_score>
+        <cvss3_base_score>9.8</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H</cvss3_vector>
+        <cve>CVE-2024-12797</cve>
+        <plugin_output>Installed version: OpenSSL 3.0.9
+Fixed version: 3.0.15
+Path: C:\Program Files\OpenSSL\bin\openssl.exe</plugin_output>
+        <exploit_available>true</exploit_available>
+        <see_also>https://www.openssl.org/news/secadv/20250211.txt</see_also>
+        <plugin_publication_date>2025/02/11</plugin_publication_date>
+      </ReportItem>
+
+      <!-- High: IIS HTTP/2 Rapid Reset -->
+      <ReportItem port="443" svc_name="https" protocol="tcp" severity="3" pluginID="190002" pluginName="Microsoft IIS HTTP/2 Rapid Reset Denial of Service" pluginFamily="Web Servers">
+        <description>The IIS web server on the remote host is vulnerable to HTTP/2 Rapid Reset attack (CVE-2023-44487). An attacker could cause denial of service by sending specially crafted HTTP/2 requests.</description>
+        <synopsis>The remote IIS server is vulnerable to HTTP/2 Rapid Reset attack.</synopsis>
+        <solution>Apply the latest Windows Server cumulative update and configure HTTP/2 connection limits.</solution>
+        <cvss_base_score>7.5</cvss_base_score>
+        <cvss3_base_score>7.5</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H</cvss3_vector>
+        <cve>CVE-2023-44487</cve>
+        <plugin_output>IIS Version: 10.0
+HTTP/2 enabled: Yes
+Max concurrent streams: Unlimited (default)</plugin_output>
+        <exploit_available>true</exploit_available>
+      </ReportItem>
+
+      <!-- Medium: TLS Weak Cipher Suites -->
+      <ReportItem port="443" svc_name="https" protocol="tcp" severity="2" pluginID="190003" pluginName="SSL/TLS Weak Cipher Suites Supported" pluginFamily="General">
+        <description>The remote host supports SSL/TLS cipher suites that use weak encryption algorithms (e.g., 3DES, RC4). These ciphers are considered weak and may allow an attacker to decrypt traffic.</description>
+        <synopsis>The remote host supports weak SSL/TLS cipher suites.</synopsis>
+        <solution>Disable weak cipher suites in IIS configuration. Use only AES-256-GCM or AES-128-GCM cipher suites.</solution>
+        <cvss_base_score>5.3</cvss_base_score>
+        <cvss3_base_score>5.3</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N</cvss3_vector>
+        <plugin_output>Weak ciphers supported:
+  TLS_RSA_WITH_3DES_EDE_CBC_SHA (168-bit)
+  TLS_RSA_WITH_AES_128_CBC_SHA (128-bit)</plugin_output>
+      </ReportItem>
+
+      <!-- Medium: Missing Security Headers -->
+      <ReportItem port="443" svc_name="https" protocol="tcp" severity="2" pluginID="190004" pluginName="Web Application Missing Security Headers" pluginFamily="CGI abuses">
+        <description>The web application on the remote host is missing several recommended security headers including Content-Security-Policy, X-Content-Type-Options, and Strict-Transport-Security.</description>
+        <synopsis>The remote web application is missing recommended security headers.</synopsis>
+        <solution>Configure the following HTTP response headers: Content-Security-Policy, X-Content-Type-Options: nosniff, Strict-Transport-Security: max-age=31536000.</solution>
+        <cvss_base_score>4.3</cvss_base_score>
+        <cvss3_base_score>4.3</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:N/I:L/A:N</cvss3_vector>
+        <plugin_output>Missing headers:
+  Content-Security-Policy
+  X-Content-Type-Options
+  X-Frame-Options</plugin_output>
+      </ReportItem>
+
+      <!-- Low: Server Banner Disclosure -->
+      <ReportItem port="443" svc_name="https" protocol="tcp" severity="1" pluginID="190005" pluginName="HTTP Server Type and Version" pluginFamily="Web Servers">
+        <description>The remote web server discloses its type and version in HTTP response headers. This information can be used by attackers to identify known vulnerabilities.</description>
+        <synopsis>The remote web server discloses version information.</synopsis>
+        <solution>Configure IIS to suppress version information in response headers.</solution>
+        <cvss_base_score>2.6</cvss_base_score>
+        <cvss3_base_score>2.6</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:L/I:N/A:N</cvss3_vector>
+        <plugin_output>Server: Microsoft-IIS/10.0
+X-Powered-By: ASP.NET</plugin_output>
+      </ReportItem>
+
+      <!-- Info: SSL Certificate Information -->
+      <ReportItem port="443" svc_name="https" protocol="tcp" severity="0" pluginID="190006" pluginName="SSL Certificate Information" pluginFamily="General">
+        <description>This plugin displays information about the SSL certificate on the remote host.</description>
+        <synopsis>SSL certificate information for the remote host.</synopsis>
+        <solution>N/A</solution>
+        <cvss_base_score>0.0</cvss_base_score>
+        <plugin_output>Subject: CN=fcms.eagleshield.gov.contractor
+Issuer: CN=DigiCert SHA2 Extended Validation Server CA
+Valid From: 2025-09-01
+Valid To: 2026-09-01
+Key Size: 2048-bit RSA</plugin_output>
+      </ReportItem>
+    </ReportHost>
+
+    <!-- ================================================================ -->
+    <!-- HOST 2: fcms-web-02 (IIS Web Server - HA Pair) -->
+    <!-- ================================================================ -->
+    <ReportHost name="10.200.1.11">
+      <HostProperties>
+        <tag name="host-ip">10.200.1.11</tag>
+        <tag name="host-fqdn">fcms-web-02.eagleshield.local</tag>
+        <tag name="hostname">fcms-web-02</tag>
+        <tag name="netbios-name">FCMS-WEB-02</tag>
+        <tag name="operating-system">Microsoft Windows Server 2022 Standard</tag>
+        <tag name="mac-address">00:50:56:A1:01:02</tag>
+        <tag name="Credentialed_Scan">true</tag>
+        <tag name="HOST_START">Sat Feb 28 02:45:00 2026</tag>
+        <tag name="HOST_END">Sat Feb 28 03:30:00 2026</tag>
+      </HostProperties>
+
+      <!-- Same OpenSSL vuln on second web server -->
+      <ReportItem port="443" svc_name="https" protocol="tcp" severity="4" pluginID="190001" pluginName="OpenSSL 3.0.x &lt; 3.0.15 Remote Code Execution" pluginFamily="Web Servers">
+        <description>The version of OpenSSL installed on the remote host is prior to 3.0.15 and is affected by a remote code execution vulnerability.</description>
+        <synopsis>The remote host has a vulnerable version of OpenSSL installed.</synopsis>
+        <solution>Upgrade OpenSSL to version 3.0.15 or later.</solution>
+        <cvss_base_score>9.8</cvss_base_score>
+        <cvss3_base_score>9.8</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H</cvss3_vector>
+        <cve>CVE-2024-12797</cve>
+        <plugin_output>Installed version: OpenSSL 3.0.9
+Fixed version: 3.0.15</plugin_output>
+        <exploit_available>true</exploit_available>
+      </ReportItem>
+
+      <!-- Low: Weak cipher -->
+      <ReportItem port="443" svc_name="https" protocol="tcp" severity="2" pluginID="190003" pluginName="SSL/TLS Weak Cipher Suites Supported" pluginFamily="General">
+        <description>The remote host supports weak cipher suites.</description>
+        <synopsis>Weak cipher suites detected.</synopsis>
+        <solution>Disable weak cipher suites.</solution>
+        <cvss_base_score>5.3</cvss_base_score>
+        <cvss3_base_score>5.3</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N</cvss3_vector>
+        <plugin_output>Weak ciphers: TLS_RSA_WITH_3DES_EDE_CBC_SHA</plugin_output>
+      </ReportItem>
+    </ReportHost>
+
+    <!-- ================================================================ -->
+    <!-- HOST 3: fcms-app-01 (.NET Application Server) -->
+    <!-- ================================================================ -->
+    <ReportHost name="10.200.2.10">
+      <HostProperties>
+        <tag name="host-ip">10.200.2.10</tag>
+        <tag name="host-fqdn">fcms-app-01.eagleshield.local</tag>
+        <tag name="hostname">fcms-app-01</tag>
+        <tag name="netbios-name">FCMS-APP-01</tag>
+        <tag name="operating-system">Microsoft Windows Server 2022 Standard</tag>
+        <tag name="mac-address">00:50:56:A1:02:01</tag>
+        <tag name="Credentialed_Scan">true</tag>
+        <tag name="HOST_START">Sat Feb 28 03:30:00 2026</tag>
+        <tag name="HOST_END">Sat Feb 28 04:15:00 2026</tag>
+      </HostProperties>
+
+      <!-- High: .NET Framework Vulnerability -->
+      <ReportItem port="0" svc_name="general" protocol="tcp" severity="3" pluginID="190007" pluginName="Microsoft .NET Framework Remote Code Execution (KB5034276)" pluginFamily="Windows">
+        <description>The .NET Framework installation on the remote host is missing a security update. A remote code execution vulnerability exists that could allow an attacker to execute arbitrary code on the target system.</description>
+        <synopsis>The remote host is missing a .NET Framework security update.</synopsis>
+        <solution>Apply the latest .NET Framework cumulative update via Windows Update or WSUS.</solution>
+        <cvss_base_score>8.1</cvss_base_score>
+        <cvss3_base_score>8.1</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H</cvss3_vector>
+        <cve>CVE-2024-21312</cve>
+        <plugin_output>Installed: .NET Framework 4.8.1 (4.8.9195)
+Required: .NET Framework 4.8.1 (4.8.9232)</plugin_output>
+        <exploit_available>false</exploit_available>
+      </ReportItem>
+
+      <!-- Medium: Windows Audit Policy Not Configured -->
+      <ReportItem port="0" svc_name="general" protocol="tcp" severity="2" pluginID="190008" pluginName="Windows Audit Policy Configuration Incomplete" pluginFamily="Windows">
+        <description>The Windows audit policy on the remote host does not log all required event categories per DISA STIG requirements. Specifically, Object Access auditing for success and failure events is not enabled.</description>
+        <synopsis>Windows audit policy is not fully configured per STIG requirements.</synopsis>
+        <solution>Configure audit policy via Group Policy to enable Object Access auditing for both Success and Failure events. Reference DISA STIG V-254239.</solution>
+        <cvss_base_score>4.0</cvss_base_score>
+        <cvss3_base_score>4.0</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:L/AC:L/PR:H/UI:N/S:U/C:N/I:N/A:N</cvss3_vector>
+        <plugin_output>STIG Check: V-254239 - OPEN
+Category: Object Access
+Success Auditing: Disabled
+Failure Auditing: Disabled</plugin_output>
+      </ReportItem>
+
+      <!-- Medium: SMBv1 Enabled -->
+      <ReportItem port="445" svc_name="cifs" protocol="tcp" severity="2" pluginID="190009" pluginName="Microsoft Windows SMBv1 Protocol Enabled" pluginFamily="Windows">
+        <description>The remote Windows host has SMBv1 protocol enabled. SMBv1 is an outdated protocol with known security vulnerabilities including EternalBlue and WannaCry exploitation vectors.</description>
+        <synopsis>SMBv1 is enabled on the remote host.</synopsis>
+        <solution>Disable SMBv1 protocol via PowerShell: Disable-WindowsOptionalFeature -Online -FeatureName smb1protocol. Reference DISA STIG V-254247.</solution>
+        <cvss_base_score>5.9</cvss_base_score>
+        <cvss3_base_score>5.9</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:N/A:H</cvss3_vector>
+        <plugin_output>SMBv1 Status: Enabled
+STIG Check: V-254247 - OPEN</plugin_output>
+      </ReportItem>
+
+      <!-- Low: PowerShell v2 Engine Enabled -->
+      <ReportItem port="0" svc_name="general" protocol="tcp" severity="1" pluginID="190010" pluginName="Windows PowerShell 2.0 Engine Enabled" pluginFamily="Windows">
+        <description>The PowerShell 2.0 engine is enabled on the remote host. PowerShell 2.0 lacks modern security features like script block logging and AMSI integration, making it a target for attackers to bypass security controls.</description>
+        <synopsis>PowerShell 2.0 engine is enabled on the remote host.</synopsis>
+        <solution>Disable PowerShell 2.0 engine via: Disable-WindowsOptionalFeature -Online -FeatureName MicrosoftWindowsPowerShellV2Root. Reference DISA STIG V-254258.</solution>
+        <cvss_base_score>3.3</cvss_base_score>
+        <cvss3_base_score>3.3</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:L/I:N/A:N</cvss3_vector>
+        <plugin_output>PowerShell 2.0 Engine: Enabled
+STIG Check: V-254258 - OPEN</plugin_output>
+      </ReportItem>
+    </ReportHost>
+
+    <!-- ================================================================ -->
+    <!-- HOST 4: fcms-db-primary (SQL Server Primary) -->
+    <!-- ================================================================ -->
+    <ReportHost name="10.200.3.10">
+      <HostProperties>
+        <tag name="host-ip">10.200.3.10</tag>
+        <tag name="host-fqdn">fcms-db-primary.eagleshield.local</tag>
+        <tag name="hostname">fcms-db-primary</tag>
+        <tag name="netbios-name">FCMS-DB-PRI</tag>
+        <tag name="operating-system">Microsoft Windows Server 2022 Standard</tag>
+        <tag name="mac-address">00:50:56:A1:03:01</tag>
+        <tag name="Credentialed_Scan">true</tag>
+        <tag name="HOST_START">Sat Feb 28 04:15:00 2026</tag>
+        <tag name="HOST_END">Sat Feb 28 05:00:00 2026</tag>
+      </HostProperties>
+
+      <!-- Critical: SMB Remote Code Execution -->
+      <ReportItem port="445" svc_name="cifs" protocol="tcp" severity="4" pluginID="190011" pluginName="Microsoft Windows SMB Remote Code Execution (CVE-2024-38063)" pluginFamily="Windows">
+        <description>The remote Windows host is missing a security update that resolves a critical SMB remote code execution vulnerability. An unauthenticated attacker could send specially crafted SMB packets to the target to achieve remote code execution.</description>
+        <synopsis>The remote host is affected by a critical SMB vulnerability.</synopsis>
+        <solution>Apply the latest Windows Server cumulative update from Microsoft Update Catalog.</solution>
+        <cvss_base_score>9.8</cvss_base_score>
+        <cvss3_base_score>9.8</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H</cvss3_vector>
+        <cve>CVE-2024-38063</cve>
+        <plugin_output>Missing KB: KB5041578
+OS Build: 20348.2582
+Required Build: 20348.2655</plugin_output>
+        <exploit_available>true</exploit_available>
+      </ReportItem>
+
+      <!-- High: SQL Server Unpatched Cumulative Update -->
+      <ReportItem port="1433" svc_name="mssql" protocol="tcp" severity="3" pluginID="190012" pluginName="Microsoft SQL Server 2022 Unpatched (CU15)" pluginFamily="Databases">
+        <description>The Microsoft SQL Server 2022 installation is missing cumulative update CU15, which addresses multiple security vulnerabilities including information disclosure and elevation of privilege issues.</description>
+        <synopsis>The remote SQL Server installation is out of date.</synopsis>
+        <solution>Apply SQL Server 2022 Cumulative Update 15 (CU15) from the Microsoft Download Center.</solution>
+        <cvss_base_score>7.8</cvss_base_score>
+        <cvss3_base_score>7.8</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H</cvss3_vector>
+        <cve>CVE-2024-37338</cve>
+        <plugin_output>Installed: SQL Server 2022 16.0.4100.1 (CU12)
+Required: SQL Server 2022 16.0.4145.4 (CU15)</plugin_output>
+        <exploit_available>false</exploit_available>
+      </ReportItem>
+
+      <!-- Medium: SQL Server sa Account Enabled -->
+      <ReportItem port="1433" svc_name="mssql" protocol="tcp" severity="2" pluginID="190013" pluginName="Microsoft SQL Server Default SA Account Enabled" pluginFamily="Databases">
+        <description>The SQL Server sa (system administrator) account is enabled on the remote host. While it may be renamed, the original sa account should be disabled per DISA STIG requirements.</description>
+        <synopsis>The SQL Server sa account is enabled.</synopsis>
+        <solution>Disable the sa account and use named administrative accounts with least privilege. Reference DISA SQL Server 2022 STIG V-258407.</solution>
+        <cvss_base_score>5.3</cvss_base_score>
+        <cvss3_base_score>5.3</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:N/AC:H/PR:L/UI:N/S:U/C:H/I:N/A:N</cvss3_vector>
+        <plugin_output>Account: sa
+Status: Enabled
+Renamed: No
+STIG Check: V-258407 - OPEN</plugin_output>
+      </ReportItem>
+
+      <!-- Low: SQL Server Version Disclosure -->
+      <ReportItem port="1433" svc_name="mssql" protocol="tcp" severity="1" pluginID="190014" pluginName="Microsoft SQL Server Version and Configuration Information" pluginFamily="Databases">
+        <description>The SQL Server instance on the remote host discloses its version and configuration details during connection handshake.</description>
+        <synopsis>SQL Server version information is disclosed.</synopsis>
+        <solution>Review information disclosure and restrict network access to SQL Server port.</solution>
+        <cvss_base_score>2.1</cvss_base_score>
+        <cvss3_base_score>2.1</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:N/AC:H/PR:L/UI:R/S:U/C:L/I:N/A:N</cvss3_vector>
+        <plugin_output>SQL Server Version: 16.0.4100.1
+Edition: Enterprise (64-bit)
+Product Level: CU12
+Authentication Mode: Windows + SQL</plugin_output>
+      </ReportItem>
+    </ReportHost>
+
+    <!-- ================================================================ -->
+    <!-- HOST 5: fcms-dc-01 (Domain Controller) -->
+    <!-- ================================================================ -->
+    <ReportHost name="10.200.4.10">
+      <HostProperties>
+        <tag name="host-ip">10.200.4.10</tag>
+        <tag name="host-fqdn">fcms-dc-01.eagleshield.local</tag>
+        <tag name="hostname">fcms-dc-01</tag>
+        <tag name="netbios-name">FCMS-DC-01</tag>
+        <tag name="operating-system">Microsoft Windows Server 2022 Datacenter</tag>
+        <tag name="mac-address">00:50:56:A1:04:01</tag>
+        <tag name="Credentialed_Scan">true</tag>
+        <tag name="HOST_START">Sat Feb 28 05:00:00 2026</tag>
+        <tag name="HOST_END">Sat Feb 28 05:45:00 2026</tag>
+      </HostProperties>
+
+      <!-- High: Windows LSASS Credential Theft Vulnerability -->
+      <ReportItem port="0" svc_name="general" protocol="tcp" severity="3" pluginID="190015" pluginName="Windows LSASS Process Memory Protection Not Enabled" pluginFamily="Windows">
+        <description>The Local Security Authority Subsystem Service (LSASS) process on the remote host does not have additional process protection enabled. Without RunAsPPL, credential dumping tools like Mimikatz can access LSASS memory.</description>
+        <synopsis>LSASS process protection is not enabled on the domain controller.</synopsis>
+        <solution>Enable LSASS protection via registry: Set HKLM\SYSTEM\CurrentControlSet\Control\Lsa\RunAsPPL to DWORD 1. Requires reboot.</solution>
+        <cvss_base_score>7.8</cvss_base_score>
+        <cvss3_base_score>7.8</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H</cvss3_vector>
+        <plugin_output>RunAsPPL: Not Configured
+Credential Guard: Not Enabled
+STIG Check: V-254243 - OPEN</plugin_output>
+      </ReportItem>
+
+      <!-- Medium: NTLM Authentication Not Restricted -->
+      <ReportItem port="0" svc_name="general" protocol="tcp" severity="2" pluginID="190016" pluginName="Windows Domain Controller NTLM Authentication Not Restricted" pluginFamily="Windows">
+        <description>The domain controller does not restrict NTLM authentication. NTLM is a legacy authentication protocol susceptible to relay attacks, pass-the-hash, and brute force attacks.</description>
+        <synopsis>NTLM authentication is not restricted on the domain controller.</synopsis>
+        <solution>Configure Group Policy to restrict NTLM: Computer Configuration > Policies > Windows Settings > Security Settings > Local Policies > Security Options > Network security: Restrict NTLM.</solution>
+        <cvss_base_score>5.4</cvss_base_score>
+        <cvss3_base_score>5.4</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:L/A:N</cvss3_vector>
+        <plugin_output>NTLM Authentication: Allowed
+NTLM Auditing: Enabled
+Kerberos Preferred: Yes</plugin_output>
+      </ReportItem>
+
+      <!-- Low: DNS Zone Transfer Allowed -->
+      <ReportItem port="53" svc_name="dns" protocol="tcp" severity="1" pluginID="190017" pluginName="DNS Server Zone Transfer Allowed" pluginFamily="DNS">
+        <description>The DNS server on the remote host allows zone transfers to any requesting host. This could allow an attacker to enumerate all DNS records in the zone.</description>
+        <synopsis>DNS zone transfers are allowed from the remote host.</synopsis>
+        <solution>Restrict zone transfers to specific secondary DNS servers only.</solution>
+        <cvss_base_score>3.7</cvss_base_score>
+        <cvss3_base_score>3.7</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:N/A:N</cvss3_vector>
+        <plugin_output>Zone: eagleshield.local
+Transfer allowed: Any host</plugin_output>
+      </ReportItem>
+    </ReportHost>
+
+    <!-- ================================================================ -->
+    <!-- HOST 6: fcms-adfs (AD FS Server) -->
+    <!-- ================================================================ -->
+    <ReportHost name="10.200.4.20">
+      <HostProperties>
+        <tag name="host-ip">10.200.4.20</tag>
+        <tag name="host-fqdn">fcms-adfs.eagleshield.local</tag>
+        <tag name="hostname">fcms-adfs</tag>
+        <tag name="netbios-name">FCMS-ADFS</tag>
+        <tag name="operating-system">Microsoft Windows Server 2022 Standard</tag>
+        <tag name="mac-address">00:50:56:A1:04:02</tag>
+        <tag name="Credentialed_Scan">true</tag>
+        <tag name="HOST_START">Sat Feb 28 05:45:00 2026</tag>
+        <tag name="HOST_END">Sat Feb 28 06:15:00 2026</tag>
+      </HostProperties>
+
+      <!-- High: ADFS Token Signing Certificate Weakness -->
+      <ReportItem port="443" svc_name="https" protocol="tcp" severity="3" pluginID="190018" pluginName="AD FS Token Signing Certificate Uses Weak Key Size" pluginFamily="Windows">
+        <description>The AD FS service on the remote host uses a token signing certificate with a 1024-bit RSA key, which is below the recommended minimum of 2048 bits per NIST SP 800-131A.</description>
+        <synopsis>AD FS token signing certificate uses weak key size.</synopsis>
+        <solution>Generate a new token signing certificate with at least 2048-bit RSA or 256-bit ECDSA key. Update relying party trust configurations.</solution>
+        <cvss_base_score>7.5</cvss_base_score>
+        <cvss3_base_score>7.5</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N</cvss3_vector>
+        <plugin_output>Token Signing Certificate:
+  Subject: CN=ADFS Signing - eagleshield.local
+  Key Size: 1024-bit RSA
+  Expires: 2027-01-15
+  NIST Minimum: 2048-bit RSA</plugin_output>
+      </ReportItem>
+
+      <!-- Medium: Certificate Expiring Within 90 Days -->
+      <ReportItem port="443" svc_name="https" protocol="tcp" severity="2" pluginID="190019" pluginName="SSL Certificate Expiring Within 90 Days" pluginFamily="General">
+        <description>The SSL certificate on the remote host expires within 90 days. Certificate expiration can cause service disruptions and security warnings.</description>
+        <synopsis>The SSL certificate on the remote host is approaching expiration.</synopsis>
+        <solution>Renew the SSL certificate before expiration date. Consider implementing automated certificate management.</solution>
+        <cvss_base_score>4.3</cvss_base_score>
+        <cvss3_base_score>4.3</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:N/I:L/A:N</cvss3_vector>
+        <plugin_output>Certificate CN: adfs.eagleshield.gov.contractor
+Expiration: 2026-05-15
+Days Remaining: 76</plugin_output>
+      </ReportItem>
+    </ReportHost>
+
+    <!-- ================================================================ -->
+    <!-- HOST 7: fcms-sccm (SCCM Patch Server) -->
+    <!-- ================================================================ -->
+    <ReportHost name="10.200.5.10">
+      <HostProperties>
+        <tag name="host-ip">10.200.5.10</tag>
+        <tag name="host-fqdn">fcms-sccm.eagleshield.local</tag>
+        <tag name="hostname">fcms-sccm</tag>
+        <tag name="netbios-name">FCMS-SCCM</tag>
+        <tag name="operating-system">Microsoft Windows Server 2022 Standard</tag>
+        <tag name="mac-address">00:50:56:A1:05:01</tag>
+        <tag name="Credentialed_Scan">true</tag>
+        <tag name="HOST_START">Sat Feb 28 06:15:00 2026</tag>
+        <tag name="HOST_END">Sat Feb 28 06:45:00 2026</tag>
+      </HostProperties>
+
+      <!-- Medium: Windows Defender Exclusions -->
+      <ReportItem port="0" svc_name="general" protocol="tcp" severity="2" pluginID="190020" pluginName="Windows Defender Antivirus Exclusions Detected" pluginFamily="Windows">
+        <description>Windows Defender on the remote host has exclusions configured that reduce scanning coverage. Excessive exclusions may allow malware to evade detection.</description>
+        <synopsis>Windows Defender has exclusions configured.</synopsis>
+        <solution>Review and minimize Defender exclusions. Ensure only necessary paths are excluded per vendor recommendations.</solution>
+        <cvss_base_score>4.7</cvss_base_score>
+        <cvss3_base_score>4.7</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:L/AC:H/PR:L/UI:N/S:U/C:N/I:H/A:N</cvss3_vector>
+        <plugin_output>Path Exclusions:
+  C:\Program Files\Microsoft Configuration Manager\
+  D:\WSUS\
+  D:\SCCMContentLib\
+Total exclusions: 3</plugin_output>
+      </ReportItem>
+
+      <!-- Low: Windows Remote Desktop Enabled -->
+      <ReportItem port="3389" svc_name="ms-wbt-server" protocol="tcp" severity="1" pluginID="190021" pluginName="Windows Remote Desktop Protocol Enabled" pluginFamily="Windows">
+        <description>Remote Desktop Protocol (RDP) is enabled on the remote host. While RDP may be needed for administration, it should be restricted to authorized networks and monitored.</description>
+        <synopsis>RDP is enabled on the remote host.</synopsis>
+        <solution>If RDP is not required, disable it. If needed, restrict access via firewall rules and enable Network Level Authentication (NLA).</solution>
+        <cvss_base_score>3.1</cvss_base_score>
+        <cvss3_base_score>3.1</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:N/AC:H/PR:L/UI:N/S:U/C:L/I:N/A:N</cvss3_vector>
+        <plugin_output>RDP Status: Enabled
+NLA Required: Yes
+Allowed Networks: 10.200.0.0/16</plugin_output>
+      </ReportItem>
+    </ReportHost>
+
+    <!-- ================================================================ -->
+    <!-- HOST 8: fcms-fw-paloalto (Palo Alto Firewall) -->
+    <!-- ================================================================ -->
+    <ReportHost name="10.200.0.1">
+      <HostProperties>
+        <tag name="host-ip">10.200.0.1</tag>
+        <tag name="host-fqdn">fcms-fw-paloalto.eagleshield.local</tag>
+        <tag name="hostname">fcms-fw-paloalto</tag>
+        <tag name="operating-system">Palo Alto Networks PAN-OS 11.1.2</tag>
+        <tag name="Credentialed_Scan">false</tag>
+        <tag name="HOST_START">Sat Feb 28 06:45:00 2026</tag>
+        <tag name="HOST_END">Sat Feb 28 07:00:00 2026</tag>
+      </HostProperties>
+
+      <!-- Medium: PAN-OS Management Interface Accessible -->
+      <ReportItem port="443" svc_name="https" protocol="tcp" severity="2" pluginID="190022" pluginName="Palo Alto PAN-OS Management Interface Accessible from Non-Management Network" pluginFamily="Firewalls">
+        <description>The Palo Alto firewall management interface is accessible from a non-management network segment. Management interfaces should only be accessible from a dedicated management VLAN.</description>
+        <synopsis>Firewall management interface is accessible from a non-management network.</synopsis>
+        <solution>Restrict management interface access to the dedicated management VLAN. Configure management profile to limit source IP addresses.</solution>
+        <cvss_base_score>5.3</cvss_base_score>
+        <cvss3_base_score>5.3</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:A/AC:H/PR:N/UI:N/S:U/C:H/I:N/A:N</cvss3_vector>
+        <plugin_output>Management Interface: ethernet1/1
+Accessible from: 10.200.0.0/16 (Server VLAN)
+Expected: 10.200.99.0/24 (Management VLAN only)</plugin_output>
+      </ReportItem>
+
+      <!-- Info: Firewall Version -->
+      <ReportItem port="443" svc_name="https" protocol="tcp" severity="0" pluginID="190023" pluginName="Palo Alto PAN-OS Version Detection" pluginFamily="Firewalls">
+        <description>The remote host is running Palo Alto PAN-OS.</description>
+        <synopsis>PAN-OS version detected.</synopsis>
+        <solution>N/A</solution>
+        <cvss_base_score>0.0</cvss_base_score>
+        <plugin_output>PAN-OS Version: 11.1.2
+Model: PA-3260
+Serial: 012345678901</plugin_output>
+      </ReportItem>
+    </ReportHost>
+
+    <!-- ================================================================ -->
+    <!-- HOST 9: fcms-splunk (Splunk SIEM) -->
+    <!-- ================================================================ -->
+    <ReportHost name="10.200.6.10">
+      <HostProperties>
+        <tag name="host-ip">10.200.6.10</tag>
+        <tag name="host-fqdn">fcms-splunk.eagleshield.local</tag>
+        <tag name="hostname">fcms-splunk</tag>
+        <tag name="operating-system">Red Hat Enterprise Linux 9.2</tag>
+        <tag name="mac-address">00:50:56:A1:06:01</tag>
+        <tag name="Credentialed_Scan">true</tag>
+        <tag name="HOST_START">Sat Feb 28 07:00:00 2026</tag>
+        <tag name="HOST_END">Sat Feb 28 07:30:00 2026</tag>
+      </HostProperties>
+
+      <!-- Medium: Splunk Default Admin Password Not Changed -->
+      <ReportItem port="8089" svc_name="splunkd" protocol="tcp" severity="2" pluginID="190024" pluginName="Splunk Enterprise Default Credentials Check" pluginFamily="Misc.">
+        <description>The Splunk management port on the remote host may be using weak or default credentials for the admin account. The default Splunk admin password should be changed during initial setup.</description>
+        <synopsis>Splunk may have weak administrative credentials.</synopsis>
+        <solution>Change the Splunk admin account password to a strong, unique password. Enable SAML or LDAP integration for centralized authentication.</solution>
+        <cvss_base_score>5.9</cvss_base_score>
+        <cvss3_base_score>5.9</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:N/A:N</cvss3_vector>
+        <plugin_output>Splunk Version: 9.2.1
+Management Port: 8089
+Authentication: Local (LDAP not configured)</plugin_output>
+      </ReportItem>
+
+      <!-- Low: RHEL 9 Minor Patches Missing -->
+      <ReportItem port="0" svc_name="general" protocol="tcp" severity="1" pluginID="190025" pluginName="RHEL 9 Security Advisory: kernel (RHSA-2026:0123)" pluginFamily="Red Hat Local Security Checks">
+        <description>The remote Red Hat Enterprise Linux 9 host is missing kernel security updates that address minor vulnerabilities.</description>
+        <synopsis>The remote host is missing RHEL 9 kernel security updates.</synopsis>
+        <solution>Run 'dnf update kernel' to update the kernel package.</solution>
+        <cvss_base_score>3.3</cvss_base_score>
+        <cvss3_base_score>3.3</cvss3_base_score>
+        <cvss3_vector>CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:L/I:N/A:N</cvss3_vector>
+        <plugin_output>Installed: kernel-5.14.0-362.el9
+Available: kernel-5.14.0-427.el9</plugin_output>
+      </ReportItem>
+    </ReportHost>
+
+  </Report>
+</NessusClientData_v2>
