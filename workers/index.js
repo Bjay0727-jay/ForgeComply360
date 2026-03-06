@@ -259,6 +259,9 @@ async function handleRequest(request, env, url, ctx) {
   if (path.match(/^\/api\/v1\/public\/portal\/[\w-]+\/evidence\/[\w-]+$/) && method === 'GET') return handlePortalEvidenceDownload(request, env, path.split('/')[5], path.split('/')[7]);
   if (path.match(/^\/api\/v1\/public\/portal\/[\w-]+\/comments$/) && method === 'POST') return handlePortalComment(request, env, path.split('/')[5]);
 
+  // Forge-Scan inbound webhook (token-authenticated, not session-authenticated)
+  if (path === '/api/webhook/forgescan' && method === 'POST') return handleForgescanWebhook(request, env);
+
   // All routes below require auth
   const auth = await authenticateRequest(request, env);
   if (!auth) return jsonResponse({ error: 'Unauthorized' }, 401);
@@ -498,6 +501,7 @@ async function handleRequest(request, env, url, ctx) {
   if (path === '/api/v1/organization/export' && method === 'GET') return handleOrgExport(env, org, user);
 
   // Dashboard stats
+  if (path === '/api/v1/dashboard/unified' && method === 'GET') return handleUnifiedDashboard(env, org);
   if (path === '/api/v1/dashboard/stats' && method === 'GET') return handleDashboardStats(env, org);
   if (path === '/api/v1/dashboard/executive-summary' && method === 'GET') return handleExecutiveSummary(env, org, user);
   if (path === '/api/v1/dashboard/framework-stats' && method === 'GET') return handleFrameworkStats(env, org);
@@ -598,6 +602,20 @@ async function handleRequest(request, env, url, ctx) {
   if (path === '/api/v1/import/oscal-catalog' && method === 'POST') return handleBulkImportOscalCatalog(request, env, org, user);
   if (path === '/api/v1/import/controls' && method === 'POST') return handleBulkImportControls(request, env, org, user);
   if (path === '/api/v1/import/poams-enhanced' && method === 'POST') return handleBulkImportPoamsEnhanced(request, env, org, user);
+
+  // Unified Findings API (enriched with control mappings)
+  if (path === '/api/v1/findings' && method === 'GET') return handleListFindings(env, url, org);
+
+  // OSCAL Bridge
+  if (path.match(/^\/api\/v1\/compliance\/[\w-]+\/oscal\/ssp$/) && method === 'GET') return handleOscalSSP(env, url, org, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/compliance\/[\w-]+\/oscal\/assessment$/) && method === 'GET') return handleOscalAssessment(env, org, path.split('/')[4]);
+  if (path === '/api/v1/compliance/oscal/poam' && method === 'GET') return handleOscalPOAM(env, org);
+  if (path === '/api/v1/compliance/evidence/auto' && method === 'GET') return handleAutoEvidence(env, url, org);
+
+  // Event Subscriptions
+  if (path === '/api/v1/events/subscriptions' && method === 'GET') return handleListEventSubscriptions(env, org);
+  if (path === '/api/v1/events/subscriptions' && method === 'POST') return handleCreateEventSubscription(request, env, org, user);
+  if (path.match(/^\/api\/v1\/events\/subscriptions\/[\w-]+$/) && method === 'DELETE') return handleDeleteEventSubscription(env, org, user, path.split('/')[5]);
 
   // Vulnerability Scans (Nessus Integration)
   if (path === '/api/v1/scans/import' && method === 'POST') return handleScanImport(request, env, org, user, ctx);
@@ -11195,6 +11213,23 @@ async function processScannedData(env, options) {
     WHERE id = ?
   `).bind(counts.total, counts.critical, counts.high, counts.medium, counts.low, scanImportId).run();
 
+  // Publish scan completion event to event bus
+  try {
+    await publishEvent(env, orgId, 'forge.scan.completed', {
+      scan_import_id: scanImportId,
+      scan_name: scanData.scanName || '',
+      scanner_type: options.scannerType || discoverySource || 'unknown',
+      findings_total: counts.total,
+      findings_critical: counts.critical,
+      findings_high: counts.high,
+      findings_medium: counts.medium,
+      findings_low: counts.low,
+      system_id: systemId || null,
+    });
+  } catch (e) {
+    console.error('[processScannedData] publishEvent failed:', e.message);
+  }
+
   // Record scan history and update risk scores
   const assetFindingCounts = new Map();
   for (const finding of scanData.findings) {
@@ -12855,6 +12890,682 @@ async function fireWebhooks(env, orgId, eventType, payload) {
     }
   } catch (e) {
     console.error('[WEBHOOK] fireWebhooks error:', e);
+  }
+}
+
+// ============================================================================
+// EVENT BUS (Forge-Scan Integration)
+// ============================================================================
+
+const EVENT_HANDLERS = new Map();
+
+function registerHandler({ id, event_pattern, handler }) {
+  EVENT_HANDLERS.set(id, { event_pattern, handler });
+}
+
+function matchEventPattern(pattern, eventType) {
+  const regex = new RegExp('^' + pattern.replace(/\./g, '\\.').replace(/\*/g, '.*') + '$');
+  return regex.test(eventType);
+}
+
+async function publishEvent(env, orgId, eventType, payload, source = 'forgecomply360') {
+  const eventId = generateId();
+  try {
+    await env.DB.prepare(
+      'INSERT INTO forge_events (id, org_id, event_type, payload, source) VALUES (?, ?, ?, ?, ?)'
+    ).bind(eventId, orgId, eventType, JSON.stringify(payload), source).run();
+  } catch (e) {
+    console.error('[EVENT BUS] Failed to persist event:', e.message);
+    return null;
+  }
+
+  // Match in-memory handlers
+  for (const [id, h] of EVENT_HANDLERS) {
+    if (matchEventPattern(h.event_pattern, eventType)) {
+      try {
+        await h.handler({ id: eventId, org_id: orgId, event_type: eventType, payload }, env.DB);
+      } catch (e) {
+        console.error(`[EVENT BUS] Handler ${id} failed:`, e.message);
+      }
+    }
+  }
+
+  // Match DB-registered webhook subscriptions
+  try {
+    const { results: subs } = await env.DB.prepare(
+      'SELECT * FROM event_subscriptions WHERE active = 1 AND handler_type = ? AND (org_id IS NULL OR org_id = ?)'
+    ).bind('webhook', orgId).all();
+
+    for (const sub of subs) {
+      if (!matchEventPattern(sub.event_pattern, eventType)) continue;
+      const config = JSON.parse(sub.handler_config || '{}');
+      if (config.url) {
+        try {
+          await fetch(config.url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...(config.headers || {}) },
+            body: JSON.stringify({ event_id: eventId, event_type: eventType, payload, timestamp: new Date().toISOString() })
+          });
+        } catch (e) {
+          console.error(`[EVENT BUS] Webhook delivery to ${config.url} failed:`, e.message);
+        }
+      }
+    }
+  } catch (e) {
+    console.error('[EVENT BUS] Subscription dispatch error:', e.message);
+  }
+
+  // Also fire existing webhooks for scan events
+  if (eventType.startsWith('forge.scan.')) {
+    await fireWebhooks(env, orgId, eventType, payload);
+  }
+
+  return eventId;
+}
+
+// Built-in event handlers
+registerHandler({
+  id: 'compliance_check',
+  event_pattern: 'forge.scan.completed',
+  handler: async (event, db) => {
+    const payload = event.payload;
+    const evidenceId = generateId();
+    await db.prepare(
+      `INSERT INTO compliance_evidence_links (id, org_id, control_id, evidence_type, source_type, source_id, title, description, metadata)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      evidenceId, event.org_id, 'RA-5', 'scan_result', 'scan_import',
+      payload.scan_import_id || '',
+      `Scan completed: ${payload.scan_name || 'Automated scan'}`,
+      `${payload.findings_total || 0} findings (${payload.findings_critical || 0} critical, ${payload.findings_high || 0} high)`,
+      JSON.stringify(payload)
+    ).run();
+  }
+});
+
+registerHandler({
+  id: 'vulnerability_map',
+  event_pattern: 'forge.vulnerability.detected',
+  handler: async (event, db) => {
+    const evidenceId = generateId();
+    await db.prepare(
+      `INSERT INTO compliance_evidence_links (id, org_id, control_id, evidence_type, source_type, source_id, title, description, metadata)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      evidenceId, event.org_id, 'RA-5', 'control_mapped', 'event', event.id,
+      `Vulnerability detected: ${event.payload.title || 'Unknown'}`,
+      `Severity: ${event.payload.severity || 'unknown'}, Plugin: ${event.payload.plugin_id || 'N/A'}`,
+      JSON.stringify(event.payload)
+    ).run();
+  }
+});
+
+// ============================================================================
+// EVENT SUBSCRIPTION API HANDLERS
+// ============================================================================
+
+async function handleListEventSubscriptions(env, org) {
+  const { results } = await env.DB.prepare(
+    'SELECT * FROM event_subscriptions WHERE org_id IS NULL OR org_id = ? ORDER BY created_at DESC'
+  ).bind(org.id).all();
+  return jsonResponse({
+    subscriptions: results.map(s => ({ ...s, handler_config: JSON.parse(s.handler_config || '{}') }))
+  });
+}
+
+async function handleCreateEventSubscription(request, env, org, user) {
+  if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const body = await request.json();
+  if (!body.name || !body.event_pattern || !body.handler_type) {
+    return jsonResponse({ error: 'name, event_pattern, and handler_type required' }, 400);
+  }
+  if (!['internal', 'webhook'].includes(body.handler_type)) {
+    return jsonResponse({ error: 'handler_type must be internal or webhook' }, 400);
+  }
+  if (body.handler_type === 'webhook') {
+    const config = body.handler_config || {};
+    if (!config.url || !config.url.startsWith('https://')) {
+      return jsonResponse({ error: 'Webhook handler_config must include an https:// url' }, 400);
+    }
+  }
+
+  const id = generateId();
+  await env.DB.prepare(
+    'INSERT INTO event_subscriptions (id, org_id, name, event_pattern, handler_type, handler_config) VALUES (?, ?, ?, ?, ?, ?)'
+  ).bind(id, org.id, body.name, body.event_pattern, body.handler_type, JSON.stringify(body.handler_config || {})).run();
+
+  await auditLog(env, org.id, user.id, 'create', 'event_subscription', id, { name: body.name, event_pattern: body.event_pattern }, request);
+  return jsonResponse({ subscription: { id, org_id: org.id, name: body.name, event_pattern: body.event_pattern, handler_type: body.handler_type, handler_config: body.handler_config || {}, active: 1 } }, 201);
+}
+
+async function handleDeleteEventSubscription(env, org, user, subId) {
+  if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const sub = await env.DB.prepare(
+    'SELECT * FROM event_subscriptions WHERE id = ? AND org_id = ?'
+  ).bind(subId, org.id).first();
+  if (!sub) return jsonResponse({ error: 'Subscription not found' }, 404);
+
+  await env.DB.prepare('DELETE FROM event_subscriptions WHERE id = ?').bind(subId).run();
+  await auditLog(env, org.id, user.id, 'delete', 'event_subscription', subId, { name: sub.name }, null);
+  return jsonResponse({ message: 'Subscription deleted' });
+}
+
+async function handleForgescanWebhook(request, env) {
+  const authHeader = request.headers.get('Authorization') || '';
+  const apiKey = request.headers.get('X-Forge-API-Key') || '';
+  const token = authHeader.replace('Bearer ', '') || apiKey;
+
+  if (!token) return jsonResponse({ error: 'Authentication required' }, 401);
+
+  // Look up org by webhook token stored in KV
+  const orgId = await env.CACHE.get(`forgescan_token:${token}`);
+  if (!orgId) return jsonResponse({ error: 'Invalid token' }, 403);
+
+  let body;
+  try { body = await request.json(); }
+  catch (e) { return jsonResponse({ error: 'Invalid JSON body' }, 400); }
+
+  const eventType = body.event_type || body.event || 'forge.scan.completed';
+  const payload = body.payload || body.data || body;
+
+  const eventId = await publishEvent(env, orgId, eventType, payload, 'forgescan');
+  if (!eventId) return jsonResponse({ error: 'Failed to process event' }, 500);
+
+  return jsonResponse({ event_id: eventId, status: 'accepted' }, 202);
+}
+
+// ============================================================================
+// UNIFIED FINDINGS API (enriched control mappings)
+// ============================================================================
+
+async function handleListFindings(env, url, org) {
+  const state = url.searchParams.get('state') || url.searchParams.get('status') || 'open';
+  const severity = url.searchParams.get('severity');
+  const assetId = url.searchParams.get('asset_id');
+  const controlId = url.searchParams.get('control_id');
+  const limit = Math.min(parseInt(url.searchParams.get('limit') || '100', 10), 500);
+  const page = parseInt(url.searchParams.get('page') || '1', 10);
+  const offset = (page - 1) * limit;
+
+  let query = `SELECT vf.id, vf.title, vf.severity, vf.status, vf.plugin_id, vf.plugin_name,
+               vf.plugin_family, vf.cvss_score, vf.cvss3_score, vf.cvss3_vector,
+               vf.control_mappings, vf.asset_id, vf.remediation_guidance,
+               vf.first_seen_at, vf.last_seen_at, vf.exploit_available,
+               a.hostname, a.ip_address, a.environment
+               FROM vulnerability_findings vf
+               LEFT JOIN assets a ON vf.asset_id = a.id
+               WHERE vf.org_id = ?`;
+  const params = [org.id];
+
+  if (state && state !== 'all') { query += ' AND vf.status = ?'; params.push(state); }
+  if (severity) { query += ' AND vf.severity = ?'; params.push(severity); }
+  if (assetId) { query += ' AND vf.asset_id = ?'; params.push(assetId); }
+  if (controlId) { query += " AND vf.control_mappings LIKE ?"; params.push(`%"${controlId}"%`); }
+
+  query += ` ORDER BY CASE vf.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, vf.last_seen_at DESC LIMIT ? OFFSET ?`;
+  params.push(limit, offset);
+
+  const { results } = await env.DB.prepare(query).bind(...params).all();
+
+  // Enrich control_mappings with names from security_controls
+  const enrichedResults = [];
+  for (const finding of results) {
+    let mappings = [];
+    try { mappings = JSON.parse(finding.control_mappings || '[]'); } catch (e) { /* ignore */ }
+
+    const enrichedMappings = [];
+    for (const controlIdStr of mappings) {
+      const ctrl = await env.DB.prepare(
+        'SELECT title, framework_id FROM security_controls WHERE control_id = ? LIMIT 1'
+      ).bind(controlIdStr).first();
+      enrichedMappings.push({
+        control_id: controlIdStr,
+        control_name: ctrl?.title || controlIdStr,
+        framework: ctrl?.framework_id || 'NIST 800-53',
+        relevance: 'mapped'
+      });
+    }
+
+    enrichedResults.push({
+      ...finding,
+      control_mappings: enrichedMappings
+    });
+  }
+
+  // Get total count
+  let countQuery = 'SELECT COUNT(*) as total FROM vulnerability_findings vf WHERE vf.org_id = ?';
+  const countParams = [org.id];
+  if (state && state !== 'all') { countQuery += ' AND vf.status = ?'; countParams.push(state); }
+  if (severity) { countQuery += ' AND vf.severity = ?'; countParams.push(severity); }
+  if (assetId) { countQuery += ' AND vf.asset_id = ?'; countParams.push(assetId); }
+  if (controlId) { countQuery += " AND vf.control_mappings LIKE ?"; countParams.push(`%"${controlId}"%`); }
+
+  const countResult = await env.DB.prepare(countQuery).bind(...countParams).first();
+
+  return jsonResponse({
+    findings: enrichedResults,
+    total: countResult?.total || 0,
+    page,
+    limit,
+    pagination: { page, per_page: limit, total: countResult?.total || 0, total_pages: Math.ceil((countResult?.total || 0) / limit) }
+  });
+}
+
+// ============================================================================
+// OSCAL BRIDGE ENDPOINTS
+// ============================================================================
+
+function jsonToOscalXml(obj, indent = 0) {
+  const pad = '  '.repeat(indent);
+  let xml = '';
+  for (const [key, value] of Object.entries(obj)) {
+    if (value === null || value === undefined) continue;
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (typeof item === 'object') {
+          xml += `${pad}<${key}>\n${jsonToOscalXml(item, indent + 1)}${pad}</${key}>\n`;
+        } else {
+          xml += `${pad}<${key}>${escapeXml(String(item))}</${key}>\n`;
+        }
+      }
+    } else if (typeof value === 'object') {
+      xml += `${pad}<${key}>\n${jsonToOscalXml(value, indent + 1)}${pad}</${key}>\n`;
+    } else {
+      xml += `${pad}<${key}>${escapeXml(String(value))}</${key}>\n`;
+    }
+  }
+  return xml;
+}
+
+function escapeXml(str) {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+}
+
+async function handleOscalSSP(env, url, org, frameworkId) {
+  const format = url.searchParams.get('format') || 'json';
+  const systemId = url.searchParams.get('system_id');
+
+  const framework = await env.DB.prepare('SELECT * FROM compliance_frameworks WHERE id = ?').bind(frameworkId).first();
+  if (!framework) return jsonResponse({ error: 'Framework not found' }, 404);
+
+  let systemQuery = 'SELECT * FROM systems WHERE org_id = ?';
+  const systemParams = [org.id];
+  if (systemId) { systemQuery += ' AND id = ?'; systemParams.push(systemId); }
+  systemQuery += ' LIMIT 1';
+  const system = await env.DB.prepare(systemQuery).bind(...systemParams).first();
+  if (!system) return jsonResponse({ error: 'No system found' }, 404);
+
+  const { results: implementations } = await env.DB.prepare(
+    `SELECT ci.*, sc.title as control_title, sc.family, sc.description as control_description
+     FROM control_implementations ci
+     LEFT JOIN security_controls sc ON sc.framework_id = ci.framework_id AND sc.control_id = ci.control_id
+     WHERE ci.system_id = ? AND ci.framework_id = ?
+     ORDER BY sc.sort_order`
+  ).bind(system.id, frameworkId).all();
+
+  // Get auto-generated evidence for enrichment
+  const { results: autoEvidence } = await env.DB.prepare(
+    'SELECT * FROM compliance_evidence_links WHERE org_id = ? AND (framework_id = ? OR framework_id IS NULL) ORDER BY created_at DESC LIMIT 100'
+  ).bind(org.id, frameworkId).all();
+
+  const evidenceByControl = {};
+  for (const ev of autoEvidence) {
+    if (!evidenceByControl[ev.control_id]) evidenceByControl[ev.control_id] = [];
+    evidenceByControl[ev.control_id].push(ev);
+  }
+
+  const oscalSSP = {
+    'system-security-plan': {
+      uuid: crypto.randomUUID(),
+      metadata: {
+        title: `System Security Plan - ${system.name}`,
+        'last-modified': new Date().toISOString(),
+        version: '1.0',
+        'oscal-version': '1.1.2',
+        roles: [
+          { id: 'system-owner', title: 'System Owner' },
+          { id: 'authorizing-official', title: 'Authorizing Official' },
+          { id: 'information-system-security-officer', title: 'ISSO' },
+        ],
+      },
+      'import-profile': { href: `#${frameworkId}` },
+      'system-characteristics': {
+        'system-name': system.name,
+        'system-name-short': system.acronym || '',
+        description: system.description || '',
+        'security-sensitivity-level': system.impact_level || 'moderate',
+        'security-impact-level': {
+          'security-objective-confidentiality': system.impact_level || 'moderate',
+          'security-objective-integrity': system.impact_level || 'moderate',
+          'security-objective-availability': system.impact_level || 'moderate',
+        },
+        status: { state: system.status === 'authorized' ? 'operational' : 'under-development' },
+        'authorization-boundary': { description: system.boundary_description || 'To be defined' },
+      },
+      'system-implementation': {
+        users: [{ uuid: crypto.randomUUID(), 'role-ids': ['system-owner'], props: [{ name: 'type', value: 'internal' }] }],
+        components: [{ uuid: crypto.randomUUID(), type: 'this-system', title: system.name, description: system.description || 'System under assessment', status: { state: 'operational' } }],
+      },
+      'control-implementation': {
+        description: `Control implementation details for ${system.name}`,
+        'implemented-requirements': implementations.map((impl) => {
+          const req = {
+            uuid: crypto.randomUUID(),
+            'control-id': impl.control_id,
+            'by-components': [{
+              'component-uuid': crypto.randomUUID(),
+              description: impl.implementation_description || 'Implementation pending',
+              'implementation-status': { state: (impl.status || 'planned').replace('_', '-') },
+            }],
+          };
+          // Enrich with auto-evidence
+          const evidence = evidenceByControl[impl.control_id];
+          if (evidence && evidence.length > 0) {
+            req.props = evidence.map(ev => ({
+              name: 'auto-evidence',
+              value: ev.title,
+              ns: 'https://forgecomply360.com/ns/evidence'
+            }));
+          }
+          return req;
+        }),
+      },
+    },
+  };
+
+  if (format === 'xml') {
+    const xmlStr = '<?xml version="1.0" encoding="UTF-8"?>\n' + jsonToOscalXml(oscalSSP);
+    return new Response(xmlStr, { headers: { 'Content-Type': 'application/xml', 'Access-Control-Allow-Origin': '*' } });
+  }
+
+  return jsonResponse(oscalSSP);
+}
+
+async function handleOscalAssessment(env, org, frameworkId) {
+  const framework = await env.DB.prepare('SELECT * FROM compliance_frameworks WHERE id = ?').bind(frameworkId).first();
+  if (!framework) return jsonResponse({ error: 'Framework not found' }, 404);
+
+  // Get vulnerability findings
+  const { results: findings } = await env.DB.prepare(
+    `SELECT vf.id, vf.title, vf.severity, vf.status, vf.plugin_id, vf.cvss3_score, vf.control_mappings, vf.first_seen_at
+     FROM vulnerability_findings vf WHERE vf.org_id = ? AND vf.status = 'open'
+     ORDER BY CASE vf.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END
+     LIMIT 200`
+  ).bind(org.id).all();
+
+  // Get auto-evidence
+  const { results: evidence } = await env.DB.prepare(
+    'SELECT * FROM compliance_evidence_links WHERE org_id = ? AND (framework_id = ? OR framework_id IS NULL) ORDER BY created_at DESC LIMIT 100'
+  ).bind(org.id, frameworkId).all();
+
+  const assessmentResults = {
+    'assessment-results': {
+      uuid: crypto.randomUUID(),
+      metadata: {
+        title: `Assessment Results - ${framework.name}`,
+        'last-modified': new Date().toISOString(),
+        version: '1.0',
+        'oscal-version': '1.1.2',
+      },
+      'import-ap': { href: `#${frameworkId}` },
+      results: [{
+        uuid: crypto.randomUUID(),
+        title: `Automated Assessment - ${new Date().toISOString().split('T')[0]}`,
+        description: 'Assessment results from automated vulnerability scanning and compliance evidence collection.',
+        start: new Date().toISOString(),
+        observations: findings.map(f => ({
+          uuid: crypto.randomUUID(),
+          title: f.title,
+          description: `Plugin ${f.plugin_id}: ${f.title}`,
+          methods: ['TEST'],
+          types: ['finding'],
+          'collected': f.first_seen_at || new Date().toISOString(),
+          props: [
+            { name: 'severity', value: f.severity },
+            { name: 'cvss3-score', value: String(f.cvss3_score || 0) },
+          ],
+          'relevant-evidence': evidence.filter(ev => {
+            const mappings = JSON.parse(f.control_mappings || '[]');
+            return mappings.includes(ev.control_id);
+          }).map(ev => ({ description: ev.title, href: `#evidence-${ev.id}` })),
+        })),
+        findings: findings.map(f => ({
+          uuid: crypto.randomUUID(),
+          title: f.title,
+          description: `Severity: ${f.severity}, CVSS: ${f.cvss3_score || 'N/A'}`,
+          'target': {
+            'type': 'objective-id',
+            'target-id': JSON.parse(f.control_mappings || '["RA-5"]')[0] || 'RA-5',
+            status: { state: f.status === 'open' ? 'not-satisfied' : 'satisfied' },
+          },
+        })),
+      }],
+    },
+  };
+
+  return jsonResponse(assessmentResults);
+}
+
+async function handleOscalPOAM(env, org) {
+  const { results: poams } = await env.DB.prepare(
+    `SELECT p.*, s.name as system_name FROM poams p
+     LEFT JOIN systems s ON s.id = p.system_id
+     WHERE p.org_id = ? ORDER BY
+       CASE p.risk_level WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'moderate' THEN 2 ELSE 3 END,
+       p.scheduled_completion ASC`
+  ).bind(org.id).all();
+
+  // Get control mappings for each POA&M
+  const poamItems = [];
+  for (const poam of poams) {
+    const { results: controlLinks } = await env.DB.prepare(
+      'SELECT control_id, framework_id FROM poam_control_mappings WHERE poam_id = ?'
+    ).bind(poam.id).all().catch(() => ({ results: [] }));
+
+    const milestones = JSON.parse(poam.milestones || '[]');
+
+    poamItems.push({
+      uuid: crypto.randomUUID(),
+      title: poam.weakness_name || poam.poam_id,
+      description: poam.weakness_description || '',
+      props: [
+        { name: 'risk-level', value: poam.risk_level || 'moderate' },
+        { name: 'source', value: poam.source || 'manual' },
+        { name: 'status', value: poam.status || 'open' },
+      ],
+      'related-observations': controlLinks.map(cl => ({
+        'observation-uuid': crypto.randomUUID(),
+        description: `Control ${cl.control_id} (${cl.framework_id || 'NIST 800-53'})`
+      })),
+      'associated-risks': [{
+        uuid: crypto.randomUUID(),
+        title: `Risk: ${poam.weakness_name || poam.poam_id}`,
+        description: poam.weakness_description || '',
+        props: [{ name: 'risk-level', value: poam.risk_level || 'moderate' }],
+      }],
+      milestones: milestones.map(m => ({
+        uuid: crypto.randomUUID(),
+        title: m.title || m.name || 'Milestone',
+        'scheduled-date-range': { start: m.due_date || poam.scheduled_completion || '' },
+      })),
+    });
+  }
+
+  const oscalPoam = {
+    'plan-of-action-and-milestones': {
+      uuid: crypto.randomUUID(),
+      metadata: {
+        title: 'Plan of Action and Milestones',
+        'last-modified': new Date().toISOString(),
+        version: '1.0',
+        'oscal-version': '1.1.2',
+      },
+      'poam-items': poamItems,
+    },
+  };
+
+  return jsonResponse(oscalPoam);
+}
+
+async function handleAutoEvidence(env, url, org) {
+  const controlId = url.searchParams.get('control_id');
+  const evidenceType = url.searchParams.get('evidence_type');
+  const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200);
+  const page = parseInt(url.searchParams.get('page') || '1', 10);
+  const offset = (page - 1) * limit;
+
+  let query = 'SELECT * FROM compliance_evidence_links WHERE org_id = ?';
+  const params = [org.id];
+
+  if (controlId) { query += ' AND control_id = ?'; params.push(controlId); }
+  if (evidenceType) { query += ' AND evidence_type = ?'; params.push(evidenceType); }
+  query += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
+  params.push(limit, offset);
+
+  const { results } = await env.DB.prepare(query).bind(...params).all();
+
+  let countQuery = 'SELECT COUNT(*) as total FROM compliance_evidence_links WHERE org_id = ?';
+  const countParams = [org.id];
+  if (controlId) { countQuery += ' AND control_id = ?'; countParams.push(controlId); }
+  if (evidenceType) { countQuery += ' AND evidence_type = ?'; countParams.push(evidenceType); }
+  const countResult = await env.DB.prepare(countQuery).bind(...countParams).first();
+
+  return jsonResponse({
+    evidence: results.map(e => ({ ...e, metadata: JSON.parse(e.metadata || '{}') })),
+    total: countResult?.total || 0,
+    page,
+    limit
+  });
+}
+
+// ============================================================================
+// UNIFIED DASHBOARD
+// ============================================================================
+
+async function handleUnifiedDashboard(env, org) {
+  // Check KV cache
+  const cacheKey = `unified_dashboard:${org.id}`;
+  try {
+    const cached = await env.CACHE.get(cacheKey);
+    if (cached) return jsonResponse(JSON.parse(cached));
+  } catch (e) { /* cache miss */ }
+
+  try {
+    // Run all queries in parallel
+    const [
+      vulnCounts,
+      complianceImpl,
+      poamCounts,
+      evidenceCount,
+      autoEvidenceCount,
+      recentEvents,
+      frameworkStats
+    ] = await Promise.all([
+      // Threat posture: vulnerability severity counts
+      env.DB.prepare(
+        `SELECT severity, COUNT(*) as count FROM vulnerability_findings WHERE org_id = ? AND status = 'open' GROUP BY severity`
+      ).bind(org.id).all().catch(() => ({ results: [] })),
+
+      // Compliance posture: control implementation stats
+      env.DB.prepare(
+        `SELECT status, COUNT(*) as count FROM control_implementations WHERE org_id = ? GROUP BY status`
+      ).bind(org.id).all().catch(() => ({ results: [] })),
+
+      // POA&M summary
+      env.DB.prepare(
+        `SELECT status, COUNT(*) as count FROM poams WHERE org_id = ? GROUP BY status`
+      ).bind(org.id).all().catch(() => ({ results: [] })),
+
+      // Evidence count
+      env.DB.prepare('SELECT COUNT(*) as count FROM evidence WHERE org_id = ?').bind(org.id).first().catch(() => ({ count: 0 })),
+
+      // Auto-evidence count
+      env.DB.prepare('SELECT COUNT(*) as count FROM compliance_evidence_links WHERE org_id = ?').bind(org.id).first().catch(() => ({ count: 0 })),
+
+      // Recent events
+      env.DB.prepare(
+        'SELECT id, event_type, source, created_at FROM forge_events WHERE org_id = ? ORDER BY created_at DESC LIMIT 10'
+      ).bind(org.id).all().catch(() => ({ results: [] })),
+
+      // Framework compliance stats
+      env.DB.prepare(
+        `SELECT cf.id, cf.name,
+          (SELECT COUNT(*) FROM control_implementations ci WHERE ci.framework_id = cf.id AND ci.org_id = ?) as total_controls,
+          (SELECT COUNT(*) FROM control_implementations ci WHERE ci.framework_id = cf.id AND ci.org_id = ? AND ci.status IN ('implemented', 'not_applicable')) as compliant_controls
+         FROM compliance_frameworks cf
+         WHERE cf.id IN (SELECT DISTINCT framework_id FROM control_implementations WHERE org_id = ?)
+         LIMIT 10`
+      ).bind(org.id, org.id, org.id).all().catch(() => ({ results: [] })),
+    ]);
+
+    // Build threat posture
+    const vulnMap = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+    for (const row of vulnCounts.results) vulnMap[row.severity] = row.count;
+    const vulnTotal = Object.values(vulnMap).reduce((a, b) => a + b, 0);
+    const riskScore = Math.max(0, 100 - (vulnMap.critical * 20 + vulnMap.high * 10 + vulnMap.medium * 3 + vulnMap.low * 1));
+    const riskGrade = riskScore >= 90 ? 'A' : riskScore >= 80 ? 'B' : riskScore >= 70 ? 'C' : riskScore >= 60 ? 'D' : 'F';
+
+    // Build compliance posture
+    const implMap = { implemented: 0, partially_implemented: 0, planned: 0, not_implemented: 0, not_applicable: 0, alternative: 0, total: 0 };
+    for (const row of complianceImpl.results) { implMap[row.status] = row.count; implMap.total += row.count; }
+    const compliancePct = implMap.total > 0 ? Math.round(((implMap.implemented + implMap.not_applicable) / implMap.total) * 100) : 0;
+
+    // Build POA&M summary
+    const poamMap = { open: 0, in_progress: 0, completed: 0, total: 0 };
+    for (const row of poamCounts.results) { poamMap[row.status] = (poamMap[row.status] || 0) + row.count; poamMap.total += row.count; }
+
+    // Overdue POA&Ms
+    let overdueCount = 0;
+    try {
+      const overdue = await env.DB.prepare(
+        "SELECT COUNT(*) as count FROM poams WHERE org_id = ? AND status IN ('open', 'in_progress') AND scheduled_completion < date('now')"
+      ).bind(org.id).first();
+      overdueCount = overdue?.count || 0;
+    } catch (e) { /* ignore */ }
+
+    // Framework stats
+    const frameworks = frameworkStats.results.map(f => ({
+      id: f.id,
+      name: f.name,
+      total_controls: f.total_controls,
+      compliant_controls: f.compliant_controls,
+      compliance_pct: f.total_controls > 0 ? Math.round((f.compliant_controls / f.total_controls) * 100) : 0,
+    }));
+
+    const dashboard = {
+      generated_at: new Date().toISOString(),
+      threat_posture: {
+        risk_score: riskScore,
+        risk_grade: riskGrade,
+        open_vulnerabilities: vulnMap,
+        total_open: vulnTotal,
+      },
+      compliance_posture: {
+        overall_compliance_pct: compliancePct,
+        control_status: implMap,
+        frameworks,
+      },
+      poam_summary: {
+        ...poamMap,
+        overdue: overdueCount,
+      },
+      evidence_summary: {
+        manual_evidence: evidenceCount?.count || 0,
+        auto_evidence: autoEvidenceCount?.count || 0,
+        total: (evidenceCount?.count || 0) + (autoEvidenceCount?.count || 0),
+      },
+      recent_events: recentEvents.results,
+    };
+
+    // Cache for 5 minutes
+    try {
+      await env.CACHE.put(cacheKey, JSON.stringify(dashboard), { expirationTtl: 300 });
+    } catch (e) { /* KV write failure is non-fatal */ }
+
+    return jsonResponse(dashboard);
+  } catch (err) {
+    console.error('[handleUnifiedDashboard]', err.message);
+    return jsonResponse({ error: 'Failed to load unified dashboard' }, 500);
   }
 }
 
