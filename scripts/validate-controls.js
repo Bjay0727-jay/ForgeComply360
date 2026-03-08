@@ -180,6 +180,43 @@ for (const f of allFiles) {
 const nonCanonical = [...allFwIds].filter(id => !CANONICAL_FRAMEWORKS.has(id));
 check('All framework_ids are canonical', nonCanonical.length === 0, `non-canonical: ${nonCanonical.join(', ')}`);
 
+// --- Control Implementations (migrate-040) ---
+console.log('\nControl Implementations (migrate-040):');
+const implFile = path.join(DB_DIR, 'migrate-040-control-implementations.sql');
+if (fs.existsSync(implFile)) {
+  const implSql = fs.readFileSync(implFile, 'utf8');
+  const implCount = (implSql.match(/INSERT OR REPLACE INTO control_implementations/g) || []).length;
+  check(`Total implementations = 574 (287 x 2 systems)`, implCount === 574, `got ${implCount}`);
+
+  const mfehrCount = (implSql.match(/INTO control_implementations.*'sys-phs-001'/g) || []).length;
+  const fc360Count = (implSql.match(/INTO control_implementations.*'sys-001'/g) || []).length;
+  check(`MFEHR (sys-phs-001) = 287`, mfehrCount === 287, `got ${mfehrCount}`);
+  check(`FC360 (sys-001) = 287`, fc360Count === 287, `got ${fc360Count}`);
+
+  check(`Framework = fedramp-moderate`, (implSql.match(/'fedramp-moderate'/g) || []).length >= 574, `fewer than expected`);
+
+  // Status distribution
+  const implLines = implSql.split('\n').filter(l => l.startsWith('INSERT OR REPLACE INTO control_implementations'));
+  const statusCounts = {};
+  for (const line of implLines) {
+    const m = line.match(/, '(implemented|partially_implemented|planned|alternative|not_applicable|not_implemented)',/);
+    if (m) statusCounts[m[1]] = (statusCounts[m[1]] || 0) + 1;
+  }
+  const total = implLines.length;
+  const implPct = ((statusCounts['implemented'] || 0) / total * 100);
+  const partPct = ((statusCounts['partially_implemented'] || 0) / total * 100);
+  const planPct = ((statusCounts['planned'] || 0) / total * 100);
+  check(`Status: implemented ~60%`, implPct >= 55 && implPct <= 65, `got ${implPct.toFixed(1)}%`);
+  check(`Status: partially_implemented ~20%`, partPct >= 15 && partPct <= 25, `got ${partPct.toFixed(1)}%`);
+  check(`Status: planned ~12%`, planPct >= 7 && planPct <= 17, `got ${planPct.toFixed(1)}%`);
+
+  // Check for org/system prerequisites
+  check(`Includes org_001 prerequisite`, implSql.includes("INSERT OR IGNORE INTO organizations"));
+  check(`Includes system prerequisites`, implSql.includes("INSERT OR IGNORE INTO systems"));
+} else {
+  check('File exists', false, 'migrate-040 not found');
+}
+
 // --- Summary ---
 console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
 if (failed === 0) {
