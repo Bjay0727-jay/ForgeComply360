@@ -8,7 +8,7 @@ const path = require('path');
 
 const CACHE_DIR = path.join(__dirname, '..', '.oscal-cache');
 const OUTPUT_FILE = path.join(__dirname, '..', 'database', 'migrate-035-nist-800-53-full-catalog.sql');
-const FRAMEWORK_ID = 'fw_nist_800_53_r5';
+const FRAMEWORK_ID = 'nist-800-53-r5';
 
 // Extract text from OSCAL prose/markup-multiline
 function extractText(value) {
@@ -200,9 +200,8 @@ function generateSQL(controls, baselineLow, baselineMod, baselineHigh) {
     const isHigh = baselineHigh.has(ctrl.control_id) ? 1 : 0;
 
     lines.push(
-      `INSERT OR REPLACE INTO security_controls (id, framework_id, control_id, family, title, description, guidance, priority, baseline_low, baseline_moderate, baseline_high, is_enhancement, parent_control_id, sort_order, metadata) ` +
-      `VALUES ((SELECT COALESCE((SELECT id FROM security_controls WHERE framework_id = '${FRAMEWORK_ID}' AND control_id = '${sqlEscape(ctrl.control_id)}'), lower(hex(randomblob(16))))), ` +
-      `'${FRAMEWORK_ID}', '${sqlEscape(ctrl.control_id)}', '${sqlEscape(ctrl.family)}', '${sqlEscape(ctrl.title)}', '${sqlEscape(ctrl.description)}', '${sqlEscape(ctrl.guidance)}', '${ctrl.priority}', ${isLow}, ${isMod}, ${isHigh}, ${ctrl.is_enhancement}, '${sqlEscape(ctrl.parent_control_id)}', ${ctrl.sort_order}, '${ctrl.is_withdrawn ? '{"status":"withdrawn"}' : '{}'}');`
+      `INSERT OR REPLACE INTO security_controls (framework_id, control_id, family, title, description, guidance, priority, baseline_low, baseline_moderate, baseline_high, is_enhancement, parent_control_id, sort_order, metadata) ` +
+      `VALUES ('${FRAMEWORK_ID}', '${sqlEscape(ctrl.control_id)}', '${sqlEscape(ctrl.family)}', '${sqlEscape(ctrl.title)}', '${sqlEscape(ctrl.description)}', '${sqlEscape(ctrl.guidance)}', '${ctrl.priority}', ${isLow}, ${isMod}, ${isHigh}, ${ctrl.is_enhancement}, '${sqlEscape(ctrl.parent_control_id)}', ${ctrl.sort_order}, '${ctrl.is_withdrawn ? '{"status":"withdrawn"}' : '{}'}');`
     );
   }
 
