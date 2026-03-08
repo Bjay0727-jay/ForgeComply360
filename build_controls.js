@@ -179,7 +179,7 @@ for (const ctrl of allControls) {
   const title = ctrl.isEnhancement ? `${ctrl.id} Enhancement` : `${ctrl.id}`;
   
   currentBatch.push(
-    `INSERT OR IGNORE INTO control_definitions (id, framework_id, control_id, family, title, description, baseline_low, baseline_moderate, baseline_high) VALUES (lower(hex(randomblob(16))), 'fw_nist_800_53_r5', '${escapedId}', '${escapedFamily}', '${title}', 'NIST SP 800-53 Rev 5 control ${escapedId}', ${isLow}, ${isMod}, ${isHigh})`
+    `INSERT OR IGNORE INTO security_controls (id, framework_id, control_id, family, title, description, baseline_low, baseline_moderate, baseline_high) VALUES (lower(hex(randomblob(16))), 'fw_nist_800_53_r5', '${escapedId}', '${escapedFamily}', '${title}', 'NIST SP 800-53 Rev 5 control ${escapedId}', ${isLow}, ${isMod}, ${isHigh})`
   );
   
   if (currentBatch.length >= batchSize) {
