@@ -6,6 +6,7 @@
 
 import { Toucan } from 'toucan-js';
 import { XMLParser } from 'fast-xml-parser';
+import { validateOscalSSPCompliance, handleValidateEndpoint } from './oscal-validator';
 
 // Initialize Sentry for error monitoring in production
 function initSentry(request, env, ctx) {
@@ -611,6 +612,7 @@ async function handleRequest(request, env, url, ctx) {
   if (path.match(/^\/api\/v1\/compliance\/[\w-]+\/oscal\/assessment$/) && method === 'GET') return handleOscalAssessment(env, org, path.split('/')[4]);
   if (path === '/api/v1/compliance/oscal/poam' && method === 'GET') return handleOscalPOAM(env, org);
   if (path === '/api/v1/compliance/evidence/auto' && method === 'GET') return handleAutoEvidence(env, url, org);
+  if (path === '/api/v1/oscal/validate' && method === 'POST') return handleValidateEndpoint(request, { 'Access-Control-Allow-Origin': '*' });
 
   // Event Subscriptions
   if (path === '/api/v1/events/subscriptions' && method === 'GET') return handleListEventSubscriptions(env, org);
@@ -3265,6 +3267,7 @@ async function handleGenerateSSP(request, env, org, user) {
   ).bind(system_id, framework_id).all();
 
   // Generate OSCAL SSP JSON
+  const postThisSystemUuid = crypto.randomUUID();
   const oscalSSP = {
     'system-security-plan': {
       uuid: crypto.randomUUID(),
@@ -3283,6 +3286,7 @@ async function handleGenerateSSP(request, env, org, user) {
         href: `#${framework_id}`,
       },
       'system-characteristics': {
+        'system-ids': [{ 'identifier-type': 'https://ietf.org/rfc/rfc4122', id: system.id }],
         'system-name': system.name,
         'system-name-short': system.acronym || '',
         description: system.description || '',
@@ -3307,13 +3311,17 @@ async function handleGenerateSSP(request, env, org, user) {
         status: { state: system.status === 'authorized' ? 'operational' : 'under-development' },
         'authorization-boundary': { description: system.boundary_description || 'To be defined' },
       },
+      'system-implementation': {
+        users: [{ uuid: crypto.randomUUID(), 'role-ids': ['system-owner'], props: [{ name: 'type', value: 'internal' }] }],
+        components: [{ uuid: postThisSystemUuid, type: 'this-system', title: system.name, description: system.description || 'System under assessment', status: { state: 'operational' } }],
+      },
       'control-implementation': {
         description: `Control implementation details for ${system.name}`,
         'implemented-requirements': implementations.map((impl) => ({
           uuid: crypto.randomUUID(),
           'control-id': impl.control_id,
           'by-components': [{
-            'component-uuid': crypto.randomUUID(),
+            'component-uuid': postThisSystemUuid,
             description: impl.implementation_description || 'Implementation pending',
             'implementation-status': { state: impl.status.replace('_', '-') },
           }],
@@ -13214,6 +13222,8 @@ async function handleOscalSSP(env, url, org, frameworkId) {
     evidenceByControl[ev.control_id].push(ev);
   }
 
+  const thisSystemUuid = crypto.randomUUID();
+
   const oscalSSP = {
     'system-security-plan': {
       uuid: crypto.randomUUID(),
@@ -13230,6 +13240,7 @@ async function handleOscalSSP(env, url, org, frameworkId) {
       },
       'import-profile': { href: `#${frameworkId}` },
       'system-characteristics': {
+        'system-ids': [{ 'identifier-type': 'https://ietf.org/rfc/rfc4122', id: system.id }],
         'system-name': system.name,
         'system-name-short': system.acronym || '',
         description: system.description || '',
@@ -13244,7 +13255,7 @@ async function handleOscalSSP(env, url, org, frameworkId) {
       },
       'system-implementation': {
         users: [{ uuid: crypto.randomUUID(), 'role-ids': ['system-owner'], props: [{ name: 'type', value: 'internal' }] }],
-        components: [{ uuid: crypto.randomUUID(), type: 'this-system', title: system.name, description: system.description || 'System under assessment', status: { state: 'operational' } }],
+        components: [{ uuid: thisSystemUuid, type: 'this-system', title: system.name, description: system.description || 'System under assessment', status: { state: 'operational' } }],
       },
       'control-implementation': {
         description: `Control implementation details for ${system.name}`,
@@ -13253,7 +13264,7 @@ async function handleOscalSSP(env, url, org, frameworkId) {
             uuid: crypto.randomUUID(),
             'control-id': impl.control_id,
             'by-components': [{
-              'component-uuid': crypto.randomUUID(),
+              'component-uuid': thisSystemUuid,
               description: impl.implementation_description || 'Implementation pending',
               'implementation-status': { state: (impl.status || 'planned').replace('_', '-') },
             }],
@@ -13278,7 +13289,40 @@ async function handleOscalSSP(env, url, org, frameworkId) {
     return new Response(xmlStr, { headers: { 'Content-Type': 'application/xml', 'Access-Control-Allow-Origin': '*' } });
   }
 
-  return jsonResponse(oscalSSP);
+  // Run compliance validation
+  const validation = validateOscalSSPCompliance(oscalSSP, {
+    baseline: (system.impact_level || 'moderate').toLowerCase(),
+    strict: true,
+  });
+
+  const validationHeaders = {
+    'X-OSCAL-Validation-Score': String(validation.score),
+    'X-OSCAL-Valid': String(validation.valid),
+  };
+
+  // ?validate_only=true — return just validation results
+  if (url.searchParams.get('validate_only') === 'true') {
+    return new Response(JSON.stringify(validation, null, 2), {
+      status: validation.valid ? 200 : 422,
+      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', ...validationHeaders },
+    });
+  }
+
+  // ?include_validation=true — return OSCAL + validation in a clean envelope
+  if (url.searchParams.get('include_validation') === 'true') {
+    return new Response(JSON.stringify({ oscal: oscalSSP, validation }, null, 2), {
+      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', ...validationHeaders },
+    });
+  }
+
+  // Default: return raw OSCAL (backward compatible), with validation score in headers
+  return new Response(JSON.stringify(oscalSSP, null, 2), {
+    headers: {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+      ...validationHeaders,
+    },
+  });
 }
 
 async function handleOscalAssessment(env, org, frameworkId) {
