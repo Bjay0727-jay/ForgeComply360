@@ -1,7 +1,7 @@
 -- ============================================================================
 -- Migration: migrate-037-nist-800-171-controls.sql
 -- NIST SP 800-171 Rev 3 — 110 CUI Security Requirements
--- Generated: 2026-03-08T03:07:07.698Z
+-- Generated: 2026-03-08T04:11:31.793Z
 -- ============================================================================
 
 INSERT OR REPLACE INTO security_controls (id, framework_id, control_id, family, title, description, priority, baseline_low, baseline_moderate, baseline_high, is_enhancement, parent_control_id, sort_order) VALUES (lower(hex(randomblob(16))), 'fw_nist_800_171', '3.1.1', 'Access Control', 'Account Management', 'Limit system access to authorized users, processes acting on behalf of authorized users, and devices (including other systems).', 'P1', 1, 1, 1, 0, '', 1);

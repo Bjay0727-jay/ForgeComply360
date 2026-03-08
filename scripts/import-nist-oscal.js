@@ -169,7 +169,9 @@ function parseCatalog(catalogJson) {
 // Escape SQL string
 function sqlEscape(str) {
   if (!str) return '';
-  return str.replace(/'/g, "''").replace(/[\r\n]+/g, ' ');
+  // Escape quotes, collapse newlines, and strip semicolons (wrangler d1 execute
+  // splits SQL on ';' without respecting string literals — known bug #2366)
+  return str.replace(/'/g, "''").replace(/[\r\n]+/g, ' ').replace(/;/g, ',');
 }
 
 // Generate SQL migration

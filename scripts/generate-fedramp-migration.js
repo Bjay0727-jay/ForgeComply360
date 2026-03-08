@@ -8,7 +8,7 @@ const CACHE_DIR = path.join(__dirname, '..', '.oscal-cache');
 const OUTPUT = path.join(__dirname, '..', 'database', 'migrate-036-fedramp-controls.sql');
 
 function normalizeId(id) { return id.toUpperCase().replace(/\.(\d+)$/, '($1)'); }
-function sqlEscape(s) { return (s || '').replace(/'/g, "''").replace(/[\r\n]+/g, ' '); }
+function sqlEscape(s) { return (s || '').replace(/'/g, "''").replace(/[\r\n]+/g, ' ').replace(/;/g, ','); }
 
 function extractProfileIds(profile) {
   const ids = new Set();

@@ -4,7 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 
-function sqlEscape(s) { return (s || '').replace(/'/g, "''").replace(/[\r\n]+/g, ' '); }
+function sqlEscape(s) { return (s || '').replace(/'/g, "''").replace(/[\r\n]+/g, ' ').replace(/;/g, ','); }
 
 const DB_DIR = path.join(__dirname, '..', 'database');
 
