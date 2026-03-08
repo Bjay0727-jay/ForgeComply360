@@ -107,9 +107,9 @@ function main() {
   }
 
   const baselines = [
-    { name: 'FedRAMP Low', framework_id: 'fw_fedramp_low', ids: lowIds },
-    { name: 'FedRAMP Moderate', framework_id: 'fw_fedramp_mod', ids: modIds },
-    { name: 'FedRAMP High', framework_id: 'fw_fedramp_high', ids: highIds },
+    { name: 'FedRAMP Low', framework_id: 'fedramp-low', ids: lowIds },
+    { name: 'FedRAMP Moderate', framework_id: 'fedramp-moderate', ids: modIds },
+    { name: 'FedRAMP High', framework_id: 'fedramp-high', ids: highIds },
   ];
 
   const lines = [];
@@ -133,9 +133,8 @@ function main() {
       if (!ctrl) continue; // Skip withdrawn controls not in catalog
 
       lines.push(
-        `INSERT OR REPLACE INTO security_controls (id, framework_id, control_id, family, title, description, guidance, priority, baseline_low, baseline_moderate, baseline_high, is_enhancement, parent_control_id, sort_order) ` +
-        `VALUES ((SELECT COALESCE((SELECT id FROM security_controls WHERE framework_id = '${baseline.framework_id}' AND control_id = '${sqlEscape(ctrl.control_id)}'), lower(hex(randomblob(16))))), ` +
-        `'${baseline.framework_id}', '${sqlEscape(ctrl.control_id)}', '${sqlEscape(ctrl.family)}', '${sqlEscape(ctrl.title)}', '${sqlEscape(ctrl.description)}', '${sqlEscape(ctrl.guidance)}', '${ctrl.priority}', ` +
+        `INSERT OR REPLACE INTO security_controls (framework_id, control_id, family, title, description, guidance, priority, baseline_low, baseline_moderate, baseline_high, is_enhancement, parent_control_id, sort_order) ` +
+        `VALUES ('${baseline.framework_id}', '${sqlEscape(ctrl.control_id)}', '${sqlEscape(ctrl.family)}', '${sqlEscape(ctrl.title)}', '${sqlEscape(ctrl.description)}', '${sqlEscape(ctrl.guidance)}', '${ctrl.priority}', ` +
         `${lowIds.has(id) ? 1 : 0}, ${modIds.has(id) ? 1 : 0}, ${highIds.has(id) ? 1 : 0}, ${ctrl.is_enhancement}, '${sqlEscape(ctrl.parent_control_id)}', ${sortOrder++});`
       );
     }
@@ -147,7 +146,7 @@ function main() {
       if (!controlMap[id]) continue;
       lines.push(
         `INSERT OR IGNORE INTO control_crosswalks (id, source_framework_id, source_control_id, target_framework_id, target_control_id, mapping_type, confidence) ` +
-        `VALUES (lower(hex(randomblob(16))), '${baseline.framework_id}', '${sqlEscape(id)}', 'fw_nist_800_53_r5', '${sqlEscape(id)}', 'equivalent', 1.0);`
+        `VALUES (lower(hex(randomblob(16))), '${baseline.framework_id}', '${sqlEscape(id)}', 'nist-800-53-r5', '${sqlEscape(id)}', 'equivalent', 1.0);`
       );
     }
 

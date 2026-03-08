@@ -8,8 +8,8 @@ const path = require('path');
 const DB_DIR = path.join(__dirname, '..', 'database');
 
 const CANONICAL_FRAMEWORKS = new Set([
-  'fw_nist_800_53_r5', 'fw_fedramp_low', 'fw_fedramp_mod', 'fw_fedramp_high',
-  'fw_nist_800_171', 'fw_cmmc_l2', 'fw_cmmc_l3', 'fw_hipaa', 'fw_soc2', 'fw_stateramp'
+  'nist-800-53-r5', 'fedramp-low', 'fedramp-moderate', 'fedramp-high',
+  'nist-800-171-r3', 'cmmc-l2', 'cmmc-l3', 'hipaa', 'soc2-type2', 'stateramp'
 ]);
 
 let passed = 0;
@@ -32,8 +32,14 @@ function countInsertLines(filePath) {
 
 function extractFrameworkIds(filePath) {
   const sql = fs.readFileSync(filePath, 'utf8');
-  const matches = sql.match(/'(fw_[a-z0-9_]+)'/g) || [];
-  return new Set(matches.map(m => m.replace(/'/g, '')));
+  // Match framework_id values in INSERT statements (e.g. 'nist-800-53-r5', 'fedramp-low')
+  const matches = sql.match(/INTO security_controls[^;]*?'([a-z0-9][\w-]+)'/g) || [];
+  const ids = new Set();
+  for (const m of matches) {
+    const idMatch = m.match(/'([a-z0-9][\w-]+)'/);
+    if (idMatch) ids.add(idMatch[1]);
+  }
+  return ids;
 }
 
 function countCrosswalks(filePath) {
@@ -59,7 +65,7 @@ const nistFile = path.join(DB_DIR, 'migrate-035-nist-800-53-full-catalog.sql');
 if (fs.existsSync(nistFile)) {
   const nistCount = countInsertLines(nistFile);
   check('Total controls = 1196 (full OSCAL catalog)', nistCount === 1196, `got ${nistCount}`);
-  check('Uses canonical framework_id', extractFrameworkIds(nistFile).has('fw_nist_800_53_r5'));
+  check('Uses canonical framework_id', extractFrameworkIds(nistFile).has('nist-800-53-r5'));
 
   // Count baseline flags - join multi-line INSERTs first
   const sql = fs.readFileSync(nistFile, 'utf8');
@@ -82,7 +88,7 @@ if (fs.existsSync(nistFile)) {
 
   // 20 families
   const families = new Set();
-  const famMatches = sql.matchAll(/'(fw_nist_800_53_r5)', '([A-Z]{2}(?:-\d+)?(?:\(\d+\))?)', '([^']+)'/g);
+  const famMatches = sql.matchAll(/'(nist-800-53-r5)', '([A-Z]{2}(?:-\d+)?(?:\(\d+\))?)', '([^']+)'/g);
   for (const m of famMatches) {
     const fam = m[3]; // family name
     families.add(fam);
@@ -97,16 +103,16 @@ console.log('\nFedRAMP Baselines (migrate-036):');
 const fedrampFile = path.join(DB_DIR, 'migrate-036-fedramp-controls.sql');
 if (fs.existsSync(fedrampFile)) {
   const sql = fs.readFileSync(fedrampFile, 'utf8');
-  const lowControls = (sql.match(/INTO security_controls.*'fw_fedramp_low'/g) || []).length;
-  const modControls = (sql.match(/INTO security_controls.*'fw_fedramp_mod'/g) || []).length;
-  const highControls = (sql.match(/INTO security_controls.*'fw_fedramp_high'/g) || []).length;
+  const lowControls = (sql.match(/INTO security_controls.*'fedramp-low'/g) || []).length;
+  const modControls = (sql.match(/INTO security_controls.*'fedramp-moderate'/g) || []).length;
+  const highControls = (sql.match(/INTO security_controls.*'fedramp-high'/g) || []).length;
   const crosswalks = countCrosswalks(fedrampFile);
 
   check(`FedRAMP Low controls = 149`, lowControls === 149, `got ${lowControls}`);
   check(`FedRAMP Moderate controls = 287`, modControls === 287, `got ${modControls}`);
   check(`FedRAMP High controls = 370`, highControls === 370, `got ${highControls}`);
   check(`Crosswalk entries present`, crosswalks > 0, `got ${crosswalks}`);
-  check('Uses canonical framework_ids', extractFrameworkIds(fedrampFile).has('fw_fedramp_low'));
+  check('Uses canonical framework_ids', extractFrameworkIds(fedrampFile).has('fedramp-low'));
 } else {
   check('File exists', false, 'migrate-036 not found');
 }
@@ -121,7 +127,7 @@ if (fs.existsSync(n171File)) {
 
   check(`Controls = 110`, controls === 110, `got ${controls}`);
   check(`Crosswalk entries present`, crosswalks > 0, `got ${crosswalks}`);
-  check('Uses canonical framework_id', extractFrameworkIds(n171File).has('fw_nist_800_171'));
+  check('Uses canonical framework_id', extractFrameworkIds(n171File).has('nist-800-171-r3'));
 } else {
   check('File exists', false, 'migrate-037 not found');
 }
@@ -131,14 +137,14 @@ console.log('\nCMMC L2/L3 (migrate-038):');
 const cmmcFile = path.join(DB_DIR, 'migrate-038-cmmc-controls.sql');
 if (fs.existsSync(cmmcFile)) {
   const sql = fs.readFileSync(cmmcFile, 'utf8');
-  const l2Controls = (sql.match(/INTO security_controls.*'fw_cmmc_l2'/g) || []).length;
-  const l3Controls = (sql.match(/INTO security_controls.*'fw_cmmc_l3'/g) || []).length;
+  const l2Controls = (sql.match(/INTO security_controls.*'cmmc-l2'/g) || []).length;
+  const l3Controls = (sql.match(/INTO security_controls.*'cmmc-l3'/g) || []).length;
   const crosswalks = countCrosswalks(cmmcFile);
 
   check(`CMMC L2 = 110 practices`, l2Controls === 110, `got ${l2Controls}`);
   check(`CMMC L3 = 134 practices`, l3Controls === 134, `got ${l3Controls}`);
   check(`Crosswalk entries present`, crosswalks > 0, `got ${crosswalks}`);
-  check('Uses canonical framework_ids', extractFrameworkIds(cmmcFile).has('fw_cmmc_l2'));
+  check('Uses canonical framework_ids', extractFrameworkIds(cmmcFile).has('cmmc-l2'));
 } else {
   check('File exists', false, 'migrate-038 not found');
 }
@@ -148,9 +154,9 @@ console.log('\nHIPAA/SOC 2/StateRAMP (migrate-039):');
 const hsFile = path.join(DB_DIR, 'migrate-039-hipaa-soc2-stateramp-controls.sql');
 if (fs.existsSync(hsFile)) {
   const sql = fs.readFileSync(hsFile, 'utf8');
-  const hipaaControls = (sql.match(/INTO security_controls.*'fw_hipaa'/g) || []).length;
-  const soc2Controls = (sql.match(/INTO security_controls.*'fw_soc2'/g) || []).length;
-  const staterampControls = (sql.match(/INTO security_controls.*'fw_stateramp'/g) || []).length;
+  const hipaaControls = (sql.match(/INTO security_controls.*'hipaa'/g) || []).length;
+  const soc2Controls = (sql.match(/INTO security_controls.*'soc2-type2'/g) || []).length;
+  const staterampControls = (sql.match(/INTO security_controls.*'stateramp'/g) || []).length;
   const crosswalks = countCrosswalks(hsFile);
 
   check(`HIPAA controls = 53`, hipaaControls === 53, `got ${hipaaControls}`);
@@ -159,7 +165,7 @@ if (fs.existsSync(hsFile)) {
   check(`Crosswalk entries present`, crosswalks > 0, `got ${crosswalks}`);
 
   const fwIds = extractFrameworkIds(hsFile);
-  check('Uses canonical framework_ids', fwIds.has('fw_hipaa') && fwIds.has('fw_soc2') && fwIds.has('fw_stateramp'));
+  check('Uses canonical framework_ids', fwIds.has('hipaa') && fwIds.has('soc2-type2') && fwIds.has('stateramp'));
 } else {
   check('File exists', false, 'migrate-039 not found');
 }

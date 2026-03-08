@@ -326,8 +326,8 @@ function generateControlInserts(frameworkId, controls, sortStart) {
   let sort = sortStart || 1;
   for (const ctrl of controls) {
     lines.push(
-      `INSERT OR REPLACE INTO security_controls (id, framework_id, control_id, family, title, description, priority, baseline_low, baseline_moderate, baseline_high, is_enhancement, parent_control_id, sort_order) ` +
-      `VALUES (lower(hex(randomblob(16))), '${frameworkId}', '${sqlEscape(ctrl.id)}', '${sqlEscape(ctrl.family)}', '${sqlEscape(ctrl.title)}', '${sqlEscape(ctrl.desc)}', 'P1', 1, 1, 1, 0, '', ${sort++});`
+      `INSERT OR REPLACE INTO security_controls (framework_id, control_id, family, title, description, priority, baseline_low, baseline_moderate, baseline_high, is_enhancement, parent_control_id, sort_order) ` +
+      `VALUES ('${frameworkId}', '${sqlEscape(ctrl.id)}', '${sqlEscape(ctrl.family)}', '${sqlEscape(ctrl.title)}', '${sqlEscape(ctrl.desc)}', 'P1', 1, 1, 1, 0, '', ${sort++});`
     );
   }
   return { lines, nextSort: sort };
@@ -363,11 +363,11 @@ function main() {
     lines.push(`-- Generated: ${new Date().toISOString()}`);
     lines.push('-- ============================================================================');
     lines.push('');
-    const { lines: inserts } = generateControlInserts('fw_nist_800_171', nist171Controls, 1);
+    const { lines: inserts } = generateControlInserts('nist-800-171-r3', nist171Controls, 1);
     lines.push(...inserts);
     lines.push('');
     lines.push('-- Crosswalks: NIST 800-171 -> NIST 800-53');
-    lines.push(...generateCrosswalks('fw_nist_800_171', nist171Controls, 'fw_nist_800_53_r5'));
+    lines.push(...generateCrosswalks('nist-800-171-r3', nist171Controls, 'nist-800-53-r5'));
     const outPath = path.join(DB_DIR, 'migrate-037-nist-800-171-controls.sql');
     fs.writeFileSync(outPath, lines.join('\n'));
     console.log(`NIST 800-171: ${nist171Controls.length} controls -> ${outPath}`);
@@ -420,19 +420,19 @@ function main() {
     lines.push('-- ============================================================================');
     lines.push('');
     lines.push('-- CMMC Level 2 (mapped 1:1 to NIST 800-171)');
-    const { lines: l2Inserts } = generateControlInserts('fw_cmmc_l2', cmmcL2, 1);
+    const { lines: l2Inserts } = generateControlInserts('cmmc-l2', cmmcL2, 1);
     lines.push(...l2Inserts);
     lines.push('');
     lines.push('-- Crosswalks: CMMC L2 -> NIST 800-171');
-    lines.push(...generateCrosswalks('fw_cmmc_l2', cmmcL2, 'fw_nist_800_171'));
+    lines.push(...generateCrosswalks('cmmc-l2', cmmcL2, 'nist-800-171-r3'));
     lines.push('');
     lines.push('-- CMMC Level 3 (L2 + enhanced practices)');
     const allL3 = [...cmmcL2.map(c => ({ ...c, id: c.id.replace('.L2-', '.L3-') })), ...cmmcL3Extra];
-    const { lines: l3Inserts } = generateControlInserts('fw_cmmc_l3', allL3, 1);
+    const { lines: l3Inserts } = generateControlInserts('cmmc-l3', allL3, 1);
     lines.push(...l3Inserts);
     lines.push('');
     lines.push('-- Crosswalks: CMMC L3 -> NIST 800-171');
-    lines.push(...generateCrosswalks('fw_cmmc_l3', allL3, 'fw_nist_800_171'));
+    lines.push(...generateCrosswalks('cmmc-l3', allL3, 'nist-800-171-r3'));
     const outPath = path.join(DB_DIR, 'migrate-038-cmmc-controls.sql');
     fs.writeFileSync(outPath, lines.join('\n'));
     console.log(`CMMC L2: ${cmmcL2.length}, L3: ${allL3.length} -> ${outPath}`);
@@ -454,22 +454,22 @@ function main() {
     lines.push('-- ============================================================================');
     lines.push(`-- HIPAA Security Rule (${hipaaControls.length} implementation specifications)`);
     lines.push('-- ============================================================================');
-    const { lines: hipaaInserts } = generateControlInserts('fw_hipaa', hipaaControls, 1);
+    const { lines: hipaaInserts } = generateControlInserts('hipaa', hipaaControls, 1);
     lines.push(...hipaaInserts);
     lines.push('');
     lines.push('-- Crosswalks: HIPAA -> NIST 800-53');
-    lines.push(...generateCrosswalks('fw_hipaa', hipaaControls, 'fw_nist_800_53_r5'));
+    lines.push(...generateCrosswalks('hipaa', hipaaControls, 'nist-800-53-r5'));
 
     // SOC 2
     lines.push('');
     lines.push('-- ============================================================================');
     lines.push(`-- SOC 2 Trust Services Criteria (${soc2Controls.length} criteria)`);
     lines.push('-- ============================================================================');
-    const { lines: soc2Inserts } = generateControlInserts('fw_soc2', soc2Controls, 1);
+    const { lines: soc2Inserts } = generateControlInserts('soc2-type2', soc2Controls, 1);
     lines.push(...soc2Inserts);
     lines.push('');
     lines.push('-- Crosswalks: SOC 2 -> NIST 800-53');
-    lines.push(...generateCrosswalks('fw_soc2', soc2Controls, 'fw_nist_800_53_r5'));
+    lines.push(...generateCrosswalks('soc2-type2', soc2Controls, 'nist-800-53-r5'));
 
     // StateRAMP (clone from FedRAMP Moderate baseline)
     lines.push('');
@@ -481,9 +481,9 @@ function main() {
     let sort = 1;
     for (const ctrlId of staterampIds) {
       lines.push(
-        `INSERT OR REPLACE INTO security_controls (id, framework_id, control_id, family, title, description, priority, sort_order) ` +
-        `SELECT lower(hex(randomblob(16))), 'fw_stateramp', control_id, family, title, description, priority, ${sort++} ` +
-        `FROM security_controls WHERE framework_id = 'fw_nist_800_53_r5' AND control_id = '${sqlEscape(ctrlId)}';`
+        `INSERT OR REPLACE INTO security_controls (framework_id, control_id, family, title, description, priority, sort_order) ` +
+        `SELECT 'stateramp', control_id, family, title, description, priority, ${sort++} ` +
+        `FROM security_controls WHERE framework_id = 'nist-800-53-r5' AND control_id = '${sqlEscape(ctrlId)}';`
       );
     }
     lines.push('');
@@ -491,7 +491,7 @@ function main() {
     for (const ctrlId of staterampIds) {
       lines.push(
         `INSERT OR IGNORE INTO control_crosswalks (id, source_framework_id, source_control_id, target_framework_id, target_control_id, mapping_type, confidence) ` +
-        `VALUES (lower(hex(randomblob(16))), 'fw_stateramp', '${sqlEscape(ctrlId)}', 'fw_nist_800_53_r5', '${sqlEscape(ctrlId)}', 'equivalent', 1.0);`
+        `VALUES (lower(hex(randomblob(16))), 'stateramp', '${sqlEscape(ctrlId)}', 'nist-800-53-r5', '${sqlEscape(ctrlId)}', 'equivalent', 1.0);`
       );
     }
 
