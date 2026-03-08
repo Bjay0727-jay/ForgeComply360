@@ -18,3 +18,6 @@ Thumbs.db
 !.env.demo
 !.env.production
 docker/.env
+
+# Cached OSCAL data from NIST (downloaded by import scripts)
+.oscal-cache/
