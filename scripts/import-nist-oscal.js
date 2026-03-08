@@ -169,7 +169,7 @@ function parseCatalog(catalogJson) {
 // Escape SQL string
 function sqlEscape(str) {
   if (!str) return '';
-  return str.replace(/'/g, "''");
+  return str.replace(/'/g, "''").replace(/[\r\n]+/g, ' ');
 }
 
 // Generate SQL migration
