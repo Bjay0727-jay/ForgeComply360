@@ -398,9 +398,9 @@ function generatePoams(findings) {
   // Status distribution: 10 open, 12 in_progress, 5 verification, 8 completed, 3 delayed, 2 risk_accepted
   const statusList = [
     ...Array(10).fill('open'), ...Array(12).fill('in_progress'),
-    ...Array(5).fill('open'), // using open for "verification" since that's not a valid status
-    ...Array(8).fill('completed'), ...Array(3).fill('delayed'),
-    ...Array(2).fill('risk_accepted'),
+    ...Array(5).fill('verification'),
+    ...Array(8).fill('completed'), ...Array(3).fill('deferred'),
+    ...Array(2).fill('accepted'),
   ];
 
   const controlIds = ['AC-2','AC-3','AC-7','AU-6','CA-7','CM-3','CM-6','CM-8','IA-2','IA-5',
@@ -674,7 +674,7 @@ function generateSQL() {
   emit('');
 
   // ssp_documents schema (schema.sql): id, org_id, system_id, framework_id, title, version, status, generated_by, created_at, updated_at
-  emit(`INSERT OR IGNORE INTO ssp_documents (id, org_id, system_id, title, version, status, generated_by, created_at, updated_at) VALUES ('${SSP_ID}', '${ORG_ID}', '${SYS_ID}', 'MFEHR System Security Plan - FedRAMP Moderate', '1.0', 'review', 'user-phs-002', '2025-12-01 08:00:00', '2026-03-01 12:00:00');`);
+  emit(`INSERT OR IGNORE INTO ssp_documents (id, org_id, system_id, framework_id, title, version, status, generated_by, created_at, updated_at) VALUES ('${SSP_ID}', '${ORG_ID}', '${SYS_ID}', 'fedramp-moderate', 'MFEHR System Security Plan - FedRAMP Moderate', '1.0', 'in_review', 'user-phs-002', '2025-12-01 08:00:00', '2026-03-01 12:00:00');`);
   emit('');
 
   const pps = generatePortsProtocols();
