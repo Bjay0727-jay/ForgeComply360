@@ -1,66 +1,118 @@
 # =============================================================================
-# ForgeComply 360™ — Cloudflare Worker Configuration
+# ForgeComply 360 — Cloudflare Worker Configuration
 # =============================================================================
 # CRITICAL: The database_id below MUST match the active production database.
 #   Active DB: forge-comply360-db (73faffec-f001-44bc-880e-62bd932c25b1)
-#   Stale DB:  forge-production   (fe250bed-...) ← DO NOT USE
+#   Stale DB:  forge-production   (fe250bed-...) <- DO NOT USE
 #
-# Deploy: wrangler deploy
-# Dev:    wrangler dev
+# Deploy: npx wrangler deploy --env production
+# Dev:    npx wrangler dev
 # =============================================================================
 
-name = "forge-api"
-main = "src/index.js"
-compatibility_date = "2024-01-01"
+name = "forge-comply360-api"
+main = "workers/index.js"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
 
-# Account-level settings
-# account_id = ""  # Set via CLOUDFLARE_ACCOUNT_ID env var or wrangler login
+# ============================================================================
+# LOCAL DEVELOPMENT (wrangler dev)
+# IMPORTANT: Dev resources are intentionally separate from production.
+#   Create with: wrangler d1 create forge-comply360-db-dev
+#                wrangler kv:namespace create KV_DEV
+#   Then replace the placeholder IDs below with the new resource IDs.
+# ============================================================================
+[[d1_databases]]
+binding = "DB"
+database_name = "forge-comply360-db-dev"
+database_id = "local"  # Uses local SQLite in wrangler dev; replace with a real dev DB ID for remote dev
 
-# ---------- Production (default) ----------
+[[kv_namespaces]]
+binding = "KV"
+id = "local"  # Uses local emulation in wrangler dev; replace with a real dev KV ID for remote dev
+
+[[r2_buckets]]
+binding = "EVIDENCE_VAULT"
+bucket_name = "forge-evidence-dev"
+
+[[r2_buckets]]
+binding = "BACKUP_BUCKET"
+bucket_name = "forge-comply360-backups-dev"
+
+[ai]
+binding = "AI"
 
 [vars]
-ENVIRONMENT = "production"
+ENVIRONMENT = "development"
 APP_NAME = "ForgeComply 360"
 OSCAL_VERSION = "1.1.2"
-# H-5 FIX: CORS origin must match the actual frontend domain
-CORS_ORIGIN = "https://app.forgecomply360.com"
-# Fallback pattern for Pages preview deployments
-CORS_ORIGIN_PATTERN = "https://*.forgecomply360.pages.dev"
-# H-3 FIX: Invite code required for registration (set to empty string to disable)
-REGISTRATION_INVITE_CODE = "FORGE-BETA-2026"
-# Rate limiting
-RATE_LIMIT_RPM = "500"
-# Session config
-SESSION_TIMEOUT_MINUTES = "15"
-MAX_SESSION_HOURS = "8"
+CORS_ORIGIN = "http://localhost:5173"
+CORS_ORIGIN_PATTERN = "http://localhost:*"
+REGISTRATION_INVITE_CODE = ""
+RATE_LIMIT_RPM = "1000"
+SESSION_TIMEOUT_MINUTES = "30"
+MAX_SESSION_HOURS = "12"
 
-[[d1_databases]]
+# ============================================================================
+# CRON TRIGGERS - Evidence Scheduling, Reminders & Email Digests & Backups
+# ============================================================================
+# 0 6 * * * = Daily at 6 AM UTC (evidence checks, compliance alerts)
+# 0 8 * * 1 = Weekly Monday 8 AM UTC (weekly digest)
+# 0 2 * * 2,5 = Tuesday & Friday at 2 AM UTC (automated backup)
+# 0 * * * * = Hourly (ServiceNow CMDB scheduled syncs) — production only
+# Dev uses daily only to avoid burning Worker invocations
+[triggers]
+crons = ["0 6 * * *"]
+
+# ============================================================================
+# PRODUCTION
+# ============================================================================
+[env.production]
+name = "forge-comply360-api"
+
+[[env.production.d1_databases]]
 binding = "DB"
 database_name = "forge-comply360-db"
 database_id = "73faffec-f001-44bc-880e-62bd932c25b1"
 
-[kv_namespaces]
-# Uncomment and set IDs after creating via: wrangler kv namespace create <NAME>
-# [[kv_namespaces]]
-# binding = "SESSIONS"
-# id = ""
-# [[kv_namespaces]]
-# binding = "CACHE"
-# id = ""
-# [[kv_namespaces]]
-# binding = "RATE_LIMIT"
-# id = ""
+[[env.production.kv_namespaces]]
+binding = "KV"
+id = "a3323bb1cfa14271a286170864082869"
 
-[r2_buckets]
-# [[r2_buckets]]
-# binding = "EVIDENCE_BUCKET"
-# bucket_name = "forge-evidence-production"
+[[env.production.r2_buckets]]
+binding = "EVIDENCE_VAULT"
+bucket_name = "forge-evidence"
 
-# ---------- Staging environment ----------
-# Deploy: wrangler deploy --env staging
+[[env.production.r2_buckets]]
+binding = "BACKUP_BUCKET"
+bucket_name = "forge-comply360-backups"
 
+[env.production.ai]
+binding = "AI"
+
+[env.production.vars]
+ENVIRONMENT = "production"
+APP_NAME = "ForgeComply 360"
+OSCAL_VERSION = "1.1.2"
+CORS_ORIGIN = "https://forgecomply360.pages.dev"
+CORS_ORIGIN_PATTERN = "https://*.forgecomply360.pages.dev"
+REGISTRATION_INVITE_CODE = "FORGE-BETA-2026"
+RATE_LIMIT_RPM = "500"
+SESSION_TIMEOUT_MINUTES = "15"
+MAX_SESSION_HOURS = "8"
+
+[env.production.triggers]
+crons = ["0 6 * * *", "0 8 * * 1", "0 2 * * 2,5", "0 * * * *"]
+
+# ============================================================================
+# STAGING ENVIRONMENT
+# ============================================================================
 [env.staging]
-name = "forge-api-staging"
+name = "forge-comply360-api-staging"
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "forge-comply360-db-demo"
+database_id = "094aa4dd-5c79-456e-a2cb-d43f08f677e5"
 
 [env.staging.vars]
 ENVIRONMENT = "staging"
@@ -69,25 +121,48 @@ CORS_ORIGIN_PATTERN = "https://*.forgecomply360.pages.dev"
 REGISTRATION_INVITE_CODE = "FORGE-STAGING-2026"
 RATE_LIMIT_RPM = "200"
 
-[[env.staging.d1_databases]]
+# ============================================================================
+# DEMO ENVIRONMENT
+# ============================================================================
+[env.demo]
+name = "forge-comply360-api-demo"
+
+[[env.demo.d1_databases]]
 binding = "DB"
 database_name = "forge-comply360-db-demo"
 database_id = "094aa4dd-5c79-456e-a2cb-d43f08f677e5"
 
-# ---------- Development environment ----------
-# Deploy: wrangler deploy --env dev
+[[env.demo.kv_namespaces]]
+binding = "KV"
+id = "b114779cb4864349b611010bc7056cd7"
 
-[env.dev]
-name = "forge-api-dev"
+[[env.demo.r2_buckets]]
+binding = "EVIDENCE_VAULT"
+bucket_name = "forge-evidence-demo"
 
-[env.dev.vars]
-ENVIRONMENT = "development"
-CORS_ORIGIN = "http://localhost:5173"
-CORS_ORIGIN_PATTERN = "http://localhost:*"
+[[env.demo.r2_buckets]]
+binding = "BACKUP_BUCKET"
+bucket_name = "forge-comply360-backups-demo"
+
+[env.demo.ai]
+binding = "AI"
+
+[env.demo.vars]
+ENVIRONMENT = "demo"
+CORS_ORIGIN = "https://demo.forgecomply360.pages.dev"
+CORS_ORIGIN_PATTERN = "https://*.forgecomply360.pages.dev"
 REGISTRATION_INVITE_CODE = ""
-RATE_LIMIT_RPM = "1000"
+RATE_LIMIT_RPM = "200"
 
-[[env.dev.d1_databases]]
-binding = "DB"
-database_name = "forge-comply360-db-demo"
-database_id = "094aa4dd-5c79-456e-a2cb-d43f08f677e5"
+# Demo uses reduced cron schedule (daily only)
+[env.demo.triggers]
+crons = ["0 6 * * *"]
+
+# ============================================================================
+# SECRETS (set via: wrangler secret put <NAME>)
+# ============================================================================
+# RESEND_API_KEY - Email delivery via Resend (https://resend.com)
+#   Used for daily notification digests and instant critical alerts.
+#   If not configured, email sending is silently skipped.
+#   Set with: wrangler secret put RESEND_API_KEY
+#   Production: wrangler secret put RESEND_API_KEY --env production

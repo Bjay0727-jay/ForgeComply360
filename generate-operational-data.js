@@ -753,7 +753,7 @@ function main() {
   console.log('=====================================================');
 
   const sql = generateSQL();
-  const outputPath = path.join(__dirname, 'migrate-041-operational-data.sql');
+  const outputPath = path.join(__dirname, 'database', 'migrate-041-operational-data.sql');
   fs.writeFileSync(outputPath, sql, 'utf8');
 
   // Validation summary
