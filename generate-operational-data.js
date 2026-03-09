@@ -530,7 +530,7 @@ function generateSQL() {
   emit(`CREATE TABLE IF NOT EXISTS poam_milestones (id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), poam_id TEXT NOT NULL REFERENCES poams(id) ON DELETE CASCADE, milestone_number INTEGER NOT NULL, title TEXT NOT NULL, description TEXT, target_date TEXT NOT NULL, completion_date TEXT, status TEXT DEFAULT 'open' CHECK (status IN ('open','in_progress','completed','delayed')), created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')));`);
   emit('');
 
-  emit(`CREATE TABLE IF NOT EXISTS evidence (id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE, system_id TEXT REFERENCES systems(id) ON DELETE SET NULL, title TEXT NOT NULL, description TEXT, file_name TEXT, file_type TEXT, file_size INTEGER, r2_key TEXT, sha256_hash TEXT, uploaded_by TEXT REFERENCES users(id), evidence_type TEXT DEFAULT 'document' CHECK (evidence_type IN ('document','screenshot','log','configuration','scan_report','certificate','policy','other')), is_active INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')));`);
+  emit(`CREATE TABLE IF NOT EXISTS evidence (id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE, system_id TEXT REFERENCES systems(id) ON DELETE SET NULL, title TEXT NOT NULL, description TEXT, file_name TEXT, file_type TEXT, file_size INTEGER, r2_key TEXT, sha256_hash TEXT, uploaded_by TEXT REFERENCES users(id), evidence_type TEXT DEFAULT 'document' CHECK (evidence_type IN ('document','screenshot','log','configuration','scan_report','certificate','policy','other')), is_active INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')));`);
   emit('');
 
   emit(`CREATE TABLE IF NOT EXISTS evidence_control_links (id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), evidence_id TEXT NOT NULL REFERENCES evidence(id) ON DELETE CASCADE, control_definition_id TEXT NOT NULL REFERENCES control_definitions(id) ON DELETE CASCADE, system_id TEXT NOT NULL REFERENCES systems(id) ON DELETE CASCADE, linked_by TEXT REFERENCES users(id), notes TEXT, created_at TEXT DEFAULT (datetime('now')), UNIQUE(evidence_id, control_definition_id, system_id));`);
@@ -544,11 +544,11 @@ function generateSQL() {
   emit('-- ========================================');
   emit('');
 
-  emit(`INSERT OR IGNORE INTO systems (id, organization_id, name, acronym, description, system_type, impact_level, confidentiality_impact, integrity_impact, availability_impact, authorization_status, hosting_environment, is_active, created_at, updated_at) VALUES ('${SYS_ID}', '${ORG_ID}', 'MedForge Electronic Health Record', 'MFEHR', 'Enterprise electronic health record system for the Patriot Health Systems network serving 2.3 million veterans across 47 medical facilities. Processes PHI, PII, and clinical data under FISMA Moderate and HIPAA compliance requirements.', 'major_application', 'moderate', 'moderate', 'moderate', 'moderate', 'in_progress', 'cloud', 1, '2025-09-15 08:00:00', '2026-03-01 12:00:00');`);
+  emit(`INSERT OR IGNORE INTO systems (id, org_id, name, acronym, description, system_type, impact_level, confidentiality_impact, integrity_impact, availability_impact, authorization_status, hosting_environment, is_active, created_at, updated_at) VALUES ('${SYS_ID}', '${ORG_ID}', 'MedForge Electronic Health Record', 'MFEHR', 'Enterprise electronic health record system for the Patriot Health Systems network serving 2.3 million veterans across 47 medical facilities. Processes PHI, PII, and clinical data under FISMA Moderate and HIPAA compliance requirements.', 'major_application', 'moderate', 'moderate', 'moderate', 'moderate', 'in_progress', 'cloud', 1, '2025-09-15 08:00:00', '2026-03-01 12:00:00');`);
   emit('');
 
   for (const u of PHS_USERS) {
-    emit(`INSERT OR IGNORE INTO users (id, organization_id, email, password_hash, first_name, last_name, role, mfa_enabled, workspace_access, is_active, created_at) VALUES ('${u.id}', '${ORG_ID}', '${u.email}', '${PW_HASH}', '${u.first}', '${u.last}', '${u.role}', 0, '["comply","soc"]', 1, '2025-09-15 08:00:00');`);
+    emit(`INSERT OR IGNORE INTO users (id, org_id, email, password_hash, first_name, last_name, role, mfa_enabled, workspace_access, is_active, created_at) VALUES ('${u.id}', '${ORG_ID}', '${u.email}', '${PW_HASH}', '${u.first}', '${u.last}', '${u.role}', 0, '["comply","soc"]', 1, '2025-09-15 08:00:00');`);
   }
   emit('');
 
@@ -563,7 +563,7 @@ function generateSQL() {
   const assets = generateAssets();
   for (const a of assets) {
     const riskScore = a.criticality === 'critical' ? randInt(80, 99) : a.criticality === 'high' ? randInt(50, 79) : randInt(20, 49);
-    emit(`INSERT OR IGNORE INTO assets (id, organization_id, system_id, hostname, ip_address, mac_address, asset_type, os_type, os_version, classification, criticality, location, tags, discovery_source, last_seen_at, is_active, created_at, updated_at, fqdn, scan_credentialed, open_ports) VALUES ('${a.id}', '${ORG_ID}', '${SYS_ID}', '${a.hostname}', '${a.ip}', '${a.mac}', '${a.type}', '${sqlEscape(a.os)}', '${sqlEscape(a.osVer)}', '${a.classification}', '${a.criticality}', 'AWS GovCloud us-gov-west-1', '["mfehr","${a.zone}","${a.env}"]', 'nessus_scan', '2026-03-01 06:00:00', 1, '2025-09-15 08:00:00', '2026-03-01 06:00:00', '${a.fqdn}', ${a.credentialed}, '${sqlEscape(a.ports)}');`);
+    emit(`INSERT OR IGNORE INTO assets (id, org_id, system_id, hostname, ip_address, mac_address, asset_type, os_type, os_version, classification, criticality, location, tags, discovery_source, last_seen_at, is_active, created_at, updated_at, fqdn, scan_credentialed, open_ports) VALUES ('${a.id}', '${ORG_ID}', '${SYS_ID}', '${a.hostname}', '${a.ip}', '${a.mac}', '${a.type}', '${sqlEscape(a.os)}', '${sqlEscape(a.osVer)}', '${a.classification}', '${a.criticality}', 'AWS GovCloud us-gov-west-1', '["mfehr","${a.zone}","${a.env}"]', 'nessus_scan', '2026-03-01 06:00:00', 1, '2025-09-15 08:00:00', '2026-03-01 06:00:00', '${a.fqdn}', ${a.credentialed}, '${sqlEscape(a.ports)}');`);
   }
   emit('');
 
@@ -609,7 +609,7 @@ function generateSQL() {
 
   const findings = generateFindings(assets, vulnDefs);
   for (const f of findings) {
-    emit(`INSERT OR IGNORE INTO vulnerability_findings (id, organization_id, asset_id, vulnerability_id, scan_id, title, description, severity, cvss_score, affected_component, remediation_guidance, status, assigned_to, remediated_at, verified_at, created_at, updated_at, scan_import_id, plugin_id, plugin_name, plugin_family, port, protocol, cvss3_score, cvss3_vector, exploit_available, patch_published, first_seen_at, last_seen_at, control_mappings) VALUES ('${f.id}', '${f.org_id}', '${f.asset_id}', '${f.vuln_def_id}', '${f.scan_id}', '${sqlEscape(f.title)}', '${sqlEscape(f.description)}', '${f.severity}', ${f.cvss_score}, '${sqlEscape(f.affected_component)}', '${f.remediation}', '${f.status}', '${f.assigned_to}', ${f.remediated_at ? `'${f.remediated_at}'` : 'NULL'}, ${f.verified_at ? `'${f.verified_at}'` : 'NULL'}, '${f.created_at}', '${f.updated_at}', '${f.scan_import_id}', '${f.plugin_id}', '${sqlEscape(f.plugin_name)}', '${f.plugin_family}', ${f.port}, '${f.protocol}', ${f.cvss3_score}, '${f.cvss3_vector}', ${f.exploit_available}, ${f.patch_published ? `'${f.patch_published}'` : 'NULL'}, '${f.first_seen_at}', '${f.last_seen_at}', '${sqlEscape(f.control_mappings)}');`);
+    emit(`INSERT OR IGNORE INTO vulnerability_findings (id, org_id, asset_id, vulnerability_id, scan_id, title, description, severity, cvss_score, affected_component, remediation_guidance, status, assigned_to, remediated_at, verified_at, created_at, updated_at, scan_import_id, plugin_id, plugin_name, plugin_family, port, protocol, cvss3_score, cvss3_vector, exploit_available, patch_published, first_seen_at, last_seen_at, control_mappings) VALUES ('${f.id}', '${f.org_id}', '${f.asset_id}', '${f.vuln_def_id}', '${f.scan_id}', '${sqlEscape(f.title)}', '${sqlEscape(f.description)}', '${f.severity}', ${f.cvss_score}, '${sqlEscape(f.affected_component)}', '${f.remediation}', '${f.status}', '${f.assigned_to}', ${f.remediated_at ? `'${f.remediated_at}'` : 'NULL'}, ${f.verified_at ? `'${f.verified_at}'` : 'NULL'}, '${f.created_at}', '${f.updated_at}', '${f.scan_import_id}', '${f.plugin_id}', '${sqlEscape(f.plugin_name)}', '${f.plugin_family}', ${f.port}, '${f.protocol}', ${f.cvss3_score}, '${f.cvss3_vector}', ${f.exploit_available}, ${f.patch_published ? `'${f.patch_published}'` : 'NULL'}, '${f.first_seen_at}', '${f.last_seen_at}', '${sqlEscape(f.control_mappings)}');`);
   }
   emit('');
 
@@ -623,7 +623,7 @@ function generateSQL() {
 
   const poams = generatePoams(findings);
   for (const p of poams) {
-    emit(`INSERT OR IGNORE INTO poams (id, organization_id, system_id, poam_id, weakness_name, weakness_description, source, source_reference, risk_level, likelihood, impact, original_risk_rating, residual_risk_rating, point_of_contact_id, remediation_plan, milestones, scheduled_completion_date, actual_completion_date, cost_estimate, resources_required, status, delay_reason, vendor_dependency, verification_method, verification_date, verified_by, comments, created_at, updated_at) VALUES ('${p.id}', '${p.org_id}', '${p.system_id}', '${p.poam_id}', '${p.weakness_name}', '${p.weakness_description}', '${p.source}', '${p.source_reference}', '${p.risk_level}', '${p.likelihood}', '${p.impact}', '${p.original_risk_rating}', '${p.residual_risk_rating}', '${p.poc}', '${p.remediation_plan}', '${sqlEscape(p.milestones)}', '${p.scheduled_date}', ${p.actual_date ? `'${p.actual_date}'` : 'NULL'}, ${p.cost_estimate}, '${p.resources}', '${p.status}', ${p.delay_reason ? `'${p.delay_reason}'` : 'NULL'}, ${p.vendor_dep ? `'${p.vendor_dep}'` : 'NULL'}, '${p.verification_method}', ${p.verification_date ? `'${p.verification_date}'` : 'NULL'}, ${p.verified_by ? `'${p.verified_by}'` : 'NULL'}, NULL, '${p.created_at}', '${p.updated_at}');`);
+    emit(`INSERT OR IGNORE INTO poams (id, org_id, system_id, poam_id, weakness_name, weakness_description, source, source_reference, risk_level, likelihood, impact, original_risk_rating, residual_risk_rating, point_of_contact_id, remediation_plan, milestones, scheduled_completion_date, actual_completion_date, cost_estimate, resources_required, status, delay_reason, vendor_dependency, verification_method, verification_date, verified_by, comments, created_at, updated_at) VALUES ('${p.id}', '${p.org_id}', '${p.system_id}', '${p.poam_id}', '${p.weakness_name}', '${p.weakness_description}', '${p.source}', '${p.source_reference}', '${p.risk_level}', '${p.likelihood}', '${p.impact}', '${p.original_risk_rating}', '${p.residual_risk_rating}', '${p.poc}', '${p.remediation_plan}', '${sqlEscape(p.milestones)}', '${p.scheduled_date}', ${p.actual_date ? `'${p.actual_date}'` : 'NULL'}, ${p.cost_estimate}, '${p.resources}', '${p.status}', ${p.delay_reason ? `'${p.delay_reason}'` : 'NULL'}, ${p.vendor_dep ? `'${p.vendor_dep}'` : 'NULL'}, '${p.verification_method}', ${p.verification_date ? `'${p.verification_date}'` : 'NULL'}, ${p.verified_by ? `'${p.verified_by}'` : 'NULL'}, NULL, '${p.created_at}', '${p.updated_at}');`);
   }
   emit('');
 
@@ -703,7 +703,7 @@ function generateSQL() {
 
   for (let i = 0; i < evidenceItems.length; i++) {
     const e = evidenceItems[i];
-    emit(`INSERT OR IGNORE INTO evidence (id, organization_id, system_id, title, description, file_name, file_type, file_size, r2_key, sha256_hash, uploaded_by, evidence_type, is_active, created_at) VALUES ('evid-phs-${pad(i + 1)}', '${ORG_ID}', '${SYS_ID}', '${sqlEscape(e.title)}', '${sqlEscape(e.title)} collected for MFEHR FedRAMP Moderate authorization', '${e.file}', '${e.file.split('.').pop()}', ${e.size}, 'evidence/${ORG_ID}/${SYS_ID}/${e.file}', 'sha256:${sha256(e.file)}', 'user-phs-006', '${e.type}', 1, '2026-02-${pad(15 + (i % 15), 2)} 10:00:00');`);
+    emit(`INSERT OR IGNORE INTO evidence (id, org_id, system_id, title, description, file_name, file_type, file_size, r2_key, sha256_hash, uploaded_by, evidence_type, is_active, created_at) VALUES ('evid-phs-${pad(i + 1)}', '${ORG_ID}', '${SYS_ID}', '${sqlEscape(e.title)}', '${sqlEscape(e.title)} collected for MFEHR FedRAMP Moderate authorization', '${e.file}', '${e.file.split('.').pop()}', ${e.size}, 'evidence/${ORG_ID}/${SYS_ID}/${e.file}', 'sha256:${sha256(e.file)}', 'user-phs-006', '${e.type}', 1, '2026-02-${pad(15 + (i % 15), 2)} 10:00:00');`);
   }
   emit('');
 
@@ -731,7 +731,7 @@ function generateSQL() {
   emit('');
   emit('CREATE INDEX IF NOT EXISTS idx_ssp_pps_ssp ON ssp_ports_protocols(ssp_id);');
   emit('CREATE INDEX IF NOT EXISTS idx_poam_milestones_poam ON poam_milestones(poam_id);');
-  emit('CREATE INDEX IF NOT EXISTS idx_evidence_org ON evidence(organization_id);');
+  emit('CREATE INDEX IF NOT EXISTS idx_evidence_org ON evidence(org_id);');
   emit('CREATE INDEX IF NOT EXISTS idx_evidence_system ON evidence(system_id);');
   emit('CREATE INDEX IF NOT EXISTS idx_evidence_ctrl_links_evidence ON evidence_control_links(evidence_id);');
   emit('CREATE INDEX IF NOT EXISTS idx_evidence_ctrl_links_ctrl ON evidence_control_links(control_definition_id);');
