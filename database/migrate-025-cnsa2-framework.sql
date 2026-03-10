@@ -7,6 +7,9 @@
 -- Fully idempotent — safe to re-run on every deploy (INSERT OR REPLACE).
 -- ============================================================================
 
+-- Disable FK checks — crosswalks reference target frameworks not yet loaded
+PRAGMA foreign_keys = OFF;
+
 -- Framework definition
 INSERT OR REPLACE INTO compliance_frameworks (id, name, version, category, description, control_count, governing_body, assessment_methodology)
 VALUES ('cnsa-2', 'CNSA 2.0 (NSA)', '2.0', 'defense',
@@ -135,3 +138,6 @@ INSERT OR REPLACE INTO control_crosswalks (source_framework_id, source_control_i
 -- ============================================================================
 INSERT OR IGNORE INTO schema_migrations (version, name, description) VALUES
   ('migrate-025-cnsa2-framework', 'cnsa2-framework', 'CNSA 2.0 (NSA) framework with 16 controls and crosswalks to NIST 800-53, CMMC L2, ISO 27001');
+
+-- Re-enable FK checks
+PRAGMA foreign_keys = ON;

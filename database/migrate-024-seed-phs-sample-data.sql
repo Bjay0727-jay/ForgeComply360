@@ -11,6 +11,9 @@
 -- Password hash: PBKDF2-SHA256, 100K iterations
 -- ============================================================================
 
+-- Disable FK checks — seed data may reference frameworks/controls not yet loaded
+PRAGMA foreign_keys = OFF;
+
 -- ========================================
 -- 1. ORGANIZATION
 -- ========================================
@@ -784,3 +787,6 @@ VALUES
 -- Track migration
 INSERT OR IGNORE INTO schema_migrations (version, name, description) VALUES
   ('migrate-024-seed-phs-sample-data', 'seed-phs-sample-data', 'Seed Patriot Health Systems demo customer data');
+
+-- Re-enable FK checks
+PRAGMA foreign_keys = ON;

@@ -6,6 +6,10 @@
 -- Fully idempotent — safe to re-run on every deploy (INSERT OR REPLACE).
 -- ============================================================================
 
+-- Disable FK checks — crosswalk references target frameworks (e.g. nist-800-53-r5)
+-- that may not be loaded yet when running migrations before seed data.
+PRAGMA foreign_keys = OFF;
+
 -- Framework definition
 INSERT OR REPLACE INTO compliance_frameworks (id, name, version, category, description, control_count, governing_body, assessment_methodology)
 VALUES ('tx-csf', 'Texas Cybersecurity Framework', '2.0', 'federal',
@@ -131,3 +135,6 @@ INSERT OR REPLACE INTO control_crosswalks (source_framework_id, source_control_i
 ('tx-csf', 'TCF-RS-01', 'nist-800-53-r5', 'IR-1', 'equivalent', 0.90, 'TCF Cyber-Security Incident Response maps to NIST Incident Response Policy and Procedures'),
 ('tx-csf', 'TCF-RS-02', 'nist-800-53-r5', 'IR-6', 'partial', 0.80, 'TCF Privacy Incident Response maps to NIST Incident Reporting'),
 ('tx-csf', 'TCF-RC-01', 'nist-800-53-r5', 'CP-10', 'equivalent', 0.90, 'TCF Disaster Recovery maps to NIST Information System Recovery and Reconstitution');
+
+-- Re-enable FK checks
+PRAGMA foreign_keys = ON;

@@ -2,10 +2,8 @@
 -- Adds 10 new supporting tables for 23-section FISMA RMF SSP Builder
 -- Run against both production and demo databases
 
--- Add ssp_type column to existing ssp_documents table
-ALTER TABLE ssp_documents ADD COLUMN ssp_type TEXT DEFAULT 'standard' CHECK (ssp_type IN ('standard', 'fisma'));
-ALTER TABLE ssp_documents ADD COLUMN rmf_step TEXT;
-ALTER TABLE ssp_documents ADD COLUMN target_ato_date TEXT;
+-- Verify ssp_documents columns exist (now in schema.sql)
+SELECT ssp_type, rmf_step, target_ato_date FROM ssp_documents LIMIT 0;
 
 -- 1. Information Types (NIST SP 800-60 Vol II)
 CREATE TABLE IF NOT EXISTS ssp_information_types (
