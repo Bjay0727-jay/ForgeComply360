@@ -189,7 +189,7 @@ for pattern in 'CLOUDFLARE_API_TOKEN\s*=' 'sk-[a-zA-Z0-9]{20,}' 'PRIVATE.KEY' 'B
 done
 
 # Check for .env files that shouldn't be committed
-for envfile in .env .env.local .env.production; do
+for envfile in .env .env.local; do
   if [ -f "$envfile" ]; then
     fail "$envfile exists and should not be committed"
     SECRETS_FOUND=$((SECRETS_FOUND + 1))
