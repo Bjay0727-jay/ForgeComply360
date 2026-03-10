@@ -6,6 +6,9 @@
 -- Fully idempotent — safe to re-run on every deploy (INSERT OR REPLACE).
 -- ============================================================================
 
+-- Disable FK checks — crosswalks reference target frameworks not yet loaded
+PRAGMA foreign_keys = OFF;
+
 -- Framework definition
 INSERT OR REPLACE INTO compliance_frameworks (id, name, version, category, description, control_count, governing_body, assessment_methodology)
 VALUES ('ffiec-it', 'FFIEC IT Handbook', '2016', 'commercial',
@@ -252,3 +255,6 @@ INSERT OR REPLACE INTO control_crosswalks (source_framework_id, source_control_i
 -- ============================================================================
 INSERT OR IGNORE INTO schema_migrations (version, name, description) VALUES
   ('migrate-026-ffiec-framework', 'ffiec-framework', 'FFIEC IT Handbook framework with 90 controls and crosswalks to NIST 800-53 R5');
+
+-- Re-enable FK checks
+PRAGMA foreign_keys = ON;

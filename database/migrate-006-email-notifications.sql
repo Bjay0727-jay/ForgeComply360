@@ -1,12 +1,15 @@
 -- ============================================================================
--- MIGRATION 006: Email Notification Digest Support — Column Additions
+-- MIGRATION 006: Email Notification Digest Support
 -- ============================================================================
--- Adds new columns for email notification support.
--- On first run: succeeds and adds columns.
--- On subsequent runs: fails with "duplicate column" — this is expected.
--- The deploy loop continues to the next migration file regardless.
+-- These columns are now part of the base schema.sql definitions.
+-- This migration verifies the columns exist (SELECT will fail if not)
+-- and creates the supporting index idempotently.
 -- ============================================================================
 
-ALTER TABLE notifications ADD COLUMN email_sent INTEGER DEFAULT 0;
-ALTER TABLE notification_preferences ADD COLUMN email_digest INTEGER DEFAULT 1;
-ALTER TABLE notification_preferences ADD COLUMN last_digest_sent_at TEXT;
+-- Verify expected columns exist (fails fast if schema is out of date)
+SELECT email_sent FROM notifications LIMIT 0;
+SELECT email_digest FROM notification_preferences LIMIT 0;
+SELECT last_digest_sent_at FROM notification_preferences LIMIT 0;
+
+-- Index for email digest queries
+CREATE INDEX IF NOT EXISTS idx_notif_email_digest ON notifications(recipient_user_id, email_sent, created_at DESC);

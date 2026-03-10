@@ -4,6 +4,9 @@
 -- Required for FedRAMP 3PAO compliance
 -- ============================================================================
 
+-- Disable FK checks — crosswalk migration may reference frameworks not yet seeded
+PRAGMA foreign_keys = OFF;
+
 -- POA&M Affected Assets (FedRAMP requires listing affected components)
 CREATE TABLE IF NOT EXISTS poam_affected_assets (
   id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
@@ -68,3 +71,6 @@ SELECT
   COALESCE(p.created_by, (SELECT id FROM users WHERE org_id = p.org_id LIMIT 1))
 FROM poams p
 WHERE p.control_id IS NOT NULL AND p.control_id != '';
+
+-- Re-enable FK checks
+PRAGMA foreign_keys = ON;
