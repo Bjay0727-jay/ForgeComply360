@@ -29,7 +29,7 @@ echo "===================================="
 echo ""
 
 # ── 1. Required files exist ──
-echo "[1/6] Required files..."
+echo "[1/8] Required files..."
 
 for f in workers/index.js wrangler.toml package.json; do
   if [ -f "$f" ]; then
@@ -41,7 +41,7 @@ done
 
 # ── 2. Migration file ordering ──
 echo ""
-echo "[2/6] Migration file ordering..."
+echo "[2/8] Migration file ordering..."
 
 PREV_NUM=""
 ORDERING_OK=true
@@ -68,7 +68,7 @@ fi
 
 # ── 3. Column name consistency ──
 echo ""
-echo "[3/6] Column name consistency..."
+echo "[3/8] Column name consistency..."
 
 # Check for org_id vs organization_id conflicts within migration files
 ORG_ID_FILES=$(grep -rl '\borg_id\b' database/migrate-*.sql 2>/dev/null | sort -u || true)
@@ -91,9 +91,23 @@ else
   pass "Column naming is consistent across migrations"
 fi
 
-# ── 4. SQL basic validation ──
+# ── 4. INSERT column validation against schema ──
 echo ""
-echo "[4/6] SQL syntax checks..."
+echo "[4/8] INSERT column validation..."
+
+if [ -x scripts/validate-migration-columns.sh ]; then
+  if bash scripts/validate-migration-columns.sh; then
+    pass "All INSERT column names match schema definitions"
+  else
+    fail "INSERT column names do not match schema — run scripts/validate-migration-columns.sh for details"
+  fi
+else
+  warn "scripts/validate-migration-columns.sh not found or not executable — skipping column validation"
+fi
+
+# ── 5. SQL basic validation ──
+echo ""
+echo "[5/8] SQL syntax checks..."
 
 SQL_ISSUES=0
 for f in database/migrate-*.sql; do
@@ -109,9 +123,9 @@ if [ "$SQL_ISSUES" -eq 0 ]; then
   pass "No obvious SQL syntax issues in migration files"
 fi
 
-# ── 5. Worker bundle size estimate ──
+# ── 6. Worker bundle size estimate ──
 echo ""
-echo "[5/6] Worker bundle size..."
+echo "[6/8] Worker bundle size..."
 
 WORKER_SIZE=$(wc -c < workers/index.js)
 WORKER_SIZE_KB=$((WORKER_SIZE / 1024))
@@ -126,9 +140,39 @@ else
   pass "workers/index.js is ${WORKER_SIZE_KB}KB (within size limits)"
 fi
 
-# ── 6. Secrets check ──
+# ── 7. FK reference consistency ──
 echo ""
-echo "[6/6] Secrets scan..."
+echo "[7/8] Foreign key reference consistency..."
+
+# Check that INSERT statements referencing org_id use IDs that exist
+# in the same migration or in seed data
+FK_ISSUES=0
+for f in database/migrate-*.sql; do
+  [ -f "$f" ] || continue
+  base=$(basename "$f")
+
+  # Check for org_id references that don't have a matching INSERT into organizations
+  ORG_IDS_USED=$(grep -oP "org_id[^,]*,\s*'([^']+)'" "$f" 2>/dev/null | grep -oP "'[^']+'" | sort -u || true)
+  if [ -n "$ORG_IDS_USED" ]; then
+    for org_ref in $ORG_IDS_USED; do
+      org_val=$(echo "$org_ref" | tr -d "'")
+      # Check if org exists in seed.sql, schema.sql, or any prior migration
+      ORG_EXISTS=$(grep -rl "INTO organizations.*'${org_val}'" database/seed.sql database/migrate-*.sql 2>/dev/null | head -1 || true)
+      if [ -z "$ORG_EXISTS" ]; then
+        warn "$base references org_id '$org_val' but no INSERT into organizations with that ID found"
+        FK_ISSUES=$((FK_ISSUES + 1))
+      fi
+    done
+  fi
+done
+
+if [ "$FK_ISSUES" -eq 0 ]; then
+  pass "Foreign key references appear consistent"
+fi
+
+# ── 8. Secrets check ──
+echo ""
+echo "[8/8] Secrets scan..."
 
 SECRETS_FOUND=0
 
