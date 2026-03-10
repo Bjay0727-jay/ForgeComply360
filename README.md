@@ -1,165 +1,222 @@
-# ForgeComply 360 — Deployment & Database Reference
+# ForgeComply 360™
 
-Production database: `forge-comply360-db` (`73faffec-f001-44bc-880e-62bd932c25b1`)
-Demo database: `forge-comply360-db-demo` (`094aa4dd-5c79-456e-a2cb-d43f08f677e5`)
+**AI-Powered Governance, Risk & Compliance Platform**
 
-> The `fe250bed` database (`forge-production`) is STALE. It was the original development DB with 28 tables. The active production database is `73faffec` with 84 tables and full schema.
+[![CI](https://github.com/Bjay0727-jay/ForgeComply360/actions/workflows/ci.yml/badge.svg)](https://github.com/Bjay0727-jay/ForgeComply360/actions/workflows/ci.yml)
+[![Platform](https://img.shields.io/badge/platform-Cloudflare%20Workers-orange)](https://workers.cloudflare.com)
+[![TypeScript](https://img.shields.io/badge/TypeScript-72%25-blue)](https://www.typescriptlang.org)
 
-## Finding -> Fix Mapping
+ForgeComply 360 is an enterprise GRC platform built on Cloudflare's edge computing infrastructure. It provides multi-tenant compliance management across 25+ regulatory frameworks, including FedRAMP, CMMC 2.0, FISMA/RMF, HIPAA, SOC 2, and ISO 27001.
 
-| Finding | Severity | File | What It Does |
-|---------|----------|------|-------------|
-| **DB ID Mismatch** | CRITICAL | `wrangler.toml` | Points to correct DB `73faffec` (not stale `fe250bed`) |
-| **H-2** Test Coverage | HIGH | `.github/workflows/deploy.yml` | Adds test job with coverage threshold |
-| **H-3** Open Registration | HIGH | `patches/worker-patches.js` | Invite code gate (`REGISTRATION_INVITE_CODE` env var) |
-| **H-4** No npm audit | HIGH | `.github/workflows/deploy.yml` | `npm audit --audit-level=high` in CI |
-| **H-5** CORS Defaults | HIGH | `wrangler.toml` + `patches/worker-patches.js` | Custom domain CORS + pattern matching |
-| **M-1** OSCAL Validation | MEDIUM | `workers/oscal-validator.js` | Schema validation on SSP export |
-| **M-2** Scheduled Tasks | MEDIUM | `patches/worker-patches.js` | `Promise.allSettled()` error isolation |
-| **M-3** CSP Inline Styles | MEDIUM | `patches/worker-patches.js` | Relaxed style-src for chart libraries |
+**Built by [Forge Cyber Defense](https://www.forgecyberdefense.com)** — Service-Disabled Veteran-Owned Small Business (SDVOSB) | 100% U.S.-Based Operations
 
-## Deployment Pipeline
+---
 
-Deployments are triggered by pushes to `main` via `.github/workflows/deploy.yml`.
+## Platform Capabilities
 
-**Pipeline order:**
-1. **test** — Run API + frontend tests, generate SBOM
-2. **pre-deploy-check** — Validate migrations, column consistency, secrets scan (`scripts/pre-deploy-check.sh`)
-3. **deploy-staging** — Deploy Worker + frontend to demo env, smoke test `/health`
-4. **migrate-db** — Run pending database migrations against production D1 (migrations run *before* Worker deploy)
-5. **deploy-api** — Deploy Worker to production, verify `/health`
-6. **deploy-frontend** — Build and deploy frontend to Cloudflare Pages
+| Module | Description |
+|--------|-------------|
+| **Multi-Framework Compliance** | Unified control management across FedRAMP, CMMC, HIPAA, SOC 2, ISO 27001, NIST CSF, and 19+ additional frameworks |
+| **System Security Plans** | SSP authoring with OSCAL 1.1.2 export via ForgeComply 360 Reporter |
+| **Risk Register** | Centralized risk tracking with quantitative and qualitative scoring |
+| **POA&M Management** | Plan of Action & Milestones lifecycle tracking with remediation workflows |
+| **Control Implementation** | NIST 800-53 Rev 5 control catalog with implementation status tracking |
+| **Evidence Management** | Secure evidence collection, organization, and audit-ready packaging |
+| **Continuous Monitoring** | ConMon dashboard with automated assessment scheduling |
+| **Asset Inventory** | Information system and component inventory with boundary mapping |
+| **ForgeML AI Engine** | AI-assisted narrative generation for control implementations and SSP content |
+| **Multi-Tenant** | Complete data isolation with tenant-scoped access at every layer |
 
-Migrations run before the Worker deploy because schema additions (`CREATE TABLE IF NOT EXISTS`, `ALTER TABLE ADD COLUMN`) are backward-compatible with the currently-running Worker, while new Worker code that depends on new columns is not backward-compatible with the old schema.
+## Architecture
 
-### Deploy via CI (recommended)
+```
+┌─────────────────────────────────────────────────────────────┐
+│                  Cloudflare CDN + WAF + DDoS                │
+│              SSL Termination · Edge Caching                 │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  ┌──────────────┐  ┌───────────────┐  ┌──────────────┐     │
+│  │   Frontend    │  │  API Workers   │  │  R2 Storage   │    │
+│  │  Cloudflare   │  │  Cloudflare    │  │  Evidence &   │    │
+│  │    Pages      │  │   Workers      │  │  Documents    │    │
+│  └──────┬───────┘  └──────┬────────┘  └──────────────┘     │
+│         │                  │                                 │
+│         │           ┌──────┴────────┐                       │
+│         │           │  Cloudflare D1 │                       │
+│         │           │   (SQLite)     │                       │
+│         │           │  Multi-tenant  │                       │
+│         │           └───────────────┘                       │
+│         │           ┌───────────────┐                       │
+│         └──────────▶│  Cloudflare KV │                       │
+│                     │  Sessions &    │                       │
+│                     │  Config Cache  │                       │
+│                     └───────────────┘                       │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Connected Products
+
+| Product | Repository | Integration |
+|---------|-----------|-------------|
+| **ForgeComply 360 Reporter** | [Forge-Reporter](https://github.com/Bjay0727-jay/Forge-Reporter) | SSP authoring engine with OSCAL 1.1.2 validation; syncs bidirectionally with ForgeComply 360 API |
+| **ForgeAI Govern™** | [AI-Governance](https://github.com/Bjay0727-jay/AI-Governance) | Healthcare AI governance module (NIST AI RMF, FDA SaMD, HIPAA) |
+| **ForgeScan 360** | [Forge-Scan](https://github.com/Bjay0727-jay/Forge-Scan) | Vulnerability scanner; findings feed into risk register and POA&M |
+
+## Technology Stack
+
+| Layer | Technology | Purpose |
+|-------|-----------|---------|
+| Frontend | TypeScript SPA | Responsive compliance dashboard with role-based views |
+| API | Cloudflare Workers (TypeScript) | Edge-deployed REST API with JWT authentication |
+| Database | Cloudflare D1 (SQLite) | Multi-tenant data storage with row-level isolation |
+| File Storage | Cloudflare R2 | Evidence files, SSP documents, assessment artifacts |
+| Cache | Cloudflare KV | Session management, feature flags, configuration |
+| Auth | JWT + PBKDF2-SHA256 | Stateless auth with 100K iteration password hashing |
+| AI Engine | ForgeML | AI-assisted compliance narrative generation |
+| CI/CD | GitHub Actions | Automated testing and deployment pipeline |
+
+## Project Structure
+
+```
+ForgeComply360/
+├── .github/workflows/     # CI/CD pipeline
+├── database/              # Schema, migrations, seed data
+├── docker/                # Container deployment configs
+├── docs/                  # Documentation & compliance reviews
+├── frontend/              # TypeScript SPA
+├── scripts/               # Deployment & utility scripts
+├── workers/               # Cloudflare Worker API handlers
+├── vitest.config.ts       # Test configuration
+├── wrangler.toml          # Cloudflare Worker configuration
+├── DEPLOYMENT.md          # Deployment guide
+└── package.json
+```
+
+## Compliance Framework Coverage
+
+### Tier 1 — Full Control Catalog + Implementation Tracking
+- **NIST 800-53 Rev 5** — Complete control catalog (1,189 controls across 20 families)
+- **FedRAMP** — Low, Moderate, High baselines with continuous monitoring
+- **CMMC 2.0** — Levels 1-3 practice mapping
+- **FISMA/RMF** — Full Risk Management Framework lifecycle
+- **HIPAA** — Security Rule, Privacy Rule, Breach Notification
+
+### Tier 2 — Control Mapping + Gap Analysis
+- **SOC 2** — Trust Services Criteria (Type I & II)
+- **ISO 27001:2022** — Annex A controls
+- **NIST CSF 2.0** — Govern, Identify, Protect, Detect, Respond, Recover
+- **NIST 800-171 Rev 3** — CUI protection requirements
+- **StateRAMP** — State/local government cloud compliance
+
+### Tier 3 — Cross-Walk Mapping
+- PCI DSS 4.0, HITRUST CSF, CIS Controls v8, CISA CPGs, TX-RAMP, and additional frameworks
+
+## Quick Start
+
+### Prerequisites
+
+- Node.js 18+
+- Wrangler CLI (`npm install -g wrangler`)
+- Cloudflare account with Workers, D1, R2, and KV enabled
+
+### Local Development
 
 ```bash
-git add .
-git commit -m "fix: apply deployment config fixes from readiness review"
-git push origin main  # triggers production deploy
+# Install dependencies
+npm install
+
+# Start local development server
+npm run dev
+
+# Run tests
+npm test
+
+# Run tests with coverage
+npm run test:coverage
 ```
 
-### Deploy Manually
+### Production Deployment
+
+See [DEPLOYMENT.md](./DEPLOYMENT.md) for complete deployment instructions, or use the automated deploy script:
 
 ```bash
-# Validate first
-bash scripts/pre-deploy-check.sh
-
-# Deploy Worker to production
-npx wrangler deploy --env production
-
-# Or use the deploy script
-./deploy.sh production
-
-# Dry run
-./deploy.sh production --dry
-
-# Migrations only
-./deploy.sh production --migrate-only
-
-# Run a specific migration
-npx wrangler d1 execute forge-comply360-db --env production --remote --file=database/migrate-041-operational-data.sql
+chmod +x scripts/deploy.sh
+./scripts/deploy.sh
 ```
 
-## Files
+## API Reference
 
-```
-wrangler.toml                        # Cloudflare Worker configuration (all envs)
-.github/workflows/deploy.yml         # CI/CD pipeline
-scripts/pre-deploy-check.sh          # Pre-deploy validation (runs in CI + locally)
-deploy.sh                            # Manual deploy helper script
-pre-deploy-check.js                  # Node.js pre-deploy validation
-worker-patches.js                    # Security patches to apply to workers/index.js
-workers/oscal-validator.js            # OSCAL SSP compliance validator
-```
+### Authentication
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/v1/auth/register` | Create tenant and admin user |
+| POST | `/api/v1/auth/login` | Authenticate, receive JWT |
+| POST | `/api/v1/auth/refresh` | Refresh access token |
 
-## Migration Files
+### Systems & Assets
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET/POST | `/api/v1/systems` | List/create information systems |
+| GET/PUT/DELETE | `/api/v1/systems/:id` | Get/update/delete system |
+| GET/POST | `/api/v1/assets` | List/create system components |
 
-All migrations are in `database/`. Run in order. Each is idempotent (`IF NOT EXISTS` / `INSERT OR IGNORE`).
+### Compliance & Controls
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/controls` | List control catalog (filterable by framework) |
+| GET/POST | `/api/v1/implementations` | List/record control implementations |
+| GET | `/api/v1/frameworks` | List supported compliance frameworks |
+| GET | `/api/v1/crosswalk/:controlId` | Get cross-framework mappings |
 
-**42 migration files** (`migrate-001` through `migrate-041`, plus `migrate-023b`)
+### POA&M
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET/POST | `/api/v1/poam` | List/create POA&M items |
+| PUT/DELETE | `/api/v1/poam/:id` | Update/delete POA&M item |
 
-| Range | Description |
-|-------|-------------|
-| `001-013` | POA&M enhancements, audit logs, risk management, evidence, compliance scoring, tracking |
-| `014-019` | Asset enhancements, ServiceNow CMDB, POA&M vulnerability linking, extended fields |
-| `020-023b` | FISMA SSP tables, password reset, OSCAL/vendor column repair, missing tables, user status |
-| `024` | PHS sample data seed |
-| `025-033` | Framework expansions: CNSA 2.0, FFIEC, NYDFS, GLBA, CSA CCM, NERC CIP, ISO 27701, EU AI Act, NIST AI RMF |
-| `034` | ForgeScan integration |
-| `035-039` | Full control catalogs: NIST 800-53, FedRAMP, NIST 800-171, CMMC, HIPAA/SOC2/StateRAMP |
-| `040` | Control implementations |
-| `041` | PHS operational data (75 assets, 150 findings, 40 POA&Ms, 50 vuln defs) |
+### SSP Integration (Reporter)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET/POST | `/api/v1/ssp` | List/create System Security Plans |
+| GET/PUT | `/api/v1/ssp/:id` | Get/update SSP data |
+| POST | `/api/v1/ssp/:id/export` | Export SSP as OSCAL JSON |
 
-### Seed Files (7 files in `database/`)
+### Dashboard & Reports
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/dashboard/stats` | Compliance posture overview |
+| GET | `/api/v1/reports/compliance` | Framework compliance report |
+| GET | `/api/v1/reports/executive` | Executive summary |
 
-| File | Description |
-|------|-------------|
-| `seed.sql` | Core org, users, systems |
-| `seed-frameworks.sql` | Compliance frameworks |
-| `seed-controls-expanded.sql` | Expanded control catalog |
-| `seed-additional-controls.sql` | Supplementary controls |
-| `seed-tcf-controls.sql` | TCF controls |
-| `seed-sample-customer-esfs.sql` | ESF sample customer data |
-| `seed-sample-customer-phs.sql` | PHS sample customer data |
+## Security
 
-## Pre-Deploy Checks
+- **Authentication:** JWT with 15-minute access tokens, 7-day refresh rotation
+- **Password Hashing:** PBKDF2-SHA256 with 100,000 iterations
+- **Authorization:** Role-based access control (admin, compliance_lead, auditor, viewer)
+- **Data Isolation:** Tenant-scoped queries at database layer
+- **Encryption:** TLS 1.2+ in transit, AES-256 at rest via Cloudflare
+- **Account Protection:** Auto-lockout after 5 failed attempts
+- **Audit Trail:** Immutable logging for all compliance activities
+- **Infrastructure:** Cloudflare WAF, DDoS protection, Bot management
 
-Run `scripts/pre-deploy-check.sh` before deploying to catch:
-- Migration file ordering and naming issues
-- Column name inconsistencies (`org_id` vs `organization_id`)
-- SQL syntax issues (unbalanced quotes)
-- Worker bundle size limits
-- Secrets or credentials in tracked files
+## Environment Variables
 
 ```bash
-bash scripts/pre-deploy-check.sh
+# Required
+JWT_SECRET=<generate with: openssl rand -base64 32>
+
+# Optional - ForgeML AI features
+ANTHROPIC_API_KEY=<your key>
+
+# Optional - Email notifications
+SMTP_HOST=smtp.sendgrid.net
+SMTP_API_KEY=<your key>
 ```
 
-## Control Generator Script
+## License
 
-`scripts/build_controls.js` is the source-of-truth generator for the NIST 800-53 Rev 5 control library.
+Proprietary — Forge Cyber Defense LLC. All rights reserved. See [LICENSE](./LICENSE).
 
-```bash
-node scripts/build_controls.js
-```
+---
 
-## Operational Data Generator
-
-`generate-operational-data.js` generates realistic PHS system data for demo/testing.
-
-```bash
-node generate-operational-data.js
-# Output: database/migrate-041-operational-data.sql
-```
-
-## Database Reference
-
-| Environment | Database Name | Database ID | Size |
-|-------------|--------------|-------------|------|
-| **Production** | forge-comply360-db | `73faffec-f001-44bc-880e-62bd932c25b1` | 10.5 MB |
-| **Staging/Demo** | forge-comply360-db-demo | `094aa4dd-5c79-456e-a2cb-d43f08f677e5` | 2.5 MB |
-| ~~Legacy~~ | ~~forge-production~~ | ~~`fe250bed-40a9-443a-a6c7-4b59bf8a0dac`~~ | ~~1 MB~~ |
-
-## Environments
-
-| Environment | Worker | Frontend | DB |
-|-------------|--------|----------|----|
-| Development | `wrangler dev` (local) | `localhost:5173` | Local SQLite |
-| Staging | `forge-comply360-api-staging` | `staging.forgecomply360.pages.dev` | `forge-comply360-db-demo` |
-| Demo | `forge-comply360-api-demo` | `demo.forgecomply360.pages.dev` | `forge-comply360-db-demo` |
-| Production | `forge-comply360-api` | `forgecomply360.pages.dev` | `forge-comply360-db` |
-
-## Schema Notes
-
-- **scan_imports** + vulnerability_findings/assets extensions support Nessus, Qualys, and Rapid7 scanner integration
-- **control_definitions** uses `UNIQUE(framework_id, control_id)` — safe for re-runs
-- **control_implementations** uses `UNIQUE(system_id, control_definition_id)` — one implementation per control per system
-- FC360 responsibility model: `inherited` (Cloudflare PE/MP), `shared` (AU/CM/CP/IR/MA/SC/SI), `provider` (everything else)
-
-## Secrets (set via `wrangler secret put`)
-
-- `RESEND_API_KEY` — Email delivery via Resend
-- `CLOUDFLARE_API_TOKEN` — Set in GitHub Actions secrets
-- `REGISTRATION_INVITE_CODE` — Set per environment in `wrangler.toml` vars
+**Forge Cyber Defense LLC** | [forgecyberdefense.com](https://www.forgecyberdefense.com) | Plano, Texas | SDVOSB Certified
