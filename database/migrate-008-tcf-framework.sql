@@ -7,7 +7,7 @@
 -- ============================================================================
 
 -- Framework definition
-INSERT OR REPLACE INTO compliance_frameworks (id, name, version, category, description, control_count, governing_body, assessment_type)
+INSERT OR REPLACE INTO compliance_frameworks (id, name, version, category, description, control_count, governing_body, assessment_methodology)
 VALUES ('tx-csf', 'Texas Cybersecurity Framework', '2.0', 'federal',
   'Texas Cybersecurity Framework aligned with NIST CSF for Texas state agencies, public universities, and junior colleges. Mandated by Texas Government Code 2054.',
   42, 'Texas DIR', 'Maturity Self-Assessment');

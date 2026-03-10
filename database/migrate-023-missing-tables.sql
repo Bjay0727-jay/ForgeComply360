@@ -51,7 +51,7 @@ CREATE INDEX IF NOT EXISTS idx_assets_risk_score ON assets(risk_score DESC);
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS scan_imports (
   id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
-  organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   system_id TEXT REFERENCES systems(id),
   scanner_type TEXT,
   file_name TEXT,
@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS scan_imports (
   updated_at TEXT DEFAULT (datetime('now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_scan_imports_org ON scan_imports(organization_id);
+CREATE INDEX IF NOT EXISTS idx_scan_imports_org ON scan_imports(org_id);
 CREATE INDEX IF NOT EXISTS idx_scan_imports_hash ON scan_imports(file_hash);
 
 -- ============================================================================
