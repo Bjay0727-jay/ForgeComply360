@@ -29,3 +29,6 @@ CREATE INDEX IF NOT EXISTS idx_evidence_schedules_active ON evidence_schedules(i
 -- Added via schema.sql on fresh installs. For existing DBs, these were applied
 -- on first migration run. Using INSERT OR IGNORE pattern for idempotency.
 -- No ALTER TABLE needed — columns already exist in production.
+
+-- no-op: wrangler 3.x requires a trailing statement after comment-only blocks
+SELECT 1;
