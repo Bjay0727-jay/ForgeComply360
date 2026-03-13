@@ -95,7 +95,8 @@ APP_NAME = "ForgeComply 360"
 OSCAL_VERSION = "1.1.2"
 CORS_ORIGIN = "https://forgecomply360.pages.dev"
 CORS_ORIGIN_PATTERN = "https://*.forgecomply360.pages.dev"
-REGISTRATION_INVITE_CODE = "FORGE-BETA-2026"
+# REGISTRATION_INVITE_CODE moved to wrangler secret for security.
+# Set with: wrangler secret put REGISTRATION_INVITE_CODE --env production
 RATE_LIMIT_RPM = "500"
 SESSION_TIMEOUT_MINUTES = "15"
 MAX_SESSION_HOURS = "8"
