@@ -691,3 +691,6 @@ CREATE INDEX IF NOT EXISTS idx_evidence_org ON evidence(org_id);
 -- ============================================================================
 -- END OF MIGRATION 041
 -- ============================================================================
+
+-- no-op: wrangler 3.x requires a trailing statement after comment-only blocks
+SELECT 1;

@@ -1290,3 +1290,6 @@ INSERT OR REPLACE INTO security_controls (framework_id, control_id, family, titl
 -- SELECT COUNT(*) as baseline_low FROM security_controls WHERE framework_id = 'nist-800-53-r5' AND baseline_low = 1;
 -- SELECT COUNT(*) as baseline_mod FROM security_controls WHERE framework_id = 'nist-800-53-r5' AND baseline_moderate = 1;
 -- SELECT COUNT(*) as baseline_high FROM security_controls WHERE framework_id = 'nist-800-53-r5' AND baseline_high = 1;
+
+-- no-op: wrangler 3.x requires a trailing statement after comment-only blocks
+SELECT 1;
