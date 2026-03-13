@@ -208,7 +208,7 @@ services:
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-forgecomply}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
       - BACKUP_SCHEDULE=${BACKUP_SCHEDULE:-0 2 * * *}
-      - BACKUP_RETENTION_DAYS=${BACKUP_RETENTION_DAYS:-30}
+      - BACKUP_RETENTION_DAYS=${BACKUP_RETENTION_DAYS:-2190}
     volumes:
       - ./backups:/backups
     depends_on:

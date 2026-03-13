@@ -16,7 +16,9 @@ Thumbs.db
 .env.*
 !.env.example
 !.env.demo
-!.env.production
+!.env.production.example
+# NOTE: .env.production was previously committed and should be purged from
+# git history using BFG Repo-Cleaner or git filter-branch.
 docker/.env
 
 # Cached OSCAL data from NIST (downloaded by import scripts)
