@@ -92,7 +92,7 @@ export function SystemsPage() {
       {loading ? (
         <SkeletonListItem />
       ) : systems.length === 0 ? (
-        <EmptyState title="No systems yet" subtitle="Create your first system to get started" icon="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
+        <EmptyState title="No systems yet" subtitle="Create your first system to get started" icon="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" action={canManage ? { label: `+ New ${t('system')}`, onClick: () => setShowCreate(true) } : undefined} />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {systems.map((sys) => {

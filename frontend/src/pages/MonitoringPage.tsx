@@ -629,7 +629,7 @@ export function MonitoringPage() {
         <h2 className="font-semibold text-gray-900">Monitoring Checks ({checks.length})</h2>
       </div>
       {checks.length === 0 ? (
-        <EmptyState title="No monitoring checks found" subtitle="Create your first check to get started" />
+        <EmptyState title="No monitoring checks found" subtitle="Create your first check to get started" action={canManage ? { label: '+ Create Check', onClick: () => setShowCreate(true) } : undefined} />
       ) : (
         <div className="space-y-3">
           {checks.map((check) => {

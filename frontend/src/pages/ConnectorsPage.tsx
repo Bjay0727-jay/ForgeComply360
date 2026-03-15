@@ -242,6 +242,7 @@ export function ConnectorsPage() {
         <div className="text-center py-16 text-gray-500 dark:text-gray-400">
           <p className="text-lg mb-2">No connectors configured</p>
           <p className="text-sm">Add a connector to integrate with external services</p>
+          <button onClick={() => setShowModal(true)} className="mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">+ Add Connector</button>
         </div>
       ) : (
         <>

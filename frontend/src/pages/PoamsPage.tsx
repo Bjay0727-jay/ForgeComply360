@@ -457,7 +457,7 @@ export function PoamsPage() {
 
       {/* POA&M List */}
       {poams.length === 0 ? (
-        <EmptyState title="No POA&Ms found" subtitle="Create a plan of action to remediate findings" icon="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+        <EmptyState title="No POA&Ms found" subtitle="Create a plan of action to remediate findings" icon="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" action={canEdit ? { label: `+ New ${t('milestone')}`, onClick: () => setShowCreate(true) } : undefined} />
       ) : (
         <div className="space-y-2">
           {poams.map((p) => {

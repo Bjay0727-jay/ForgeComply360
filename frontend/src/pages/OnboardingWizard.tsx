@@ -24,7 +24,7 @@ const FRAMEWORKS = [
   { id: 'nist-ai-rmf', name: 'NIST AI RMF', category: 'AI', description: 'AI risk management framework (54 controls)' },
 ];
 
-const STEPS = ['Welcome', 'Organization', 'Framework', 'System', 'Complete'];
+const STEPS = ['Welcome', 'Organization', 'Framework', 'System', 'Setup', 'Complete'];
 
 export function OnboardingWizard() {
   const { refreshUser } = useAuth();
@@ -36,26 +36,60 @@ export function OnboardingWizard() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [filter, setFilter] = useState('All');
+  const [setupProgress, setSetupProgress] = useState<{ step: string; done: boolean }[]>([]);
+  const [controlCount, setControlCount] = useState(0);
 
   const update = (field: string, value: string) => setForm((prev) => ({ ...prev, [field]: value }));
 
-  const handleComplete = async () => {
+  const handleSetup = async () => {
+    setStep(4);
     setLoading(true);
     setError('');
+    const progress = [
+      { step: 'Updating organization profile', done: false },
+      { step: 'Enabling compliance framework', done: false },
+      { step: 'Creating information system', done: false },
+      { step: 'Initializing controls', done: false },
+      { step: 'Finalizing setup', done: false },
+    ];
+    setSetupProgress([...progress]);
+
     try {
+      // Step 1: Update org
       await api('/api/v1/organization', { method: 'PUT', body: JSON.stringify({ name: form.organizationName, industry: form.industry, size: form.size }) });
+      progress[0].done = true;
+      setSetupProgress([...progress]);
+
+      // Step 2: Enable framework
       if (form.selectedFramework) {
         await api('/api/v1/frameworks/enable', { method: 'POST', body: JSON.stringify({ framework_id: form.selectedFramework, is_primary: true }) });
       }
+      progress[1].done = true;
+      setSetupProgress([...progress]);
+
+      // Step 3: Create system
+      let systemId = '';
       if (form.systemName) {
         const { system } = await api('/api/v1/systems', { method: 'POST', body: JSON.stringify({ name: form.systemName, acronym: form.systemAcronym, description: form.systemDescription, impact_level: form.impactLevel }) });
-        if (form.selectedFramework && system?.id) {
-          await api('/api/v1/implementations/bulk', { method: 'POST', body: JSON.stringify({ system_id: system.id, framework_id: form.selectedFramework }) });
-        }
+        systemId = system?.id || '';
       }
+      progress[2].done = true;
+      setSetupProgress([...progress]);
+
+      // Step 4: Init controls
+      if (form.selectedFramework && systemId) {
+        const result = await api('/api/v1/implementations/bulk', { method: 'POST', body: JSON.stringify({ system_id: systemId, framework_id: form.selectedFramework }) });
+        setControlCount(result?.created || result?.count || 0);
+      }
+      progress[3].done = true;
+      setSetupProgress([...progress]);
+
+      // Step 5: Mark onboarding complete
       await api('/api/v1/user/onboarding', { method: 'POST', body: JSON.stringify({ completed: true }) });
-      setStep(4);
-      setTimeout(() => refreshUser(), 2000);
+      progress[4].done = true;
+      setSetupProgress([...progress]);
+
+      setStep(5);
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -63,9 +97,20 @@ export function OnboardingWizard() {
     }
   };
 
+  const handleGoToDashboard = () => {
+    refreshUser();
+  };
+
+  const handleStartAssessment = () => {
+    refreshUser();
+    // Navigate to assessment wizard after a brief delay for auth refresh
+    setTimeout(() => { window.location.href = '/assessment'; }, 500);
+  };
+
   const categories = ['All', 'Federal', 'Defense', 'Healthcare', 'Commercial', 'Privacy', 'AI'];
   const filtered = filter === 'All' ? FRAMEWORKS : FRAMEWORKS.filter((f) => f.category === filter);
   const catColors: Record<string, string> = { Federal: 'bg-blue-100 text-blue-700', Defense: 'bg-green-100 text-green-700', Healthcare: 'bg-purple-100 text-purple-700', Commercial: 'bg-gray-100 text-gray-700', Financial: 'bg-yellow-100 text-yellow-700', Cloud: 'bg-cyan-100 text-cyan-700', 'Critical Infrastructure': 'bg-orange-100 text-orange-700', Privacy: 'bg-pink-100 text-pink-700', AI: 'bg-indigo-100 text-indigo-700' };
+  const selectedFw = FRAMEWORKS.find((f) => f.id === form.selectedFramework);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-900 via-blue-800 to-blue-900 flex items-center justify-center p-4">
@@ -91,7 +136,24 @@ export function OnboardingWizard() {
                 <svg className="w-8 h-8 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
               </div>
               <h2 className="text-2xl font-bold text-gray-900 mb-3">Welcome to Forge Cyber Defense</h2>
-              <p className="text-gray-600 mb-8 max-w-lg mx-auto">Let's configure your organization and create your first information system for compliance.</p>
+              <p className="text-gray-600 mb-2 max-w-lg mx-auto">Let's get your compliance program up and running in four quick steps:</p>
+              <div className="max-w-md mx-auto text-left mb-8">
+                <div className="space-y-3 mt-4">
+                  {[
+                    { icon: 'M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4', label: 'Set up your organization' },
+                    { icon: 'M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z', label: 'Enable a compliance framework' },
+                    { icon: 'M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2', label: 'Create your first system & initialize controls' },
+                    { icon: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4', label: 'Start your first assessment' },
+                  ].map((item) => (
+                    <div key={item.label} className="flex items-center gap-3">
+                      <div className="w-8 h-8 bg-blue-50 rounded-lg flex items-center justify-center flex-shrink-0">
+                        <svg className="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={item.icon} /></svg>
+                      </div>
+                      <span className="text-sm text-gray-700">{item.label}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
               <button onClick={() => setStep(1)} className="px-8 py-3 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700">Get Started</button>
             </div>
           )}
@@ -134,7 +196,7 @@ export function OnboardingWizard() {
             <div>
               <h2 className="text-xl font-bold text-gray-900 mb-1">Select your primary compliance framework</h2>
               <p className="text-gray-500 mb-4 text-sm">You can add more frameworks later. Choose the one you need first.</p>
-              <div className="flex gap-2 mb-4">
+              <div className="flex gap-2 mb-4 flex-wrap">
                 {categories.map((c) => (
                   <button key={c} onClick={() => setFilter(c)} className={`px-3 py-1.5 rounded-full text-xs font-medium ${filter === c ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>{c}</button>
                 ))}
@@ -161,7 +223,7 @@ export function OnboardingWizard() {
           {step === 3 && (
             <div>
               <h2 className="text-xl font-bold text-gray-900 mb-1">Create your first information system</h2>
-              <p className="text-gray-500 mb-6 text-sm">This is the system you'll be getting authorized.</p>
+              <p className="text-gray-500 mb-6 text-sm">This is the system you'll be getting authorized. Controls will be automatically initialized.</p>
               <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div>
@@ -188,24 +250,80 @@ export function OnboardingWizard() {
                   </div>
                 </div>
               </div>
+
+              {/* Summary before setup */}
+              <div className="mt-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                <h3 className="text-sm font-medium text-gray-700 mb-2">Setup summary</h3>
+                <ul className="text-xs text-gray-600 space-y-1">
+                  <li>Organization: <span className="font-medium text-gray-900">{form.organizationName}</span></li>
+                  <li>Framework: <span className="font-medium text-gray-900">{selectedFw?.name || '—'}</span></li>
+                  <li>System: <span className="font-medium text-gray-900">{form.systemName || '—'}</span> ({form.impactLevel} impact)</li>
+                </ul>
+              </div>
+
               <div className="flex justify-between mt-8">
                 <button onClick={() => setStep(2)} className="px-6 py-2 text-gray-500">Back</button>
-                <button onClick={handleComplete} disabled={!form.systemName || loading} className="px-6 py-2.5 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 disabled:opacity-50">
-                  {loading ? 'Setting up...' : 'Complete Setup'}
+                <button onClick={handleSetup} disabled={!form.systemName || loading} className="px-6 py-2.5 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 disabled:opacity-50">
+                  {loading ? 'Setting up...' : 'Run Setup'}
                 </button>
               </div>
             </div>
           )}
 
-          {/* Step 4: Complete */}
+          {/* Step 4: Setup Progress */}
           {step === 4 && (
+            <div className="py-6">
+              <h2 className="text-xl font-bold text-gray-900 mb-1 text-center">Setting up your environment</h2>
+              <p className="text-gray-500 mb-6 text-sm text-center">Please wait while we configure everything...</p>
+              <div className="max-w-md mx-auto space-y-3">
+                {setupProgress.map((item, i) => (
+                  <div key={i} className="flex items-center gap-3">
+                    {item.done ? (
+                      <div className="w-6 h-6 bg-green-100 rounded-full flex items-center justify-center flex-shrink-0">
+                        <svg className="w-3.5 h-3.5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                      </div>
+                    ) : !error && i === setupProgress.filter(s => s.done).length ? (
+                      <div className="w-6 h-6 flex items-center justify-center flex-shrink-0">
+                        <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+                      </div>
+                    ) : (
+                      <div className="w-6 h-6 bg-gray-100 rounded-full flex items-center justify-center flex-shrink-0">
+                        <div className="w-2 h-2 bg-gray-300 rounded-full" />
+                      </div>
+                    )}
+                    <span className={`text-sm ${item.done ? 'text-green-700' : 'text-gray-500'}`}>{item.step}</span>
+                  </div>
+                ))}
+              </div>
+              {error && (
+                <div className="mt-6 text-center">
+                  <button onClick={handleSetup} className="px-6 py-2.5 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700">Retry Setup</button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Step 5: Complete — CTA to start first assessment */}
+          {step === 5 && (
             <div className="text-center py-6">
               <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
                 <svg className="w-8 h-8 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
               </div>
               <h2 className="text-2xl font-bold text-gray-900 mb-3">You're all set!</h2>
-              <p className="text-gray-600 mb-6">Your organization, framework, and first system are configured.</p>
-              <p className="text-gray-400 text-sm">Redirecting to dashboard...</p>
+              <p className="text-gray-600 mb-2">Your organization, framework, and system are configured.</p>
+              {controlCount > 0 && (
+                <p className="text-gray-500 text-sm mb-6">{controlCount} controls initialized and ready for assessment.</p>
+              )}
+
+              <div className="max-w-sm mx-auto space-y-3 mt-6">
+                <button onClick={handleStartAssessment} className="w-full px-6 py-3 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 flex items-center justify-center gap-2">
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" /></svg>
+                  Start Your First Assessment
+                </button>
+                <button onClick={handleGoToDashboard} className="w-full px-6 py-2.5 text-gray-600 hover:text-gray-900 text-sm">
+                  Go to Dashboard Instead
+                </button>
+              </div>
             </div>
           )}
         </div>

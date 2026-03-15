@@ -647,6 +647,7 @@ export function AssetsPage() {
             </svg>
             <p className="font-medium">No assets found</p>
             <p className="text-sm mt-1">Import a Nessus scan or create assets manually</p>
+            <button onClick={() => setShowModal(true)} className="mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">+ Add Asset</button>
           </div>
         ) : (
           <>

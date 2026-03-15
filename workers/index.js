@@ -229,9 +229,48 @@ async function handleRequest(request, env, url, ctx) {
   const path = url.pathname;
   const method = request.method;
 
-  // Health check
+  // Health check (legacy)
   if (path === '/health') {
     return jsonResponse({ status: 'ok', version: '5.0.0', timestamp: new Date().toISOString() });
+  }
+
+  // Health check (v1 — includes DB connectivity for uptime monitoring)
+  if (path === '/api/v1/health' && method === 'GET') {
+    const started = Date.now();
+    const checks = { database: 'unknown', kv: 'unknown' };
+    let healthy = true;
+
+    // Check D1 database connectivity
+    try {
+      const dbResult = await env.DB.prepare('SELECT 1 AS ok').first();
+      checks.database = dbResult?.ok === 1 ? 'healthy' : 'degraded';
+    } catch {
+      checks.database = 'unhealthy';
+      healthy = false;
+    }
+
+    // Check KV store connectivity
+    try {
+      if (env.KV) {
+        await env.KV.get('__health_check__');
+        checks.kv = 'healthy';
+      } else {
+        checks.kv = 'not_configured';
+      }
+    } catch {
+      checks.kv = 'unhealthy';
+      healthy = false;
+    }
+
+    const status = healthy ? 'healthy' : 'degraded';
+    return jsonResponse({
+      status,
+      version: '5.0.0',
+      environment: env.ENVIRONMENT || 'unknown',
+      timestamp: new Date().toISOString(),
+      uptime_ms: Date.now() - started,
+      checks,
+    }, healthy ? 200 : 503);
   }
 
   // Rate limit auth endpoints (10 requests per minute per IP)
