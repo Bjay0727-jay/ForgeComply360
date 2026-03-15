@@ -137,30 +137,23 @@ export function VendorsPage() {
   const loadData = () => {
     const params = new URLSearchParams();
     params.set('page', String(page));
-    // Request more items when using client-side card filters to ensure we get all matching items
-    const requestLimit = (cardFilter === 'critical_high' || cardFilter === 'overdue') ? 500 : limit;
-    params.set('limit', String(requestLimit));
+    params.set('limit', String(limit));
     if (filterCrit) params.set('criticality', filterCrit);
     if (filterStatus) params.set('status', filterStatus);
     if (filterTier) params.set('tier', filterTier);
     if (filterClass) params.set('data_classification', filterClass);
     if (search) params.set('search', search);
 
+    // Server-side card filters
+    if (cardFilter === 'critical_high' && !filterCrit) params.set('criticality', 'critical,high');
+    if (cardFilter === 'overdue') params.set('overdue', 'true');
+
     Promise.all([
       api(`/api/v1/vendors?${params.toString()}`).catch(() => ({ vendors: [], total: 0 })),
       api('/api/v1/vendors/stats').catch(() => ({ stats: null })),
     ]).then(([vData, sData]) => {
-      let filteredVendors = vData.vendors || [];
-
-      // Client-side filtering for card filters
-      if (cardFilter === 'critical_high') {
-        filteredVendors = filteredVendors.filter((v: Vendor) => v.criticality === 'critical' || v.criticality === 'high');
-      } else if (cardFilter === 'overdue') {
-        filteredVendors = filteredVendors.filter(isOverdueAssessment);
-      }
-
-      setVendors(filteredVendors);
-      setTotal(cardFilter ? filteredVendors.length : (vData.total || filteredVendors.length));
+      setVendors(vData.vendors || []);
+      setTotal(vData.total || 0);
       setStats(sData.stats || null);
       setLoading(false);
     });

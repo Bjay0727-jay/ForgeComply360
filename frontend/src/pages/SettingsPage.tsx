@@ -72,6 +72,15 @@ export function SettingsPage() {
   const [deliveriesLoading, setDeliveriesLoading] = useState(false);
   const [testingWebhook, setTestingWebhook] = useState<string | null>(null);
 
+  // API Keys (admin+)
+  const [apiKeys, setApiKeys] = useState<any[]>([]);
+  const [apiKeysLoading, setApiKeysLoading] = useState(false);
+  const [showApiKeyModal, setShowApiKeyModal] = useState(false);
+  const [apiKeyForm, setApiKeyForm] = useState({ name: '', permissions: ['read'] as string[], expires_in_days: 0 });
+  const [savingApiKey, setSavingApiKey] = useState(false);
+  const [newApiKeyRaw, setNewApiKeyRaw] = useState<string | null>(null);
+  const [apiKeyCopied, setApiKeyCopied] = useState(false);
+
   const handleChangePassword = async () => {
     setPwMsg(''); setPwError('');
     if (!currentPassword || !newPassword || !confirmPassword) { setPwError('All fields are required.'); return; }
@@ -181,7 +190,7 @@ export function SettingsPage() {
   useEffect(() => {
     if (activeTab === 'profile' && isAdmin) loadSecuritySettings();
     if (activeTab === 'security' && isAdmin) loadSecuritySettings();
-    if (activeTab === 'integrations' && isAdmin) loadWebhooks();
+    if (activeTab === 'integrations' && isAdmin) { loadWebhooks(); loadApiKeys(); }
   }, [activeTab]);
 
   const saveAlertThresholds = async () => {
@@ -370,6 +379,49 @@ export function SettingsPage() {
         ? f.events.filter(e => e !== event && e !== '*')
         : [...f.events.filter(e => e !== '*'), event],
     }));
+  };
+
+  // API Key handlers
+  const loadApiKeys = async () => {
+    setApiKeysLoading(true);
+    try {
+      const data = await api('/api/v1/api-keys');
+      setApiKeys(data.api_keys || []);
+    } catch {} finally { setApiKeysLoading(false); }
+  };
+
+  const createApiKey = async () => {
+    setSavingApiKey(true);
+    try {
+      const data = await api('/api/v1/api-keys', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: apiKeyForm.name,
+          permissions: apiKeyForm.permissions,
+          expires_in_days: apiKeyForm.expires_in_days || undefined,
+        }),
+      });
+      setNewApiKeyRaw(data.raw_key);
+      addToast({ type: 'success', title: 'API key created' });
+      loadApiKeys();
+    } catch { addToast({ type: 'error', title: 'Failed to create API key' }); }
+    finally { setSavingApiKey(false); }
+  };
+
+  const revokeApiKey = async (id: string) => {
+    try {
+      await api(`/api/v1/api-keys/${id}/revoke`, { method: 'POST' });
+      addToast({ type: 'success', title: 'API key revoked' });
+      loadApiKeys();
+    } catch { addToast({ type: 'error', title: 'Failed to revoke API key' }); }
+  };
+
+  const deleteApiKey = async (id: string) => {
+    try {
+      await api(`/api/v1/api-keys/${id}`, { method: 'DELETE' });
+      addToast({ type: 'success', title: 'API key deleted' });
+      loadApiKeys();
+    } catch { addToast({ type: 'error', title: 'Failed to delete API key' }); }
   };
 
   if (loading) return <div className="space-y-6 max-w-4xl"><SkeletonCard /><SkeletonCard /></div>;
@@ -948,6 +1000,137 @@ export function SettingsPage() {
                   <button onClick={saveWebhook} disabled={savingWebhook || !webhookForm.name || !webhookForm.url} className={BUTTONS.primary}>
                     {savingWebhook ? 'Saving...' : editingWebhook ? 'Update Webhook' : 'Create Webhook'}
                   </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ─── API Keys Section ─── */}
+          <div className="border-t border-gray-200 pt-6">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="font-semibold text-gray-900">API Keys</h2>
+                <p className="text-sm text-gray-500">Create API keys for CI/CD pipelines and programmatic access</p>
+              </div>
+              <button onClick={() => { setApiKeyForm({ name: '', permissions: ['read'], expires_in_days: 0 }); setNewApiKeyRaw(null); setShowApiKeyModal(true); }} className="px-4 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 flex items-center gap-2">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+                Create API Key
+              </button>
+            </div>
+
+            {apiKeysLoading ? (
+              <div className="text-center py-8"><div className="w-6 h-6 border-2 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto" /></div>
+            ) : apiKeys.length === 0 ? (
+              <div className="bg-white rounded-xl border border-blue-200 p-8 text-center">
+                <p className="text-gray-500 text-sm">No API keys configured. Create an API key for CI/CD integration.</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {apiKeys.map(k => (
+                  <div key={k.id} className="bg-white rounded-xl border border-blue-200 px-5 py-4">
+                    <div className="flex items-center gap-3">
+                      <div className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${k.is_active ? 'bg-green-500' : 'bg-gray-300'}`} />
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-gray-900 text-sm">{k.name}</p>
+                        <p className="text-xs text-gray-400">
+                          <span className="font-mono">{k.key_prefix}...</span>
+                          {' \u00b7 '}Created {new Date(k.created_at).toLocaleDateString()}
+                          {k.created_by && ` by ${k.created_by}`}
+                          {k.last_used_at && ` \u00b7 Last used ${new Date(k.last_used_at).toLocaleDateString()}`}
+                          {k.request_count > 0 && ` \u00b7 ${k.request_count} requests`}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {Array.isArray(k.permissions) && k.permissions.map((p: string) => (
+                          <span key={p} className="text-[10px] px-2 py-0.5 rounded bg-blue-50 text-blue-600 font-medium">{p}</span>
+                        ))}
+                        {k.expires_at && (
+                          <span className={`text-[10px] px-2 py-0.5 rounded font-medium ${new Date(k.expires_at) < new Date() ? 'bg-red-50 text-red-600' : 'bg-gray-100 text-gray-500'}`}>
+                            {new Date(k.expires_at) < new Date() ? 'Expired' : `Expires ${new Date(k.expires_at).toLocaleDateString()}`}
+                          </span>
+                        )}
+                        <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${k.is_active ? 'bg-green-50 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+                          {k.is_active ? 'Active' : 'Revoked'}
+                        </span>
+                        {k.is_active && (
+                          <button onClick={() => { if (confirm('Revoke this API key? It will no longer authenticate requests.')) revokeApiKey(k.id); }} className="text-xs text-amber-600 hover:text-amber-800 font-medium">Revoke</button>
+                        )}
+                        <button onClick={() => { if (confirm('Permanently delete this API key?')) deleteApiKey(k.id); }} className="text-xs text-red-500 hover:text-red-700 font-medium">Delete</button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* API Key Create Modal */}
+          {showApiKeyModal && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+              <div className="bg-white rounded-xl shadow-xl w-full max-w-lg mx-4">
+                <div className="px-6 py-4 border-b border-gray-200">
+                  <h3 className="text-lg font-semibold text-gray-900">Create API Key</h3>
+                </div>
+                <div className="px-6 py-4 space-y-4">
+                  {newApiKeyRaw && (
+                    <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+                      <p className="text-xs font-semibold text-amber-800 mb-1">API Key (save now — won't be shown again)</p>
+                      <div className="flex items-center gap-2">
+                        <code className="text-xs bg-white border border-amber-300 rounded px-3 py-1.5 flex-1 font-mono break-all">{newApiKeyRaw}</code>
+                        <button onClick={() => { navigator.clipboard.writeText(newApiKeyRaw); setApiKeyCopied(true); setTimeout(() => setApiKeyCopied(false), 2000); }} className="text-xs px-3 py-1.5 bg-amber-100 text-amber-700 rounded font-medium hover:bg-amber-200">{apiKeyCopied ? 'Copied!' : 'Copy'}</button>
+                      </div>
+                    </div>
+                  )}
+                  {!newApiKeyRaw && (
+                    <>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Key Name</label>
+                        <input type="text" value={apiKeyForm.name} onChange={e => setApiKeyForm({ ...apiKeyForm, name: e.target.value })} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" placeholder="e.g. CI/CD Pipeline, GitHub Actions" />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Permissions</label>
+                        <div className="space-y-2">
+                          {['read', 'write', 'admin'].map(perm => (
+                            <label key={perm} className="flex items-center gap-2 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={apiKeyForm.permissions.includes(perm)}
+                                onChange={() => setApiKeyForm(f => ({
+                                  ...f,
+                                  permissions: f.permissions.includes(perm) ? f.permissions.filter(p => p !== perm) : [...f.permissions, perm],
+                                }))}
+                                className="rounded border-gray-300 text-blue-600"
+                              />
+                              <span className="text-sm text-gray-700 capitalize">{perm}</span>
+                              <span className="text-xs text-gray-400">
+                                {perm === 'read' && '— Read compliance data, reports, evidence'}
+                                {perm === 'write' && '— Create and update records, upload evidence'}
+                                {perm === 'admin' && '— Manage users, settings, API keys'}
+                              </span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Expiration</label>
+                        <select value={apiKeyForm.expires_in_days} onChange={e => setApiKeyForm({ ...apiKeyForm, expires_in_days: parseInt(e.target.value) })} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm">
+                          <option value={0}>No expiration</option>
+                          <option value={30}>30 days</option>
+                          <option value={90}>90 days</option>
+                          <option value={180}>180 days</option>
+                          <option value={365}>1 year</option>
+                        </select>
+                      </div>
+                    </>
+                  )}
+                </div>
+                <div className={MODALS.footer}>
+                  <button onClick={() => { setShowApiKeyModal(false); setNewApiKeyRaw(null); }} className={BUTTONS.ghost}>{newApiKeyRaw ? 'Done' : 'Cancel'}</button>
+                  {!newApiKeyRaw && (
+                    <button onClick={createApiKey} disabled={savingApiKey || !apiKeyForm.name || apiKeyForm.permissions.length === 0} className={BUTTONS.primary}>
+                      {savingApiKey ? 'Creating...' : 'Create Key'}
+                    </button>
+                  )}
                 </div>
               </div>
             </div>

@@ -290,6 +290,7 @@ async function handleRequest(request, env, url, ctx) {
   if (path === '/api/v1/auth/emergency-access' && method === 'POST') return handleEmergencyAccess(request, env);
   if (path === '/api/v1/auth/forgot-password' && method === 'POST') return handleForgotPassword(request, env);
   if (path === '/api/v1/auth/reset-password' && method === 'POST') return handleResetPassword(request, env);
+  if (path === '/api/v1/auth/accept-invite' && method === 'POST') return handleAcceptInvite(request, env);
 
   // Public routes (no auth required)
   if (path.match(/^\/api\/v1\/public\/badge\/verify\/[\w-]+$/) && method === 'GET') return handleVerifyBadge(request, env, path.split('/').pop());
@@ -517,6 +518,7 @@ async function handleRequest(request, env, url, ctx) {
   // User Management
   if (path === '/api/v1/users' && method === 'GET') return handleListUsers(env, org, user);
   if (path === '/api/v1/users' && method === 'POST') return handleCreateUser(request, env, org, user);
+  if (path === '/api/v1/users/invite' && method === 'POST') return handleInviteUser(request, env, org, user);
   if (path.match(/^\/api\/v1\/users\/[\w-]+\/role$/) && method === 'PUT') return handleUpdateUserRole(request, env, org, user, path.split('/')[4]);
   if (path.match(/^\/api\/v1\/users\/[\w-]+\/status$/) && method === 'PUT') return handleUpdateUserStatus(request, env, org, user, path.split('/')[4]);
   if (path.match(/^\/api\/v1\/users\/[\w-]+\/reset-password$/) && method === 'POST') return handleResetUserPassword(request, env, org, user, path.split('/')[4]);
@@ -533,6 +535,12 @@ async function handleRequest(request, env, url, ctx) {
   // Security Settings
   if (path === '/api/v1/security-settings' && method === 'GET') return handleGetSecuritySettings(env, org, user);
   if (path === '/api/v1/security-settings' && method === 'PUT') return handleUpdateSecuritySettings(request, env, org, user);
+
+  // API Keys
+  if (path === '/api/v1/api-keys' && method === 'GET') return handleListApiKeys(env, org, user);
+  if (path === '/api/v1/api-keys' && method === 'POST') return handleCreateApiKey(request, env, org, user);
+  if (path.match(/^\/api\/v1\/api-keys\/[\w-]+$/) && method === 'DELETE') return handleDeleteApiKey(env, org, user, path.split('/').pop());
+  if (path.match(/^\/api\/v1\/api-keys\/[\w-]+\/revoke$/) && method === 'POST') return handleRevokeApiKey(env, org, user, path.split('/').pop());
 
   // Dashboard Widget Settings
   if (path === '/api/v1/settings/dashboard-widgets' && method === 'PATCH') return handleUpdateDashboardWidgets(request, env, org, user);
@@ -4387,14 +4395,25 @@ async function handleListVendors(env, org, url) {
   const status = url.searchParams.get('status');
   const tier = url.searchParams.get('tier');
   const classification = url.searchParams.get('data_classification');
+  const overdue = url.searchParams.get('overdue');
 
   let where = ' WHERE org_id = ?';
   const params = [org.id];
   if (search) { where += ' AND (name LIKE ? OR category LIKE ? OR contact_name LIKE ? OR description LIKE ?)'; params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`); }
-  if (criticality) { where += ' AND criticality = ?'; params.push(criticality); }
+  if (criticality) {
+    if (criticality.includes(',')) {
+      const vals = criticality.split(',').map(v => v.trim()).filter(Boolean);
+      where += ' AND criticality IN (' + vals.map(() => '?').join(',') + ')';
+      params.push(...vals);
+    } else {
+      where += ' AND criticality = ?';
+      params.push(criticality);
+    }
+  }
   if (status) { where += ' AND status = ?'; params.push(status); }
   if (tier) { where += ' AND risk_tier = ?'; params.push(tier); }
   if (classification) { where += ' AND data_classification = ?'; params.push(classification); }
+  if (overdue === 'true' || overdue === '1') { where += " AND next_assessment_date IS NOT NULL AND next_assessment_date < datetime('now')"; }
 
   const countResult = await env.DB.prepare('SELECT COUNT(*) as total FROM vendors' + where).bind(...params).first();
   const total = countResult?.total || 0;
@@ -5543,6 +5562,55 @@ async function handleCreateUser(request, env, org, user) {
 
   await auditLog(env, org.id, user.id, 'create_user', 'user', id, { email: email.toLowerCase(), role });
   return jsonResponse({ user: { id, email: email.toLowerCase(), name, role, status: 'active' }, temp_password: tempPassword }, 201);
+}
+
+async function handleInviteUser(request, env, org, user) {
+  if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const { email, name, role, personal_message } = await request.json();
+  if (!email || !name) return jsonResponse({ error: 'Email and name are required' }, 400);
+  if (!['viewer', 'analyst', 'manager', 'admin'].includes(role)) return jsonResponse({ error: 'Invalid role' }, 400);
+  if (role === 'admin' && user.role !== 'owner') return jsonResponse({ error: 'Only owner can assign admin role' }, 403);
+
+  const existing = await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email.toLowerCase()).first();
+  if (existing) return jsonResponse({ error: 'A user with this email already exists' }, 409);
+
+  // Ensure invitations table exists
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS user_invitations (
+    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+    org_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    token TEXT NOT NULL UNIQUE,
+    invited_by TEXT NOT NULL,
+    personal_message TEXT,
+    expires_at TEXT NOT NULL,
+    accepted_at TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+  )`).run();
+
+  const id = generateId();
+  const token = Array.from(crypto.getRandomValues(new Uint8Array(32))).map(b => b.toString(16).padStart(2, '0')).join('');
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(); // 7 days
+
+  // Create user in pending_invite status with placeholder password
+  const placeholderHash = 'INVITE_PENDING';
+  await env.DB.prepare(
+    `INSERT INTO users (id, org_id, email, password_hash, salt, name, role, status, onboarding_completed)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_invite', 0)`
+  ).bind(id, org.id, email.toLowerCase(), placeholderHash, 'none', name, role).run();
+
+  // Store invitation
+  const inviteId = generateId();
+  await env.DB.prepare(
+    `INSERT INTO user_invitations (id, org_id, user_id, token, invited_by, personal_message, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).bind(inviteId, org.id, id, token, user.id, personal_message || null, expiresAt).run();
+
+  await auditLog(env, org.id, user.id, 'invite_user', 'user', id, { email: email.toLowerCase(), role });
+  return jsonResponse({
+    user: { id, email: email.toLowerCase(), name, role, status: 'pending_invite' },
+    invite_token: token,
+    expires_at: expiresAt,
+  }, 201);
 }
 
 async function handleUpdateUser(request, env, org, user, targetUserId) {
@@ -12605,6 +12673,79 @@ async function handleUpdateSecuritySettings(request, env, org, user) {
   });
 }
 
+async function handleListApiKeys(env, org, user) {
+  if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const { results } = await env.DB.prepare(
+    'SELECT id, name, key_prefix, permissions, scopes, rate_limit, expires_at, last_used_at, request_count, is_active, created_at, user_id FROM api_keys WHERE organization_id = ? ORDER BY created_at DESC'
+  ).bind(org.id).all();
+
+  // Attach creator info
+  const keys = [];
+  for (const k of results) {
+    let creator = null;
+    if (k.user_id) {
+      creator = await env.DB.prepare('SELECT name, email FROM users WHERE id = ?').bind(k.user_id).first();
+    }
+    keys.push({
+      ...k,
+      permissions: typeof k.permissions === 'string' ? JSON.parse(k.permissions) : k.permissions,
+      scopes: typeof k.scopes === 'string' ? JSON.parse(k.scopes) : k.scopes,
+      created_by: creator ? creator.name : 'Unknown',
+    });
+  }
+  return jsonResponse({ api_keys: keys });
+}
+
+async function handleCreateApiKey(request, env, org, user) {
+  if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const { name, permissions, scopes, rate_limit, expires_in_days } = await request.json();
+  if (!name) return jsonResponse({ error: 'Name is required' }, 400);
+
+  const id = generateId();
+  const rawKey = 'fc360_' + Array.from(crypto.getRandomValues(new Uint8Array(32))).map(b => b.toString(16).padStart(2, '0')).join('');
+  const keyPrefix = rawKey.substring(0, 12);
+
+  // Hash the key for storage
+  const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(rawKey));
+  const keyHash = Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+
+  const permissionsJson = JSON.stringify(permissions || ['read']);
+  const scopesJson = JSON.stringify(scopes || ['comply']);
+  const rateLimit = rate_limit || 100;
+  const expiresAt = expires_in_days ? new Date(Date.now() + expires_in_days * 24 * 60 * 60 * 1000).toISOString() : null;
+
+  await env.DB.prepare(
+    `INSERT INTO api_keys (id, organization_id, user_id, name, key_prefix, key_hash, permissions, scopes, rate_limit, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(id, org.id, user.id, name, keyPrefix, keyHash, permissionsJson, scopesJson, rateLimit, expiresAt).run();
+
+  await auditLog(env, org.id, user.id, 'create_api_key', 'api_key', id, { name, key_prefix: keyPrefix });
+  return jsonResponse({
+    api_key: { id, name, key_prefix: keyPrefix, permissions: permissions || ['read'], scopes: scopes || ['comply'], rate_limit: rateLimit, expires_at: expiresAt, is_active: 1, created_at: new Date().toISOString() },
+    raw_key: rawKey,
+  }, 201);
+}
+
+async function handleDeleteApiKey(env, org, user, keyId) {
+  if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const key = await env.DB.prepare('SELECT id, name FROM api_keys WHERE id = ? AND organization_id = ?').bind(keyId, org.id).first();
+  if (!key) return jsonResponse({ error: 'API key not found' }, 404);
+
+  await env.DB.prepare('DELETE FROM api_keys WHERE id = ?').bind(keyId).run();
+  await auditLog(env, org.id, user.id, 'delete_api_key', 'api_key', keyId, { name: key.name });
+  return jsonResponse({ ok: true });
+}
+
+async function handleRevokeApiKey(env, org, user, keyId) {
+  if (!requireRole(user, 'admin')) return jsonResponse({ error: 'Forbidden' }, 403);
+  const key = await env.DB.prepare('SELECT id, name FROM api_keys WHERE id = ? AND organization_id = ?').bind(keyId, org.id).first();
+  if (!key) return jsonResponse({ error: 'API key not found' }, 404);
+
+  await env.DB.prepare('UPDATE api_keys SET is_active = 0 WHERE id = ?').bind(keyId).run();
+  await auditLog(env, org.id, user.id, 'revoke_api_key', 'api_key', keyId, { name: key.name });
+  return jsonResponse({ ok: true });
+}
+
 // Update dashboard widget configuration for the user
 async function handleUpdateDashboardWidgets(request, env, org, user) {
   const { widgets } = await request.json();
@@ -16165,6 +16306,63 @@ async function handleResetPassword(request, env) {
   }
 
   return jsonResponse({ message: 'Password reset successfully. Please log in with your new password.' });
+}
+
+async function handleAcceptInvite(request, env) {
+  const { token, password } = await request.json();
+  if (!token || !password) return jsonResponse({ error: 'Token and password are required' }, 400);
+  if (password.length < 8) return jsonResponse({ error: 'Password must be at least 8 characters' }, 400);
+
+  // Ensure table exists
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS user_invitations (
+    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+    org_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    token TEXT NOT NULL UNIQUE,
+    invited_by TEXT NOT NULL,
+    personal_message TEXT,
+    expires_at TEXT NOT NULL,
+    accepted_at TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+  )`).run();
+
+  const invite = await env.DB.prepare(
+    'SELECT * FROM user_invitations WHERE token = ? AND accepted_at IS NULL'
+  ).bind(token).first();
+  if (!invite) return jsonResponse({ error: 'Invalid or expired invitation' }, 404);
+  if (new Date(invite.expires_at) < new Date()) return jsonResponse({ error: 'Invitation has expired' }, 410);
+
+  const salt = generateSalt();
+  const passwordHash = await hashPassword(password, salt);
+
+  await env.DB.prepare(
+    'UPDATE users SET password_hash = ?, salt = ?, status = ? WHERE id = ?'
+  ).bind(passwordHash, salt, 'active', invite.user_id).run();
+
+  await env.DB.prepare(
+    'UPDATE user_invitations SET accepted_at = datetime(?) WHERE id = ?'
+  ).bind(new Date().toISOString(), invite.id).run();
+
+  // Get user info for response
+  const u = await env.DB.prepare('SELECT id, email, name, role, org_id FROM users WHERE id = ?').bind(invite.user_id).first();
+  const org = await env.DB.prepare('SELECT * FROM organizations WHERE id = ?').bind(u.org_id).first();
+
+  await auditLog(env, org.id, u.id, 'accept_invite', 'user', u.id, { email: u.email });
+
+  // Generate auth tokens
+  const accessToken = await createJWT({ sub: u.id, email: u.email, role: u.role, org_id: org.id }, env.JWT_SECRET || 'dev-secret', 3600);
+  const refreshTokenValue = Array.from(crypto.getRandomValues(new Uint8Array(32))).map(b => b.toString(16).padStart(2, '0')).join('');
+  const refreshExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+  await env.DB.prepare(
+    'INSERT INTO refresh_tokens (id, user_id, token, expires_at) VALUES (?, ?, ?, ?)'
+  ).bind(generateId(), u.id, refreshTokenValue, refreshExpiry).run();
+
+  return jsonResponse({
+    user: { id: u.id, email: u.email, name: u.name, role: u.role },
+    access_token: accessToken,
+    refresh_token: refreshTokenValue,
+    org: { id: org.id, name: org.name, slug: org.slug },
+  });
 }
 
 /**
