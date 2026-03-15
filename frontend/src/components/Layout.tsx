@@ -8,6 +8,7 @@ import { useApprovalCount } from '../hooks/useApprovalCount';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 import { useTheme } from '../hooks/useTheme';
 import { CommandPalette } from './CommandPalette';
+import { FederalTermsHelpButton } from './FederalTermsHelp';
 import { TYPOGRAPHY } from '../utils/typography';
 
 const ROLE_HIERARCHY: Record<string, number> = { viewer: 0, analyst: 1, manager: 2, admin: 3, owner: 4 };
@@ -406,6 +407,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
       {/* Command Palette */}
       <CommandPalette />
+
+      {/* Federal Terms Help Button */}
+      <FederalTermsHelpButton />
     </div>
   );
 }

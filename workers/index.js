@@ -101,6 +101,7 @@ export default {
             .then(() => handleScheduledComplianceSnapshots(env))
             .then(() => handleAuditLogRetention(env))
             .then(() => handleEmailDigest(env))
+            .then(() => handleScheduledReports(env))
         );
       }
     } catch (err) {
@@ -705,6 +706,14 @@ async function handleRequest(request, env, url, ctx) {
 
   // PDF Reports
   if (path === '/api/v1/reports/generate-pdf' && method === 'POST') return handleGeneratePDF(request, env, org, user);
+
+  // Scheduled Reports
+  if (path === '/api/v1/report-schedules' && method === 'GET') return handleListReportSchedules(env, org, user);
+  if (path === '/api/v1/report-schedules' && method === 'POST') return handleCreateReportSchedule(request, env, org, user);
+  if (path.match(/^\/api\/v1\/report-schedules\/[\w-]+$/) && method === 'PUT') return handleUpdateReportSchedule(request, env, org, user, path.split('/').pop());
+  if (path.match(/^\/api\/v1\/report-schedules\/[\w-]+$/) && method === 'DELETE') return handleDeleteReportSchedule(env, org, user, path.split('/').pop());
+  if (path === '/api/v1/report-history' && method === 'GET') return handleListReportHistory(env, url, org, user);
+  if (path.match(/^\/api\/v1\/report-schedules\/[\w-]+\/run$/) && method === 'POST') return handleRunReportSchedule(env, org, user, path.split('/')[4]);
 
   // Questionnaires
   if (path === '/api/v1/questionnaires' && method === 'GET') return handleListQuestionnaires(env, org, user);
@@ -16499,4 +16508,269 @@ function buildPasswordChangedEmailHtml(userName) {
   </table>
 </body>
 </html>`;
+}
+
+// ============================================================================
+// SCHEDULED REPORTS - CRUD & Execution
+// ============================================================================
+
+const REPORT_TYPE_LABELS = {
+  'executive-summary': 'Executive Summary',
+  'compliance-posture': 'Compliance Posture Report',
+  'risk-summary': 'Risk Summary Report',
+  'audit-ready': 'Audit-Ready Package',
+};
+
+async function handleListReportSchedules(env, org, user) {
+  if (!['manager','admin','owner'].includes(user.role)) return json({ error: 'Forbidden' }, 403);
+  const { results } = await env.DB.prepare(
+    `SELECT rs.*, u.name as created_by_name, u.email as created_by_email
+     FROM report_schedules rs LEFT JOIN users u ON rs.created_by = u.id
+     WHERE rs.org_id = ? ORDER BY rs.created_at DESC`
+  ).bind(org.id).all();
+  return json({ schedules: results || [] });
+}
+
+async function handleCreateReportSchedule(request, env, org, user) {
+  if (!['manager','admin','owner'].includes(user.role)) return json({ error: 'Forbidden' }, 403);
+  const body = await request.json();
+  const { name, report_type, format, frequency, day_of_week, day_of_month, time_utc, recipients } = body;
+  if (!name || !report_type || !frequency) return json({ error: 'name, report_type, and frequency are required' }, 400);
+  if (!REPORT_TYPE_LABELS[report_type]) return json({ error: 'Invalid report_type' }, 400);
+  if (!['daily','weekly','monthly','quarterly'].includes(frequency)) return json({ error: 'Invalid frequency' }, 400);
+  if (!recipients || !Array.isArray(recipients) || recipients.length === 0) return json({ error: 'At least one recipient email is required' }, 400);
+
+  const id = crypto.randomUUID();
+  await env.DB.prepare(
+    `INSERT INTO report_schedules (id, org_id, created_by, name, report_type, format, frequency, day_of_week, day_of_month, time_utc, recipients)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(id, org.id, user.id, name, report_type, format || 'pdf', frequency,
+    day_of_week ?? null, day_of_month ?? null, time_utc || '08:00', JSON.stringify(recipients)
+  ).run();
+
+  await auditLog(env, org.id, user.id, 'create', 'report_schedule', id, { name, report_type, frequency });
+  return json({ schedule: { id, name, report_type, format: format || 'pdf', frequency, recipients } }, 201);
+}
+
+async function handleUpdateReportSchedule(request, env, org, user, scheduleId) {
+  if (!['manager','admin','owner'].includes(user.role)) return json({ error: 'Forbidden' }, 403);
+  const existing = await env.DB.prepare('SELECT * FROM report_schedules WHERE id = ? AND org_id = ?').bind(scheduleId, org.id).first();
+  if (!existing) return json({ error: 'Schedule not found' }, 404);
+
+  const body = await request.json();
+  const fields = ['name','report_type','format','frequency','day_of_week','day_of_month','time_utc','recipients','is_active','include_charts'];
+  const sets = []; const vals = [];
+  for (const f of fields) {
+    if (body[f] !== undefined) {
+      sets.push(`${f} = ?`);
+      vals.push(f === 'recipients' ? JSON.stringify(body[f]) : body[f]);
+    }
+  }
+  if (sets.length === 0) return json({ error: 'No fields to update' }, 400);
+  sets.push("updated_at = datetime('now')");
+  vals.push(scheduleId, org.id);
+
+  await env.DB.prepare(`UPDATE report_schedules SET ${sets.join(', ')} WHERE id = ? AND org_id = ?`).bind(...vals).run();
+  await auditLog(env, org.id, user.id, 'update', 'report_schedule', scheduleId, { fields: Object.keys(body) });
+  return json({ success: true });
+}
+
+async function handleDeleteReportSchedule(env, org, user, scheduleId) {
+  if (!['manager','admin','owner'].includes(user.role)) return json({ error: 'Forbidden' }, 403);
+  const existing = await env.DB.prepare('SELECT id FROM report_schedules WHERE id = ? AND org_id = ?').bind(scheduleId, org.id).first();
+  if (!existing) return json({ error: 'Schedule not found' }, 404);
+  await env.DB.prepare('DELETE FROM report_schedules WHERE id = ? AND org_id = ?').bind(scheduleId, org.id).run();
+  await auditLog(env, org.id, user.id, 'delete', 'report_schedule', scheduleId, {});
+  return json({ success: true });
+}
+
+async function handleListReportHistory(env, url, org, user) {
+  if (!['manager','admin','owner'].includes(user.role)) return json({ error: 'Forbidden' }, 403);
+  const limit = Math.min(parseInt(url.searchParams.get('limit') || '25'), 100);
+  const offset = parseInt(url.searchParams.get('offset') || '0');
+  const scheduleId = url.searchParams.get('schedule_id');
+  let where = 'WHERE rh.org_id = ?';
+  const params = [org.id];
+  if (scheduleId) { where += ' AND rh.schedule_id = ?'; params.push(scheduleId); }
+  const { results } = await env.DB.prepare(
+    `SELECT rh.*, rs.name as schedule_name FROM report_history rh
+     LEFT JOIN report_schedules rs ON rh.schedule_id = rs.id
+     ${where} ORDER BY rh.created_at DESC LIMIT ? OFFSET ?`
+  ).bind(...params, limit, offset).all();
+  const countRow = await env.DB.prepare(`SELECT COUNT(*) as total FROM report_history rh ${where}`).bind(...params).first();
+  return json({ history: results || [], total: countRow?.total || 0 });
+}
+
+async function handleRunReportSchedule(env, org, user, scheduleId) {
+  if (!['manager','admin','owner'].includes(user.role)) return json({ error: 'Forbidden' }, 403);
+  const schedule = await env.DB.prepare('SELECT * FROM report_schedules WHERE id = ? AND org_id = ?').bind(scheduleId, org.id).first();
+  if (!schedule) return json({ error: 'Schedule not found' }, 404);
+  const historyId = crypto.randomUUID();
+  const recipients = JSON.parse(schedule.recipients || '[]');
+  await env.DB.prepare(
+    `INSERT INTO report_history (id, org_id, schedule_id, report_type, format, triggered_by, status, recipients)
+     VALUES (?, ?, ?, ?, ?, 'manual', 'generating', ?)`
+  ).bind(historyId, org.id, scheduleId, schedule.report_type, schedule.format, JSON.stringify(recipients)).run();
+  try {
+    const reportData = await gatherReportData(env, org.id);
+    const reportLabel = REPORT_TYPE_LABELS[schedule.report_type] || schedule.report_type;
+    let emailsSent = 0;
+    for (const email of recipients) {
+      const sent = await sendEmail(env, email,
+        `[ForgeComply 360] ${reportLabel} - ${new Date().toLocaleDateString('en-US')}`,
+        buildReportEmailHtml(reportLabel, reportData, schedule.format));
+      if (sent) emailsSent++;
+    }
+    await env.DB.prepare(
+      `UPDATE report_history SET status = 'completed', email_sent = ?, completed_at = datetime('now') WHERE id = ?`
+    ).bind(emailsSent, historyId).run();
+    await env.DB.prepare(
+      `UPDATE report_schedules SET last_run_at = datetime('now'), last_status = 'success', run_count = run_count + 1 WHERE id = ?`
+    ).bind(scheduleId).run();
+    return json({ success: true, history_id: historyId, emails_sent: emailsSent });
+  } catch (err) {
+    await env.DB.prepare(
+      `UPDATE report_history SET status = 'failed', error_message = ?, completed_at = datetime('now') WHERE id = ?`
+    ).bind(err.message, historyId).run();
+    await env.DB.prepare(
+      `UPDATE report_schedules SET last_run_at = datetime('now'), last_status = 'failed', last_error = ? WHERE id = ?`
+    ).bind(err.message, scheduleId).run();
+    return json({ error: 'Report generation failed', detail: err.message }, 500);
+  }
+}
+
+async function gatherReportData(env, orgId) {
+  const [dashRow, fwRow, riskRow, vendorRow] = await Promise.all([
+    env.DB.prepare(`SELECT
+      (SELECT COUNT(*) FROM systems WHERE organization_id = ?) as systems,
+      (SELECT COUNT(*) FROM control_implementations WHERE org_id = ? AND status = 'implemented') as implemented,
+      (SELECT COUNT(*) FROM control_implementations WHERE org_id = ?) as total_controls,
+      (SELECT COUNT(*) FROM poams WHERE org_id = ? AND status = 'open') as open_poams,
+      (SELECT COUNT(*) FROM poams WHERE org_id = ? AND status = 'completed') as completed_poams,
+      (SELECT COUNT(*) FROM poams WHERE org_id = ?) as total_poams
+    `).bind(orgId, orgId, orgId, orgId, orgId, orgId).first(),
+    env.DB.prepare(`SELECT cf.name, cf.acronym,
+      COUNT(ci.id) as total,
+      SUM(CASE WHEN ci.status = 'implemented' THEN 1 ELSE 0 END) as implemented
+      FROM compliance_frameworks cf
+      LEFT JOIN control_implementations ci ON ci.framework_id = cf.id AND ci.org_id = ?
+      WHERE cf.org_id = ? OR cf.is_global = 1
+      GROUP BY cf.id ORDER BY cf.name`).bind(orgId, orgId).all(),
+    env.DB.prepare(`SELECT
+      COUNT(*) as total,
+      SUM(CASE WHEN risk_level = 'critical' THEN 1 ELSE 0 END) as critical,
+      SUM(CASE WHEN risk_level = 'high' THEN 1 ELSE 0 END) as high,
+      SUM(CASE WHEN risk_level = 'moderate' THEN 1 ELSE 0 END) as moderate,
+      SUM(CASE WHEN risk_level = 'low' THEN 1 ELSE 0 END) as low
+      FROM poams WHERE org_id = ? AND status NOT IN ('completed','accepted')`).bind(orgId).first(),
+    env.DB.prepare(`SELECT COUNT(*) as total,
+      SUM(CASE WHEN criticality = 'critical' THEN 1 ELSE 0 END) as critical,
+      SUM(CASE WHEN criticality = 'high' THEN 1 ELSE 0 END) as high
+      FROM vendors WHERE org_id = ?`).bind(orgId).first(),
+  ]);
+  const compliancePct = dashRow.total_controls > 0
+    ? Math.round((dashRow.implemented / dashRow.total_controls) * 100) : 0;
+  return {
+    systems: dashRow.systems, compliance_percentage: compliancePct,
+    total_controls: dashRow.total_controls, implemented_controls: dashRow.implemented,
+    open_poams: dashRow.open_poams, completed_poams: dashRow.completed_poams,
+    total_poams: dashRow.total_poams, frameworks: fwRow.results || [],
+    risks: riskRow || {}, vendors: vendorRow || {},
+    generated_at: new Date().toISOString(),
+  };
+}
+
+function buildReportEmailHtml(reportTitle, data, format) {
+  const fwRows = (data.frameworks || []).map(fw => {
+    const pct = fw.total > 0 ? Math.round((fw.implemented / fw.total) * 100) : 0;
+    return `<tr><td style="padding:8px 12px;border-bottom:1px solid #f3f4f6;font-size:14px;color:#374151">${fw.name}</td>
+      <td style="padding:8px 12px;border-bottom:1px solid #f3f4f6;text-align:center;font-size:14px">${fw.implemented}/${fw.total}</td>
+      <td style="padding:8px 12px;border-bottom:1px solid #f3f4f6;text-align:center;font-weight:600;color:${pct >= 80 ? '#059669' : pct >= 50 ? '#d97706' : '#dc2626'}">${pct}%</td></tr>`;
+  }).join('');
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f4f5f7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f5f7;padding:24px 0"><tr><td align="center">
+<table width="600" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.1)">
+<tr><td style="background:#1e40af;padding:24px 32px">
+  <h1 style="margin:0;color:#fff;font-size:20px;font-weight:600">ForgeComply 360</h1>
+  <p style="margin:4px 0 0;color:#93c5fd;font-size:13px">Scheduled Report: ${reportTitle}</p>
+</td></tr>
+<tr><td style="padding:32px">
+  <p style="margin:0 0 24px;color:#374151;font-size:15px">Your scheduled <strong>${reportTitle}</strong> has been generated.</p>
+  <table width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 24px"><tr>
+    <td style="background:#eff6ff;border-radius:8px;padding:16px;text-align:center;width:33%">
+      <p style="margin:0;font-size:24px;font-weight:700;color:#1e40af">${data.compliance_percentage}%</p>
+      <p style="margin:4px 0 0;font-size:12px;color:#6b7280">Compliance</p></td>
+    <td width="12"></td>
+    <td style="background:#f0fdf4;border-radius:8px;padding:16px;text-align:center;width:33%">
+      <p style="margin:0;font-size:24px;font-weight:700;color:#059669">${data.implemented_controls}</p>
+      <p style="margin:4px 0 0;font-size:12px;color:#6b7280">Implemented</p></td>
+    <td width="12"></td>
+    <td style="background:#fefce8;border-radius:8px;padding:16px;text-align:center;width:33%">
+      <p style="margin:0;font-size:24px;font-weight:700;color:#d97706">${data.open_poams}</p>
+      <p style="margin:4px 0 0;font-size:12px;color:#6b7280">Open POA&Ms</p></td>
+  </tr></table>
+  ${fwRows ? `<p style="margin:0 0 8px;font-weight:600;color:#1e40af;font-size:14px">Framework Compliance</p>
+  <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;margin:0 0 24px">
+    <tr style="background:#f9fafb"><th style="padding:8px 12px;text-align:left;font-size:12px;color:#6b7280">Framework</th>
+    <th style="padding:8px 12px;text-align:center;font-size:12px;color:#6b7280">Controls</th>
+    <th style="padding:8px 12px;text-align:center;font-size:12px;color:#6b7280">Score</th></tr>${fwRows}</table>` : ''}
+  <p style="margin:0;color:#6b7280;font-size:13px">Generated ${new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}. Log in to download the full ${format.toUpperCase()} report.</p>
+  <a href="https://forgecomply360.pages.dev/reports" style="display:inline-block;margin-top:16px;background:#1e40af;color:#fff;padding:10px 24px;border-radius:8px;text-decoration:none;font-size:14px;font-weight:500">View Reports</a>
+</td></tr>
+<tr><td style="padding:16px 32px;background:#f9fafb;border-top:1px solid #e5e7eb">
+  <p style="margin:0;color:#9ca3af;font-size:12px">Scheduled report from ForgeComply 360. Manage in <a href="https://forgecomply360.pages.dev/reports" style="color:#3b82f6">Reports</a>.</p>
+</td></tr></table></td></tr></table></body></html>`;
+}
+
+async function handleScheduledReports(env) {
+  const now = new Date();
+  const hour = now.getUTCHours().toString().padStart(2, '0');
+  const timeStr = `${hour}:00`;
+  const dayOfWeek = now.getUTCDay();
+  const dayOfMonth = now.getUTCDate();
+  const month = now.getUTCMonth() + 1;
+  const isQuarterStart = [1,4,7,10].includes(month) && dayOfMonth === 1;
+  let schedulesResult;
+  try {
+    schedulesResult = await env.DB.prepare(
+      `SELECT rs.*, o.name as org_name FROM report_schedules rs
+       JOIN organizations o ON rs.org_id = o.id WHERE rs.is_active = 1 AND rs.time_utc = ?`
+    ).bind(timeStr).all();
+  } catch (e) { console.log('[REPORT-SCHEDULE] Table may not exist yet:', e.message); return; }
+  for (const schedule of (schedulesResult.results || [])) {
+    let shouldRun = false;
+    if (schedule.frequency === 'daily') shouldRun = true;
+    else if (schedule.frequency === 'weekly' && dayOfWeek === (schedule.day_of_week ?? 1)) shouldRun = true;
+    else if (schedule.frequency === 'monthly' && dayOfMonth === (schedule.day_of_month ?? 1)) shouldRun = true;
+    else if (schedule.frequency === 'quarterly' && isQuarterStart) shouldRun = true;
+    if (!shouldRun) continue;
+    const historyId = crypto.randomUUID();
+    const recipients = JSON.parse(schedule.recipients || '[]');
+    try {
+      await env.DB.prepare(
+        `INSERT INTO report_history (id, org_id, schedule_id, report_type, format, triggered_by, status, recipients)
+         VALUES (?, ?, ?, ?, ?, 'schedule', 'generating', ?)`
+      ).bind(historyId, schedule.org_id, schedule.id, schedule.report_type, schedule.format, JSON.stringify(recipients)).run();
+      const reportData = await gatherReportData(env, schedule.org_id);
+      const reportLabel = REPORT_TYPE_LABELS[schedule.report_type] || schedule.report_type;
+      let emailsSent = 0;
+      for (const email of recipients) {
+        const sent = await sendEmail(env, email,
+          `[ForgeComply 360] ${reportLabel} - ${now.toLocaleDateString('en-US')}`,
+          buildReportEmailHtml(reportLabel, reportData, schedule.format));
+        if (sent) emailsSent++;
+      }
+      await env.DB.prepare(
+        `UPDATE report_history SET status = 'completed', email_sent = ?, completed_at = datetime('now') WHERE id = ?`
+      ).bind(emailsSent, historyId).run();
+      await env.DB.prepare(
+        `UPDATE report_schedules SET last_run_at = datetime('now'), last_status = 'success', run_count = run_count + 1, updated_at = datetime('now') WHERE id = ?`
+      ).bind(schedule.id).run();
+    } catch (err) {
+      console.error(`[REPORT-SCHEDULE] Failed for ${schedule.id}:`, err.message);
+      await env.DB.prepare(`UPDATE report_history SET status = 'failed', error_message = ?, completed_at = datetime('now') WHERE id = ?`).bind(err.message, historyId).run();
+      await env.DB.prepare(`UPDATE report_schedules SET last_run_at = datetime('now'), last_status = 'failed', last_error = ?, updated_at = datetime('now') WHERE id = ?`).bind(err.message, schedule.id).run();
+    }
+  }
 }

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { api } from '../utils/api';
 import {
@@ -68,6 +68,47 @@ const REPORT_TYPES: ReportType[] = [
 // LocalStorage key for format preferences
 const FORMAT_PREF_KEY = 'forgecomply_report_format_prefs';
 
+const FREQUENCY_LABELS: Record<string, string> = {
+  daily: 'Daily',
+  weekly: 'Weekly',
+  monthly: 'Monthly',
+  quarterly: 'Quarterly',
+};
+
+const DAY_LABELS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+interface ReportSchedule {
+  id: string;
+  name: string;
+  report_type: string;
+  format: string;
+  frequency: string;
+  day_of_week: number | null;
+  day_of_month: number | null;
+  time_utc: string;
+  recipients: string;
+  is_active: number;
+  last_run_at: string | null;
+  last_status: string | null;
+  run_count: number;
+  created_by_name: string;
+  created_at: string;
+}
+
+interface ReportHistoryEntry {
+  id: string;
+  report_type: string;
+  format: string;
+  triggered_by: string;
+  status: string;
+  email_sent: number;
+  recipients: string;
+  schedule_name: string | null;
+  error_message: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Main Component
 // ---------------------------------------------------------------------------
@@ -78,6 +119,23 @@ export function ReportsPage() {
   const [generating, setGenerating] = useState<string | null>(null);
   const [lastGenerated, setLastGenerated] = useState<string | null>(null);
   const [formatPref, setFormatPref] = useState<Record<string, 'docx' | 'pdf'>>({});
+
+  // Scheduling state
+  const [schedules, setSchedules] = useState<ReportSchedule[]>([]);
+  const [history, setHistory] = useState<ReportHistoryEntry[]>([]);
+  const [showScheduleForm, setShowScheduleForm] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [scheduleLoading, setScheduleLoading] = useState(false);
+  const [formData, setFormData] = useState({
+    name: '',
+    report_type: 'executive-summary',
+    format: 'pdf' as 'pdf' | 'docx',
+    frequency: 'weekly',
+    day_of_week: 1,
+    day_of_month: 1,
+    time_utc: '08:00',
+    recipients: '',
+  });
 
   // Load format preferences from localStorage
   useEffect(() => {
@@ -90,6 +148,31 @@ export function ReportsPage() {
       // Ignore parse errors
     }
   }, []);
+
+  // Load schedules
+  const loadSchedules = useCallback(async () => {
+    try {
+      const res = await api<{ schedules: ReportSchedule[] }>('/api/v1/report-schedules');
+      setSchedules(res.schedules || []);
+    } catch {
+      // Table may not exist yet
+    }
+  }, []);
+
+  const loadHistory = useCallback(async () => {
+    try {
+      const res = await api<{ history: ReportHistoryEntry[] }>('/api/v1/report-history?limit=20');
+      setHistory(res.history || []);
+    } catch {
+      // Table may not exist yet
+    }
+  }, []);
+
+  useEffect(() => {
+    if (canManage) {
+      loadSchedules();
+    }
+  }, [canManage, loadSchedules]);
 
   // Save format preferences to localStorage
   const updateFormatPref = (reportKey: string, format: 'docx' | 'pdf') => {
@@ -195,6 +278,70 @@ export function ReportsPage() {
       });
     } finally {
       setGenerating(null);
+    }
+  };
+
+  const handleCreateSchedule = async () => {
+    const recipientList = formData.recipients.split(',').map(e => e.trim()).filter(Boolean);
+    if (!formData.name || recipientList.length === 0) {
+      addToast({ type: 'error', title: 'Validation error', message: 'Name and at least one recipient email are required.' });
+      return;
+    }
+    setScheduleLoading(true);
+    try {
+      await api('/api/v1/report-schedules', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: formData.name,
+          report_type: formData.report_type,
+          format: formData.format,
+          frequency: formData.frequency,
+          day_of_week: formData.frequency === 'weekly' ? formData.day_of_week : null,
+          day_of_month: formData.frequency === 'monthly' ? formData.day_of_month : null,
+          time_utc: formData.time_utc,
+          recipients: recipientList,
+        }),
+      });
+      addToast({ type: 'success', title: 'Schedule created', message: `"${formData.name}" scheduled successfully.` });
+      setShowScheduleForm(false);
+      setFormData({ name: '', report_type: 'executive-summary', format: 'pdf', frequency: 'weekly', day_of_week: 1, day_of_month: 1, time_utc: '08:00', recipients: '' });
+      loadSchedules();
+    } catch (err: any) {
+      addToast({ type: 'error', title: 'Failed to create schedule', message: err.message });
+    } finally {
+      setScheduleLoading(false);
+    }
+  };
+
+  const handleDeleteSchedule = async (id: string) => {
+    try {
+      await api(`/api/v1/report-schedules/${id}`, { method: 'DELETE' });
+      addToast({ type: 'success', title: 'Schedule deleted' });
+      loadSchedules();
+    } catch (err: any) {
+      addToast({ type: 'error', title: 'Delete failed', message: err.message });
+    }
+  };
+
+  const handleToggleSchedule = async (schedule: ReportSchedule) => {
+    try {
+      await api(`/api/v1/report-schedules/${schedule.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ is_active: schedule.is_active ? 0 : 1 }),
+      });
+      loadSchedules();
+    } catch (err: any) {
+      addToast({ type: 'error', title: 'Update failed', message: err.message });
+    }
+  };
+
+  const handleRunNow = async (id: string) => {
+    try {
+      const res = await api<{ emails_sent: number }>(`/api/v1/report-schedules/${id}/run`, { method: 'POST' });
+      addToast({ type: 'success', title: 'Report sent', message: `Email delivered to ${res.emails_sent} recipient(s).` });
+      loadSchedules();
+    } catch (err: any) {
+      addToast({ type: 'error', title: 'Run failed', message: err.message });
     }
   };
 
@@ -308,6 +455,252 @@ export function ReportsPage() {
             </div>
           );
         })}
+      </div>
+
+      {/* ================================================================== */}
+      {/* Scheduled Reports Section                                          */}
+      {/* ================================================================== */}
+      <div className="mt-10">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h3 className={TYPOGRAPHY.sectionTitle}>Scheduled Reports</h3>
+            <p className={`${TYPOGRAPHY.bodyMuted} mt-1`}>Automate report generation and email delivery on a recurring schedule.</p>
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => { setShowHistory(!showHistory); if (!showHistory) loadHistory(); }}
+              className={BUTTONS.secondary}
+            >
+              {showHistory ? 'Hide History' : 'View History'}
+            </button>
+            <button
+              onClick={() => setShowScheduleForm(!showScheduleForm)}
+              className={BUTTONS.primary}
+            >
+              {showScheduleForm ? 'Cancel' : 'New Schedule'}
+            </button>
+          </div>
+        </div>
+
+        {/* New Schedule Form */}
+        {showScheduleForm && (
+          <div className={`${CARDS.elevated} p-6 mb-6`}>
+            <h4 className="text-sm font-semibold text-gray-900 mb-4">Create Report Schedule</h4>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Schedule Name</label>
+                <input
+                  type="text"
+                  value={formData.name}
+                  onChange={e => setFormData(p => ({ ...p, name: e.target.value }))}
+                  placeholder="e.g. Weekly Leadership Briefing"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Report Type</label>
+                <select
+                  value={formData.report_type}
+                  onChange={e => setFormData(p => ({ ...p, report_type: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                >
+                  {REPORT_TYPES.map(r => (
+                    <option key={r.key} value={r.key}>{r.title}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Format</label>
+                <select
+                  value={formData.format}
+                  onChange={e => setFormData(p => ({ ...p, format: e.target.value as 'pdf' | 'docx' }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                >
+                  <option value="pdf">PDF</option>
+                  <option value="docx">DOCX</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Frequency</label>
+                <select
+                  value={formData.frequency}
+                  onChange={e => setFormData(p => ({ ...p, frequency: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                >
+                  <option value="daily">Daily</option>
+                  <option value="weekly">Weekly</option>
+                  <option value="monthly">Monthly</option>
+                  <option value="quarterly">Quarterly</option>
+                </select>
+              </div>
+              {formData.frequency === 'weekly' && (
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">Day of Week</label>
+                  <select
+                    value={formData.day_of_week}
+                    onChange={e => setFormData(p => ({ ...p, day_of_week: parseInt(e.target.value) }))}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    {DAY_LABELS.map((d, i) => <option key={i} value={i}>{d}</option>)}
+                  </select>
+                </div>
+              )}
+              {formData.frequency === 'monthly' && (
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">Day of Month</label>
+                  <select
+                    value={formData.day_of_month}
+                    onChange={e => setFormData(p => ({ ...p, day_of_month: parseInt(e.target.value) }))}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    {Array.from({ length: 28 }, (_, i) => <option key={i+1} value={i+1}>{i+1}</option>)}
+                  </select>
+                </div>
+              )}
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Time (UTC)</label>
+                <select
+                  value={formData.time_utc}
+                  onChange={e => setFormData(p => ({ ...p, time_utc: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                >
+                  {Array.from({ length: 24 }, (_, i) => {
+                    const h = i.toString().padStart(2, '0');
+                    return <option key={h} value={`${h}:00`}>{h}:00 UTC</option>;
+                  })}
+                </select>
+              </div>
+              <div className="md:col-span-2">
+                <label className="block text-xs font-medium text-gray-700 mb-1">Recipients (comma-separated emails)</label>
+                <input
+                  type="text"
+                  value={formData.recipients}
+                  onChange={e => setFormData(p => ({ ...p, recipients: e.target.value }))}
+                  placeholder="ciso@example.com, compliance@example.com"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+            </div>
+            <div className="mt-4 flex justify-end">
+              <button
+                onClick={handleCreateSchedule}
+                disabled={scheduleLoading}
+                className={`${BUTTONS.primary} flex items-center gap-2`}
+              >
+                {scheduleLoading && <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />}
+                Create Schedule
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Existing Schedules */}
+        {schedules.length > 0 ? (
+          <div className="space-y-3">
+            {schedules.map(schedule => {
+              const reportType = REPORT_TYPES.find(r => r.key === schedule.report_type);
+              const recipients = JSON.parse(schedule.recipients || '[]');
+              return (
+                <div key={schedule.id} className={`${CARDS.elevated} p-4 flex items-center gap-4`}>
+                  <div className={`w-10 h-10 rounded-lg ${reportType?.iconBgColor || 'bg-gray-100 text-gray-600'} flex items-center justify-center shrink-0`}>
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={reportType?.icon || 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2'} />
+                    </svg>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold text-gray-900 truncate">{schedule.name}</span>
+                      <span className={`${BADGES.pill} ${schedule.is_active ? BADGES.success : BADGES.neutral} text-[10px]`}>
+                        {schedule.is_active ? 'Active' : 'Paused'}
+                      </span>
+                      {schedule.last_status && (
+                        <span className={`${BADGES.pill} ${schedule.last_status === 'success' ? BADGES.success : BADGES.error} text-[10px]`}>
+                          Last: {schedule.last_status}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      {reportType?.title} ({schedule.format.toUpperCase()}) &middot; {FREQUENCY_LABELS[schedule.frequency] || schedule.frequency} at {schedule.time_utc} UTC
+                      {schedule.frequency === 'weekly' && schedule.day_of_week != null && ` on ${DAY_LABELS[schedule.day_of_week]}`}
+                      {schedule.frequency === 'monthly' && schedule.day_of_month != null && ` on day ${schedule.day_of_month}`}
+                      &nbsp;&middot; {recipients.length} recipient{recipients.length !== 1 ? 's' : ''}
+                      {schedule.run_count > 0 && ` &middot; ${schedule.run_count} runs`}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button onClick={() => handleRunNow(schedule.id)} className={`${BUTTONS.secondary} text-xs px-2.5 py-1.5`} title="Run now">
+                      Run Now
+                    </button>
+                    <button onClick={() => handleToggleSchedule(schedule)} className={`${BUTTONS.secondary} text-xs px-2.5 py-1.5`}>
+                      {schedule.is_active ? 'Pause' : 'Resume'}
+                    </button>
+                    <button onClick={() => handleDeleteSchedule(schedule.id)} className="text-xs text-red-600 hover:text-red-800 px-2 py-1.5">
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : !showScheduleForm ? (
+          <div className={`${CARDS.elevated} p-8 text-center`}>
+            <svg className="w-10 h-10 text-gray-300 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <p className={TYPOGRAPHY.bodyMuted}>No scheduled reports yet. Create one to automate report delivery via email.</p>
+          </div>
+        ) : null}
+
+        {/* History Section */}
+        {showHistory && (
+          <div className="mt-6">
+            <h4 className={`${TYPOGRAPHY.sectionTitle} mb-3`}>Report Delivery History</h4>
+            {history.length > 0 ? (
+              <div className={`${CARDS.elevated} overflow-hidden`}>
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-gray-50 border-b border-gray-200">
+                      <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500">Report</th>
+                      <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500">Trigger</th>
+                      <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500">Status</th>
+                      <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500">Emails</th>
+                      <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500">Date</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {history.map(h => (
+                      <tr key={h.id} className="hover:bg-gray-50">
+                        <td className="px-4 py-2.5 text-gray-900">
+                          {REPORT_TYPES.find(r => r.key === h.report_type)?.title || h.report_type}
+                          <span className="ml-1 text-gray-400 text-xs">{h.format.toUpperCase()}</span>
+                        </td>
+                        <td className="px-4 py-2.5">
+                          <span className={`${BADGES.pill} ${h.triggered_by === 'schedule' ? BADGES.info : BADGES.neutral} text-[10px]`}>
+                            {h.triggered_by}
+                          </span>
+                        </td>
+                        <td className="px-4 py-2.5">
+                          <span className={`${BADGES.pill} ${
+                            h.status === 'completed' ? BADGES.success :
+                            h.status === 'failed' ? BADGES.error : BADGES.warning
+                          } text-[10px]`}>
+                            {h.status}
+                          </span>
+                        </td>
+                        <td className="px-4 py-2.5 text-gray-600">{h.email_sent}</td>
+                        <td className="px-4 py-2.5 text-gray-500 text-xs">
+                          {new Date(h.created_at + 'Z').toLocaleString()}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className={`${TYPOGRAPHY.bodyMuted} text-center py-4`}>No report history yet.</p>
+            )}
+          </div>
+        )}
       </div>
 
       {/* CSV Data Exports Section */}
