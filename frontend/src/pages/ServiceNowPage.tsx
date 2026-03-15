@@ -222,8 +222,10 @@ export function ServiceNowPage() {
       <div className={CARDS.base}>
         <h3 className={TYPOGRAPHY.sectionTitle}>ServiceNow Connector</h3>
         {connectors.length === 0 ? (
-          <p className={TYPOGRAPHY.bodyMuted}>No ServiceNow connectors configured.</p>
-          <a href="/connectors" className="inline-block mt-3 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">Go to Connectors</a>
+          <>
+            <p className={TYPOGRAPHY.bodyMuted}>No ServiceNow connectors configured.</p>
+            <a href="/connectors" className="inline-block mt-3 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">Go to Connectors</a>
+          </>
         ) : (
           <div className="space-y-4">
             <select
