@@ -38,6 +38,8 @@ export function SSPPage() {
 
   const [documents, setDocuments] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [vulnSummary, setVulnSummary] = useState<Record<string, { critical: number; high: number; medium: number; low: number; total: number }>>({});
 
   useEffect(() => {
     api('/api/v1/ssp')
@@ -46,9 +48,12 @@ export function SSPPage() {
   }, []);
 
   // Open SSP in the standalone Reporter app
-  const handleOpenInReporter = async (sspId: string) => {
+  const handleOpenInReporter = async (sspId: string, sectionKey?: string) => {
     try {
-      const data = await api(`/api/v1/ssp/${sspId}/reporter-token`, { method: 'POST' });
+      const data = await api(`/api/v1/ssp/${sspId}/reporter-token`, {
+        method: 'POST',
+        body: JSON.stringify(sectionKey ? { section: sectionKey } : {}),
+      });
       if (data.reporter_url) {
         window.open(data.reporter_url, '_blank', 'noopener,noreferrer');
       }
@@ -73,6 +78,19 @@ export function SSPPage() {
       alert('Failed to launch Forge Reporter. Please try again.');
     }
   };
+
+  // Load vulnerability summary when a document is expanded
+  useEffect(() => {
+    if (!expandedId || vulnSummary[expandedId]) return;
+    api(`/api/v1/ssp/${expandedId}/vulnerabilities?limit=1&status=all`)
+      .then((d) => {
+        setVulnSummary((prev) => ({
+          ...prev,
+          [expandedId]: { ...d.summary, total: d.total },
+        }));
+      })
+      .catch(() => {});
+  }, [expandedId]);
 
   // Calculate completion percentage for a document
   const getDocCompletion = (doc: any): number => {
@@ -135,9 +153,10 @@ export function SSPPage() {
           <div className="space-y-3">
             {documents.map((doc) => {
               const completion = getDocCompletion(doc);
+              const isExpanded = expandedId === doc.id;
               return (
-                <div key={doc.id} className="border border-gray-100 rounded-lg p-4 hover:border-gray-300 transition-colors">
-                  <div className="flex items-center justify-between">
+                <div key={doc.id} className="border border-gray-100 rounded-lg hover:border-gray-300 transition-colors">
+                  <div className="p-4 flex items-center justify-between">
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <p className="font-medium text-gray-900 text-sm truncate">{doc.title}</p>
@@ -166,7 +185,7 @@ export function SSPPage() {
                         <span className="text-xs text-gray-400">{completion}% complete</span>
                       </div>
                     </div>
-                    <div className="ml-4 flex-shrink-0">
+                    <div className="ml-4 flex-shrink-0 flex items-center gap-2">
                       <button
                         onClick={() => handleOpenInReporter(doc.id)}
                         className={`${BUTTONS.sm} ${BUTTONS.primary} flex items-center gap-1.5`}
@@ -177,8 +196,79 @@ export function SSPPage() {
                         </svg>
                         Open in Reporter
                       </button>
+                      <button
+                        onClick={() => setExpandedId(isExpanded ? null : doc.id)}
+                        className="p-2 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100 transition-colors"
+                        title={isExpanded ? 'Hide sections' : 'Show sections'}
+                      >
+                        <svg className={`w-4 h-4 transition-transform ${isExpanded ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                      </button>
                     </div>
                   </div>
+                  {/* Expandable sections panel */}
+                  {isExpanded && (
+                    <div className="border-t border-gray-100 px-4 py-3 bg-gray-50/50">
+                      <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Open specific section in Reporter</p>
+                      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-1.5">
+                        {SECTIONS.map((section) => (
+                          <button
+                            key={section.key}
+                            onClick={() => handleOpenInReporter(doc.id, section.key)}
+                            className="text-left px-3 py-2 text-xs text-gray-700 hover:bg-indigo-50 hover:text-indigo-700 rounded-md transition-colors flex items-center gap-1.5 group"
+                          >
+                            <svg className="w-3 h-3 text-gray-400 group-hover:text-indigo-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                            </svg>
+                            {section.label}
+                          </button>
+                        ))}
+                        <button
+                          onClick={() => handleOpenInReporter(doc.id, 'vulnerabilities')}
+                          className="text-left px-3 py-2 text-xs text-red-700 hover:bg-red-50 rounded-md transition-colors flex items-center gap-1.5 group font-medium"
+                        >
+                          <svg className="w-3 h-3 text-red-400 group-hover:text-red-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                          </svg>
+                          Vulnerabilities
+                        </button>
+                      </div>
+                      {/* Vulnerability summary from ForgeScan */}
+                      {vulnSummary[doc.id] && vulnSummary[doc.id].total > 0 && (
+                        <div className="mt-3 pt-3 border-t border-gray-200">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                              <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">ForgeScan Findings</span>
+                              <div className="flex items-center gap-1.5">
+                                {vulnSummary[doc.id].critical > 0 && (
+                                  <span className="px-1.5 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">{vulnSummary[doc.id].critical} Critical</span>
+                                )}
+                                {vulnSummary[doc.id].high > 0 && (
+                                  <span className="px-1.5 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800">{vulnSummary[doc.id].high} High</span>
+                                )}
+                                {vulnSummary[doc.id].medium > 0 && (
+                                  <span className="px-1.5 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800">{vulnSummary[doc.id].medium} Med</span>
+                                )}
+                                {vulnSummary[doc.id].low > 0 && (
+                                  <span className="px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">{vulnSummary[doc.id].low} Low</span>
+                                )}
+                              </div>
+                            </div>
+                            <button
+                              onClick={() => handleOpenInReporter(doc.id, 'vulnerabilities')}
+                              className="text-xs text-indigo-600 hover:text-indigo-800 font-medium flex items-center gap-1"
+                            >
+                              View in Reporter
+                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                              </svg>
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               );
             })}

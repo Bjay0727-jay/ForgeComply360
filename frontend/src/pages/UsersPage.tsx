@@ -48,6 +48,7 @@ const ROLE_COLORS: Record<string, string> = {
 const STATUS_COLORS: Record<string, string> = {
   active: 'bg-green-100 text-green-700',
   deactivated: 'bg-red-100 text-red-700',
+  pending_invite: 'bg-yellow-100 text-yellow-700',
 };
 
 const ASSIGNABLE_ROLES = ['viewer', 'analyst', 'manager', 'admin'];
@@ -161,8 +162,12 @@ function InviteUserModal({ isOwner, onSuccess, onClose }: {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [role, setRole] = useState('analyst');
+  const [personalMessage, setPersonalMessage] = useState('');
+  const [method, setMethod] = useState<'invite' | 'direct'>('invite');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [inviteResult, setInviteResult] = useState<{ token: string; expires_at: string; userName: string; userEmail: string } | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const roles = isOwner ? ASSIGNABLE_ROLES : ASSIGNABLE_ROLES.filter((r) => r !== 'admin');
 
@@ -171,17 +176,65 @@ function InviteUserModal({ isOwner, onSuccess, onClose }: {
     setError('');
     setLoading(true);
     try {
-      const result = await api<{ user: OrgUser; temp_password: string }>('/api/v1/users', {
-        method: 'POST',
-        body: JSON.stringify({ email, name, role }),
-      });
-      onSuccess(result.user, result.temp_password);
+      if (method === 'direct') {
+        const result = await api<{ user: OrgUser; temp_password: string }>('/api/v1/users', {
+          method: 'POST',
+          body: JSON.stringify({ email, name, role }),
+        });
+        onSuccess(result.user, result.temp_password);
+      } else {
+        const result = await api<{ user: OrgUser; invite_token: string; expires_at: string }>('/api/v1/users/invite', {
+          method: 'POST',
+          body: JSON.stringify({ email, name, role, personal_message: personalMessage || undefined }),
+        });
+        const inviteUrl = `${window.location.origin}/accept-invite?token=${result.invite_token}`;
+        setInviteResult({ token: inviteUrl, expires_at: result.expires_at, userName: name, userEmail: email });
+        // Also add to local list
+        onSuccess(result.user, '');
+      }
     } catch (err: any) {
-      setError(err.message || 'Failed to create user');
+      setError(err.message || 'Failed to invite user');
     } finally {
       setLoading(false);
     }
   };
+
+  const handleCopyInvite = () => {
+    if (inviteResult) {
+      navigator.clipboard.writeText(inviteResult.token);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  // Show invite link result
+  if (inviteResult) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
+        <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6 mx-4" onClick={(e) => e.stopPropagation()}>
+          <h3 className="text-lg font-semibold text-gray-900 mb-2">Invitation Created</h3>
+          <p className="text-sm text-gray-600 mb-4">
+            Share this link with <span className="font-medium">{inviteResult.userName}</span> ({inviteResult.userEmail}) to complete their account setup.
+          </p>
+          <div className="mb-3">
+            <label className="block text-xs font-medium text-gray-500 mb-1">Invite Link</label>
+            <div className="flex items-center gap-2">
+              <input type="text" readOnly value={inviteResult.token} className="flex-1 px-3 py-2 bg-gray-50 border border-gray-300 rounded-lg font-mono text-xs select-all" />
+              <button onClick={handleCopyInvite} className="px-3 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 whitespace-nowrap">
+                {copied ? 'Copied!' : 'Copy'}
+              </button>
+            </div>
+          </div>
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4">
+            <p className="text-xs text-amber-800 font-medium">This link expires {new Date(inviteResult.expires_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}. The user will set their own password when they accept.</p>
+          </div>
+          <div className="flex justify-end">
+            <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200">Done</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
@@ -190,6 +243,15 @@ function InviteUserModal({ isOwner, onSuccess, onClose }: {
         {error && (
           <div className="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded-lg mb-4 text-sm">{error}</div>
         )}
+        {/* Method Toggle */}
+        <div className="flex gap-1 mb-4 bg-gray-100 rounded-lg p-1">
+          <button type="button" onClick={() => setMethod('invite')} className={`flex-1 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${method === 'invite' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
+            Send Invite Link
+          </button>
+          <button type="button" onClick={() => setMethod('direct')} className={`flex-1 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${method === 'direct' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
+            Set Temp Password
+          </button>
+        </div>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Full Name</label>
@@ -225,6 +287,23 @@ function InviteUserModal({ isOwner, onSuccess, onClose }: {
               ))}
             </select>
           </div>
+          {method === 'invite' && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Personal Message <span className="text-gray-400">(optional)</span></label>
+              <textarea
+                value={personalMessage}
+                onChange={(e) => setPersonalMessage(e.target.value)}
+                rows={2}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-none"
+                placeholder="Welcome to the team! You'll be helping with compliance reviews."
+              />
+            </div>
+          )}
+          <p className="text-xs text-gray-400">
+            {method === 'invite'
+              ? 'An invite link will be generated. Share it with the user to let them set their own password.'
+              : 'A temporary password will be generated for you to share with the user.'}
+          </p>
           <div className="flex justify-end gap-3 pt-2">
             <button type="button" onClick={onClose} className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200">
               Cancel
@@ -234,7 +313,7 @@ function InviteUserModal({ isOwner, onSuccess, onClose }: {
               disabled={loading || !name || !email}
               className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50"
             >
-              {loading ? 'Creating...' : 'Create User'}
+              {loading ? (method === 'invite' ? 'Sending...' : 'Creating...') : (method === 'invite' ? 'Send Invitation' : 'Create User')}
             </button>
           </div>
         </form>
@@ -605,6 +684,7 @@ export function UsersPage() {
         <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="px-3 py-2 border border-gray-300 rounded-lg text-sm">
           <option value="all">All Status</option>
           <option value="active">Active</option>
+          <option value="pending_invite">Pending Invite</option>
           <option value="deactivated">Deactivated</option>
         </select>
         <select value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)} className="px-3 py-2 border border-gray-300 rounded-lg text-sm">
@@ -724,10 +804,14 @@ export function UsersPage() {
         <InviteUserModal
           isOwner={isOwner}
           onSuccess={(newUser, tempPassword) => {
-            setShowInvite(false);
+            if (tempPassword) {
+              // Direct create: close modal and show temp password
+              setShowInvite(false);
+              setTempPwModal({ password: tempPassword, userName: newUser.name });
+            }
+            // For invite flow, the modal stays open to show the invite link
             setUsers((prev) => [...prev, { ...newUser, mfa_enabled: 0, onboarding_completed: 0, last_login_at: null, created_at: new Date().toISOString(), failed_login_attempts: 0, locked_until: null }]);
             if (stats) setStats({ ...stats, total: stats.total + 1, active: stats.active + 1 });
-            setTempPwModal({ password: tempPassword, userName: newUser.name });
           }}
           onClose={() => setShowInvite(false)}
         />

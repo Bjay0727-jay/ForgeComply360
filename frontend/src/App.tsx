@@ -23,6 +23,7 @@ import { ResetPasswordPage } from './pages/ResetPasswordPage';
 import { OnboardingWizard } from './pages/OnboardingWizard';
 import { DashboardPage } from './pages/DashboardPage';  // Default route - keep static
 import { BadgeVerifyPage } from './pages/BadgeVerifyPage';
+import { AcceptInvitePage } from './pages/AcceptInvitePage';
 
 // ============================================================================
 // LAZY IMPORTS - Tier 1: Largest pages (50K+)
@@ -146,6 +147,7 @@ function AppRoutes() {
         <Route path="/login" element={<LoginPage />} />
         <Route path="/register" element={<RegisterPage />} />
         <Route path="/reset-password" element={<ResetPasswordPage />} />
+        <Route path="/accept-invite" element={<AcceptInvitePage />} />
         {/* Public routes - no auth required */}
         <Route path="/verify/:code" element={<BadgeVerifyPage />} />
         <Route path="/q/:token" element={<LazyPage><PublicQuestionnairePage /></LazyPage>} />
