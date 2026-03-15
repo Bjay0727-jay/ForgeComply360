@@ -630,7 +630,7 @@ export function UsersPage() {
       {loading ? (
         <SkeletonTable rows={5} cols={6} />
       ) : filtered.length === 0 ? (
-        <EmptyState title="No users found" subtitle="Adjust filters or invite team members" icon="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+        <EmptyState title="No users found" subtitle="Adjust filters or invite team members" icon="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" action={{ label: '+ Invite User', onClick: () => setShowInvite(true) }} />
       ) : (
         <div className="bg-white rounded-xl border border-blue-200">
           <table className="w-full text-sm">

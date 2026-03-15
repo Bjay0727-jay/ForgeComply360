@@ -174,8 +174,7 @@ export function EvidenceSchedulesPage() {
       {/* Schedule Table */}
       {schedules.length === 0 ? (
         <div className="bg-white rounded-xl border border-blue-200 p-12 text-center">
-          <EmptyState title="No evidence schedules" subtitle="Create schedules to automate evidence collection" icon="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-          {canEdit && <button onClick={openCreate} className="mt-3 text-blue-600 text-sm font-medium hover:text-blue-800">Create your first schedule →</button>}
+          <EmptyState title="No evidence schedules" subtitle="Create schedules to automate evidence collection" icon="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" action={canEdit ? { label: '+ New Schedule', onClick: openCreate } : undefined} />
         </div>
       ) : (
         <div className="bg-white rounded-xl border border-blue-200 overflow-hidden">

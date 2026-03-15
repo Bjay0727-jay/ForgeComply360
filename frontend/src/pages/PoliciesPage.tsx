@@ -357,7 +357,7 @@ export function PoliciesPage() {
         {loading ? (
           <div><SkeletonListItem count={5} /></div>
         ) : policies.length === 0 ? (
-          <EmptyState title="No policies found" subtitle="Upload or create compliance policies" icon="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          <EmptyState title="No policies found" subtitle="Upload or create compliance policies" icon="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" action={requireRole(userRole, 'analyst') ? { label: '+ New Policy', onClick: () => setShowCreate(true) } : undefined} />
         ) : (
           <div className="bg-white rounded-xl border overflow-hidden">
             <table className="w-full text-sm">
