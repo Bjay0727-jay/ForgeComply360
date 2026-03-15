@@ -449,7 +449,8 @@ async function handleRequest(request, env, url, ctx) {
   if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/ai-refine$/) && method === 'POST') return handleAIRefineSSP(request, env, org, user, path.split('/')[4]);
   if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/status$/) && method === 'PUT') return handleUpdateSSPStatus(request, env, org, user, path.split('/')[4]);
   if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/versions$/) && method === 'POST') return handleCreateSSPVersion(request, env, org, user, path.split('/')[4]);
-  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/reporter-token$/) && method === 'POST') return handleGenerateReporterToken(env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/reporter-token$/) && method === 'POST') return handleGenerateReporterToken(request, env, org, user, path.split('/')[4]);
+  if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/vulnerabilities$/) && method === 'GET') return handleGetSSPVulnerabilities(env, org, url, path.split('/')[4]);
   // FISMA SSP Extended Tables
   if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/info-types$/) && method === 'GET') return handleGetSSPInfoTypes(env, org, path.split('/')[4]);
   if (path.match(/^\/api\/v1\/ssp\/[\w-]+\/info-types$/) && method === 'POST') return handleCreateSSPInfoType(request, env, org, user, path.split('/')[4]);
@@ -3669,12 +3670,19 @@ async function handleCreateSSPVersion(request, env, org, user, sspId) {
 }
 
 // Generate a scoped token for the Reporter app
-async function handleGenerateReporterToken(env, org, user, sspId) {
+async function handleGenerateReporterToken(request, env, org, user, sspId) {
   if (!requireRole(user, 'analyst')) return jsonResponse({ error: 'Forbidden' }, 403);
 
   // Verify SSP exists and belongs to org
   const doc = await env.DB.prepare('SELECT id, title FROM ssp_documents WHERE id = ? AND org_id = ?').bind(sspId, org.id).first();
   if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+
+  // Parse optional section from request body
+  let section = null;
+  try {
+    const body = await request.json();
+    if (body.section) section = body.section;
+  } catch { /* No body or invalid JSON - that's ok */ }
 
   // Generate a scoped JWT token for the Reporter (4 hour expiry)
   const now = Math.floor(Date.now() / 1000);
@@ -3689,6 +3697,7 @@ async function handleGenerateReporterToken(env, org, user, sspId) {
     iat: now,
     exp: exp,
   };
+  if (section) payload.section = section;
 
   // Encode as JWT (HS256)
   const header = { alg: 'HS256', typ: 'JWT' };
@@ -3711,7 +3720,8 @@ async function handleGenerateReporterToken(env, org, user, sspId) {
   // Build the Reporter URL with embedded token
   const reporterUrl = env.REPORTER_URL || 'https://reporter-forgecomply360.pages.dev';
   const apiUrl = env.API_URL || 'https://forge-comply360-api.stanley-riley.workers.dev';
-  const fullUrl = `${reporterUrl}/#token=${encodeURIComponent(token)}&ssp=${encodeURIComponent(sspId)}&api=${encodeURIComponent(apiUrl)}`;
+  let fullUrl = `${reporterUrl}/#token=${encodeURIComponent(token)}&ssp=${encodeURIComponent(sspId)}&api=${encodeURIComponent(apiUrl)}`;
+  if (section) fullUrl += `&section=${encodeURIComponent(section)}`;
 
   await auditLog(env, org.id, user.id, 'create', 'reporter_token', sspId, { expires_at: new Date(exp * 1000).toISOString() });
 
@@ -3791,6 +3801,70 @@ async function handleGenerateReporterTokenGeneric(request, env, org, user) {
     reporter_url: fullUrl,
     ssp_id: sspId,
     ssp_title: sspTitle,
+  });
+}
+
+// Get vulnerability findings for an SSP's system
+async function handleGetSSPVulnerabilities(env, org, url, sspId) {
+  // Verify SSP exists and belongs to org
+  const doc = await env.DB.prepare('SELECT id, system_id FROM ssp_documents WHERE id = ? AND org_id = ?').bind(sspId, org.id).first();
+  if (!doc) return jsonResponse({ error: 'SSP not found' }, 404);
+  if (!doc.system_id) return jsonResponse({ findings: [], total: 0, summary: { critical: 0, high: 0, medium: 0, low: 0, info: 0 } });
+
+  const severity = url.searchParams.get('severity');
+  const status = url.searchParams.get('status') || 'open';
+  const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200);
+  const page = parseInt(url.searchParams.get('page') || '1', 10);
+  const offset = (page - 1) * limit;
+
+  // Get findings for assets belonging to this SSP's system
+  let query = `SELECT vf.id, vf.title, vf.severity, vf.status, vf.plugin_id, vf.plugin_name,
+               vf.plugin_family, vf.cvss_score, vf.cvss3_score, vf.description,
+               vf.remediation_guidance, vf.exploit_available, vf.control_mappings,
+               vf.first_seen_at, vf.last_seen_at, vf.related_poam_id,
+               a.hostname, a.ip_address, a.id as asset_id
+               FROM vulnerability_findings vf
+               JOIN assets a ON vf.asset_id = a.id
+               WHERE vf.org_id = ? AND a.system_id = ?`;
+  const params = [org.id, doc.system_id];
+
+  if (status && status !== 'all') { query += ' AND vf.status = ?'; params.push(status); }
+  if (severity) { query += ' AND vf.severity = ?'; params.push(severity); }
+
+  query += ` ORDER BY CASE vf.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, vf.cvss_score DESC LIMIT ? OFFSET ?`;
+  params.push(limit, offset);
+
+  const { results } = await env.DB.prepare(query).bind(...params).all();
+
+  // Get severity summary counts
+  const summaryResult = await env.DB.prepare(`
+    SELECT vf.severity, COUNT(*) as count
+    FROM vulnerability_findings vf
+    JOIN assets a ON vf.asset_id = a.id
+    WHERE vf.org_id = ? AND a.system_id = ? AND vf.status != 'false_positive'
+    GROUP BY vf.severity
+  `).bind(org.id, doc.system_id).all();
+
+  const summary = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+  for (const row of summaryResult.results) {
+    if (summary.hasOwnProperty(row.severity)) summary[row.severity] = row.count;
+  }
+
+  // Get total for pagination
+  let countQuery = `SELECT COUNT(*) as total FROM vulnerability_findings vf JOIN assets a ON vf.asset_id = a.id WHERE vf.org_id = ? AND a.system_id = ?`;
+  const countParams = [org.id, doc.system_id];
+  if (status && status !== 'all') { countQuery += ' AND vf.status = ?'; countParams.push(status); }
+  if (severity) { countQuery += ' AND vf.severity = ?'; countParams.push(severity); }
+  const countResult = await env.DB.prepare(countQuery).bind(...countParams).first();
+
+  return jsonResponse({
+    findings: results,
+    total: countResult?.total || 0,
+    page,
+    limit,
+    summary,
+    ssp_id: sspId,
+    system_id: doc.system_id,
   });
 }
 
